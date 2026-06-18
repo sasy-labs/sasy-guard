@@ -22,6 +22,12 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Claude Code',
+          items: [
+            { label: 'Enforce Policy on Claude Code', slug: 'claude-code' },
+          ],
+        },
+        {
           label: 'Policy',
           items: [
             { label: 'Policy Walkthrough', slug: 'policy/walkthrough' },

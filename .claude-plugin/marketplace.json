@@ -1,0 +1,14 @@
+{
+  "name": "sasy-demo-plugins",
+  "version": "1.0.0",
+  "owner": {
+    "name": "SASY Labs"
+  },
+  "plugins": [
+    {
+      "name": "sasy-guard",
+      "source": "./plugins/sasy-guard",
+      "description": "SASY policy enforcement for Claude Code tool calls (PreToolUse checks against a Datalog policy engine)"
+    }
+  ]
+}

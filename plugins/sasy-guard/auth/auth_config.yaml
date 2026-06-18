@@ -1,0 +1,16 @@
+# Minimal auth config for the local single-user Claude Code deployment.
+# The sasy-watch daemon authenticates to the local sasy server as the
+# `local` entity (passthrough/no-auth mode); these roles are what the
+# enforcement + ingestion path needs. Installed to ~/.sasy/ by setup.
+trust_domain: sasy.local
+default_tenant: default
+
+entities:
+  local:
+    description: Claude Code sasy-watch daemon (single local user)
+    roles:
+      - reference-monitor-user
+      - observability-writer
+      - observability-reader
+      - policy-client
+      - credential-reader
