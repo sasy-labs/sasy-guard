@@ -1,0 +1,6 @@
+/* Lockdown profile: nothing is authorized (mirrors the binary's
+   built-in bootstrap posture). */
+
+#include "common_policy.dl"
+
+// No IsAuthorized rules — every action falls through to deny.
