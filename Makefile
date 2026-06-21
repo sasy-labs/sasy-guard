@@ -22,6 +22,8 @@
         scenario-4 scenario-5 scenario-6 \
         scenario-7 scenario-8 scenario-9 \
         scenario-1-step scenario-2-step scenario-3-step \
+        claude-code-guard-demo claude-code-guard-demo-step \
+        claude-code-guard-scenario \
         docs docs-build docs-install test
 
 # ── Setup ──────────────────────────────────────────
@@ -77,6 +79,24 @@ demo:
 
 demo-step:
 	STEP_MODE=1 $(UV_RUN_SDK) python -m demo.main --all
+
+# ── Claude Code guard demo (real claude × mock model) ──────
+# Drives a REAL headless `claude` session against a deterministic mock
+# Anthropic endpoint, so the native PreToolUse hook + live sasy-watch daemon +
+# real per-session dependency graph are all exercised end to end (unlike the
+# policy-compiler repo's synthetic demo, which POSTs canned calls to the
+# daemon). Requires `claude` on PATH and `sasy-guard install` (binaries in
+# ~/.sasy/bin); boots its own throwaway daemon on free ports.
+
+claude-code-guard-demo:
+	$(UV_RUN_SDK) python -m demo.cc_guard --all
+
+claude-code-guard-demo-step:
+	STEP_MODE=1 $(UV_RUN_SDK) python -m demo.cc_guard --all --step
+
+# Single rule group: `make claude-code-guard-scenario GROUP=toxic_flow`
+claude-code-guard-scenario:
+	$(UV_RUN_SDK) python -m demo.cc_guard --scenario $(GROUP)
 
 # ── Individual Scenarios ───────────────────────────
 
