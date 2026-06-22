@@ -23,7 +23,7 @@
         scenario-7 scenario-8 scenario-9 \
         scenario-1-step scenario-2-step scenario-3-step \
         claude-code-guard-demo claude-code-guard-demo-step \
-        claude-code-guard-scenario \
+        claude-code-guard-scenario claude-code-guard-serve \
         docs docs-build docs-install test
 
 # ── Setup ──────────────────────────────────────────
@@ -97,6 +97,14 @@ claude-code-guard-demo-step:
 # Single rule group: `make claude-code-guard-scenario GROUP=toxic_flow`
 claude-code-guard-scenario:
 	$(UV_RUN_SDK) python -m demo.cc_guard --scenario $(GROUP)
+
+# Interactive: boot the scripted mock so YOU drive a real `claude` session
+# against the guard. GROUP picks the scenario; PROJECT points at YOUR enabled
+# repo (the one you ran `sasy-guard enable` on):
+#   make claude-code-guard-serve GROUP=toxic_flow PROJECT=/path/to/enabled/repo
+claude-code-guard-serve:
+	$(UV_RUN_SDK) python -m demo.cc_guard.serve_mock \
+	  --scenario $(or $(GROUP),toxic_flow) $(if $(PROJECT),--project $(PROJECT))
 
 # ── Individual Scenarios ───────────────────────────
 

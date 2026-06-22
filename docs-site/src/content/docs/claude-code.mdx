@@ -93,6 +93,12 @@ Enforcement applies to **Claude Code's own tool calls** — so you test by *aski
 Claude, inside the session*, to do something. Running a command yourself in the
 shell is never checked (the hook only sees Claude's tool calls).
 
+The guard is a **deny-list**, so a normal session is uneventful: reading files,
+editing code, running tests, `git status` / `add` / `commit`, and grep all flow
+through untouched. It steps in only at the risky edges below — and every denial
+carries a `[SASY] …` reason and a suggested fix that Claude relays, so you're
+never left guessing why something stopped.
+
 Set up a throwaway directory:
 
 ```bash
@@ -132,6 +138,29 @@ flow; the **outbound** call afterward is what's denied.
 - `hidden_unicode` — needs a source that carries invisible Unicode instructions.
 - `supply_chain` / `public_push` — need live network facts (OSV verdicts, GitHub
   repo visibility), so they don't fire in an offline dummy repo.
+
+## Run the bundled demo
+
+If you've cloned this repo, two `make` targets drive a **real headless `claude`**
+through the guard against a deterministic mock Anthropic endpoint (a real model
+refuses the dangerous calls, so the mock scripts them):
+
+- **Automated** — replays all 12 scenarios and asserts each verdict:
+
+  ```bash
+  make claude-code-guard-demo
+  ```
+
+- **Interactive** — boots just the mock so *you* drive a real `claude` session
+  against one scenario. First `sasy-guard enable` the target repo, then:
+
+  ```bash
+  make claude-code-guard-serve GROUP=toxic_flow PROJECT=/path/to/your/enabled/repo
+  ```
+
+  It prints an `ANTHROPIC_BASE_URL`; point a `claude` session in that repo at it
+  (the banner shows the exact commands) and watch each scripted tool call hit the
+  live hook → daemon → engine.
 
 ## How it works
 
