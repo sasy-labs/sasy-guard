@@ -30,7 +30,9 @@ them).
    ```
 
    `sasy-guard install` copies the binaries into `~/.sasy/bin` and writes
-   `~/.sasy/config.json`. (Requires [uv](https://docs.astral.sh/uv/).)
+   `~/.sasy/config.json`. (Requires [uv](https://docs.astral.sh/uv/).) Already
+   installed? `uv tool install` won't replace an existing version — upgrade with
+   `uv tool upgrade sasy-guard && sasy-guard install`.
 
 2. **Add the plugin** (the hooks), the standard Claude Code way:
 
