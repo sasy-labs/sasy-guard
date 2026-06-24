@@ -96,14 +96,16 @@ differently.
 
 <CardGrid>
   <Card title="🔨 Your own hook">
-    `grep 'curl.*| *sh'`. Misses `wget | bash`, `curl -o /tmp/x && sh /tmp/x`,
-    and fetch-then-exec split across calls — and can't tell a trusted host from
-    an unknown one. You also wanted *ask*, not *deny*, so now you're hand-rolling
-    the verdict protocol and the reason string.
+    `grep 'curl.*| *sh'`. Misses `wget | bash` and the no-pipe
+    command-substitution installers (`$(curl …)`, `<(curl …)`), and can't tell a
+    trusted host from an unknown one. You also wanted *ask*, not *deny*, so now
+    you're hand-rolling the verdict protocol and the reason string.
   </Card>
   <Card title="🛡️ sasy-guard">
-    Host-aware (unknown source), normalized across pipe/temp-file variants, and
-    returns **ask** with a `[SASY] …` reason the agent relays back to you.
+    Host-aware (matches the URL's registrable domain — a trusted installer
+    passes, an unknown host is held), normalized across pipe and
+    command-/process-substitution forms, and returns **ask** with a `[SASY] …`
+    reason the agent relays back to you.
   </Card>
 </CardGrid>
 
@@ -191,14 +193,17 @@ verdicts, repo visibility), or state you have to *accumulate* across the session
 
 <CardGrid>
   <Card title="🔨 Your own hook">
-    "Block `git push` unless gitleaks ran." But did it run *clean*, and did the
-    scan *cover the edits made this session*? Answering that means actually
-    running gitleaks and correlating it with the files touched — not grepping the
-    transcript for the word "gitleaks".
+    "Block `git push` unless gitleaks ran." But did a run report *clean*, did it
+    *cover every file edited this session*, and is it real (not a spoofed `echo
+    'no leaks found'`)? That's stateful, cross-call bookkeeping tied to your
+    edits — not a one-call check.
   </Card>
   <Card title="🛡️ sasy-guard">
-    The daemon runs `gitleaks` out-of-band and gates the push on a clean scan
-    that **covers the session's edits**.
+    The push is denied until a **clean** `gitleaks` run is present in the session
+    that **covers every recent edit** (graph reachability from each edit to a
+    clean scan) — and it checks gitleaks was actually *invoked*, so an `echo 'no
+    leaks found'` can't fake it. The denial tells the agent to run `gitleaks`
+    first.
   </Card>
 </CardGrid>
 
