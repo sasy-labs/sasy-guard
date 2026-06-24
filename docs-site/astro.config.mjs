@@ -25,6 +25,7 @@ export default defineConfig({
           label: 'Claude Code',
           items: [
             { label: 'Enforce Policy on Claude Code', slug: 'claude-code' },
+            { label: 'Why sasy-guard, not hooks?', slug: 'why-sasy-guard' },
           ],
         },
         {

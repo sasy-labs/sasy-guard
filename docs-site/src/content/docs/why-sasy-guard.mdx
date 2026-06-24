@@ -1,0 +1,296 @@
+---
+title: Why sasy-guard, not your own hooks?
+description: A rule-by-rule comparison of a hand-rolled Claude Code PreToolUse hook vs. sasy-guard's policy engine — where the DIY version drifts, over-blocks, or can be switched off, and what the engine does instead.
+---
+
+import { Card, CardGrid, Aside, Badge } from '@astrojs/starlight/components';
+
+> "Why do I need your thing? Claude Code already has `PreToolUse` hooks — I'll
+> just write my own."
+
+Fair question, and the honest answer starts with a concession: **for the
+simplest checks, a hook really is all you need.** Blocking one command by
+pattern is a few lines of shell — if that's your whole threat model, roll your
+own.
+
+But most of what sasy-guard does is *not* single-command pattern-matching. A
+`PreToolUse` hook fires **once per tool call, statelessly, seeing only that one
+call.** The moment a rule needs *memory of the conversation*, *facts from
+outside the command string*, or *protection from the agent itself*, the hook
+turns into a project nobody wants to own. Here it is, guard by guard.
+
+## The four things a hook can't do cheaply
+
+<CardGrid>
+  <Card title="① Dataflow, not sequence">
+    A hook sees one call. Knowing an outbound `curl` *derives from* a secret read
+    three calls ago needs a backward slice over the conversation's
+    message-dependency graph — across parallel tool calls and subagents a single
+    hook is blind to.
+  </Card>
+  <Card title="② Facts outside the string">
+    "Is this package malicious?", "is this repo public?", "did a secret scan run
+    clean?" aren't in the command text. They need live lookups (OSV, GitHub) and
+    real tool runs (`gitleaks`, `osv-scanner`), resolved and cached.
+  </Card>
+  <Card title="③ Session-wide state">
+    "A *large, unreviewed* push", "a scan that *covers these edits*" — facts that
+    accumulate across many calls. A stateless hook has to rebuild that
+    bookkeeping itself, correctly, on every single call.
+  </Card>
+  <Card title="④ Tamper-resistance">
+    Your hook lives in `.claude/settings.json` — the first file a prompt-injected
+    agent edits. A guard the agent can switch off is not a guard.
+  </Card>
+</CardGrid>
+
+sasy-guard is one **locked policy engine** that does all four, with every rule
+written as auditable Soufflé Datalog — the *same* policy the SASY SDK enforces —
+instead of a pile of per-developer scripts. Below, each guard group side by side.
+
+<Aside type="note" title="Honest scope (so we're not overselling)">
+The dataflow slice is **turn-scoped**: it resets each turn for precision, so one
+secret read isn't held against every future command forever. Splitting an attack
+across many separate turns is a known gap — and a tunable window over a
+full-session graph, not a wall. The single-command rules below fire
+turn-independently regardless.
+</Aside>
+
+## Pattern blocks — where a hook is closest, and still drifts
+
+Single-command signatures. A hook *can* match these; the catch is that "match
+`rm -rf`" is the opening move of an arms race, and every developer's regex drifts
+differently.
+
+### `data_loss` <Badge text="deny" variant="danger" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    `grep 'rm -rf'`. Then you find `rm -fr`, `rm -r -f`, `rm --force
+    --recursive`, `find . -delete`, an aliased `rm`, `$(printf rm) -rf`… each a
+    new patch. Miss one and it's an irreversible delete.
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    One normalized matcher (any flag ordering, `find -delete`, …) shipped and
+    maintained centrally as a policy rule — identical for every repo and
+    teammate, not a regex each person re-derives.
+  </Card>
+</CardGrid>
+
+### `reverse_shell` <Badge text="deny" variant="danger" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    `grep '/dev/tcp'`. But reverse shells ship in dozens of one-liners —
+    `nc -e`, `ncat`, `openssl s_client`, `mkfifo` pipes, and `python`/`perl`/
+    `php` socket payloads. Your denylist is always one payload behind.
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    A curated remote-exec signature set, updated centrally and applied as one
+    rule everywhere — so a new variant is fixed once, for everyone, not
+    re-discovered per project.
+  </Card>
+</CardGrid>
+
+### `curl_sh` <Badge text="ask" variant="caution" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    `grep 'curl.*| *sh'`. Misses `wget | bash`, `curl -o /tmp/x && sh /tmp/x`,
+    and fetch-then-exec split across calls — and can't tell a trusted host from
+    an unknown one. You also wanted *ask*, not *deny*, so now you're hand-rolling
+    the verdict protocol and the reason string.
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    Host-aware (unknown source), normalized across pipe/temp-file variants, and
+    returns **ask** with a `[SASY] …` reason the agent relays back to you.
+  </Card>
+</CardGrid>
+
+## The guard the agent can't switch off
+
+The two rules that protect enforcement *itself* are the ones a hook
+structurally cannot deliver — because the hook is co-located with the thing it's
+supposed to guard.
+
+### `config_persistence` <Badge text="deny" variant="danger" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    The irony writes itself: your hook *is* an entry in `.claude/settings.json`.
+    To stop the agent persisting a backdoor hook, you'd need a hook that guards
+    the very file it lives in — which the agent can equally edit to delete yours.
+    A file can't reliably protect itself.
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    Enforcement runs in a separate **locked engine** plus a native binary under
+    `~/.sasy`. Writing agent/editor config (hooks, MCP servers) is a first-class
+    **deny**, and removing the project setting doesn't remove the guard.
+  </Card>
+</CardGrid>
+
+### `agent_redirect` <Badge text="deny" variant="danger" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    Block `export ANTHROPIC_BASE_URL=`. But the same agent can rewrite your hook
+    out of settings, point the variable via a written `.env`, or wrap the binary
+    — and your hook runs entirely at the agent's mercy.
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    The policy is baked into a locked engine the session can't reconfigure or
+    disable, so the endpoint hijack **and** the config-tampering that would defeat
+    it are both blocked.
+  </Card>
+</CardGrid>
+
+## Dataflow — provenance, not "it happened earlier"
+
+These are the lethal-trifecta rules. A hook can fake the *symptom* (a read
+happened, a `curl` happened); the engine computes the *cause* (this output
+**derives from** that source).
+
+### `toxic_flow` <Badge text="deny" variant="danger" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    "Read `.env` then `curl`" is sequence-matching: it over-blocks (any read then
+    any unrelated outbound) and is trivially dodged — read via `cat` in a
+    subshell, base64, a subagent, an MCP tool. It can't tell a `curl` that
+    *carries* the secret from one that merely *follows* a read.
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    Provenance: the egress is cut only when its dependency slice **traces back to
+    the secret-read node**. The value never leaves the machine, and unrelated
+    outbound calls flow through untouched.
+  </Card>
+</CardGrid>
+
+### `exfil` <Badge text="deny" variant="danger" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    Stateless, the best you can do is "a WebFetch happened, so block all `curl`s"
+    — which blocks every legitimate outbound call and *still* misses egress via a
+    subagent or a tool you forgot to enumerate.
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    A backward slice over the message-dependency graph: this egress is blocked
+    only because its slice **touches an untrusted WebFetch result**, computed
+    across parallel calls and subagent threads a single hook can't see.
+  </Card>
+</CardGrid>
+
+## Gates that need facts from outside the command
+
+The verdict here doesn't live in the command string. It lives in a tool you have
+to *run* (gitleaks, osv-scanner), a network fact you have to *fetch* (OSV
+verdicts, repo visibility), or state you have to *accumulate* across the session.
+
+### `secret_scan` <Badge text="deny" variant="danger" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    "Block `git push` unless gitleaks ran." But did it run *clean*, and did the
+    scan *cover the edits made this session*? Answering that means actually
+    running gitleaks and correlating it with the files touched — not grepping the
+    transcript for the word "gitleaks".
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    The daemon runs `gitleaks` out-of-band and gates the push on a clean scan
+    that **covers the session's edits**.
+  </Card>
+</CardGrid>
+
+### `review_gate` <Badge text="ask" variant="caution" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    "Large" and "unreviewed" are session facts — total edit magnitude across many
+    calls, and whether a review happened — that a per-call hook has to accumulate
+    and persist itself, correctly, every time.
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    Edit magnitude is tracked over the session graph; a large unreviewed push is
+    held for **ask** before it leaves the machine.
+  </Card>
+</CardGrid>
+
+### `dep_scan` <Badge text="ask" variant="caution" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    Detect a `package.json` / lockfile change *and* whether `osv-scanner` ran — a
+    cross-file, cross-call correlation, plus the out-of-band scan itself.
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    Manifest changes are seen in the graph and the push is gated on an
+    `osv-scanner` run.
+  </Card>
+</CardGrid>
+
+### `supply_chain` <Badge text="ask" variant="caution" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    On `npm install X`, is `X` known-bad or suspiciously new? That's a live OSV
+    lookup *plus* a package-age (cooldown) check, per package, with caching — a
+    network-fact resolver bolted onto your hook.
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    The daemon resolves OSV verdicts and package age as out-of-band facts and
+    holds risky installs for **ask**.
+  </Card>
+</CardGrid>
+
+### `public_push` <Badge text="ask" variant="caution" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    Two hard things at once: a live GitHub call to learn the remote's
+    **visibility**, and a taint check to know the session is **tainted**. Miss
+    either and you leak to a public repo, or block every private push.
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    Repo visibility is resolved out-of-band and combined with the taint slice, so
+    only a *tainted* push to a *public* repo is held.
+  </Card>
+</CardGrid>
+
+## The attack most people don't know exists
+
+### `hidden_unicode` <Badge text="ask" variant="caution" />
+
+<CardGrid>
+  <Card title="🔨 Your own hook">
+    Most people don't know this one exists: invisible Unicode tag characters that
+    hide instructions inside otherwise-normal text. A hook would have to decode
+    the tag-character range in every tool input *and* result, judge it deceptive,
+    and remember your approval.
+  </Card>
+  <Card title="🛡️ sasy-guard">
+    Decodes the hidden tags, **shows you the decoded instruction**, asks before
+    acting, and records the detaint decision so it isn't re-asked.
+  </Card>
+</CardGrid>
+
+## Bottom line
+
+A hook is a *place to put a check.* sasy-guard is the **engine behind it**:
+dataflow provenance over a reconstructed conversation graph, live out-of-band
+facts, session-wide state, and a locked policy the agent can't edit — all as one
+auditable Datalog policy shared with the SASY SDK, instead of N drifting shell
+scripts that each developer maintains and each agent can disable.
+
+Write the hook for `rm -rf`. Use sasy-guard for everything after it.
+
+<CardGrid>
+  <Card title="Try it">
+    Install, enable, and watch all of these fire on a real session:
+    [Enforce Policy on Claude Code](/claude-code/).
+  </Card>
+  <Card title="See it run">
+    Every guard above, replayed against a real headless Claude:
+    [Demo Scenarios](/demo/scenarios/) and [How Enforcement Works](/demo/enforcement/).
+  </Card>
+</CardGrid>
