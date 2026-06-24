@@ -8,10 +8,9 @@ import { Card, CardGrid, Aside, Badge } from '@astrojs/starlight/components';
 > "Why do I need your thing? Claude Code already has `PreToolUse` hooks — I'll
 > just write my own."
 
-Fair question, and the honest answer starts with a concession: **for the
-simplest checks, a hook really is all you need.** Blocking one command by
-pattern is a few lines of shell — if that's your whole threat model, roll your
-own.
+Fair question — and for the simplest checks, a hook really *is* all you need:
+blocking one command by pattern is a few lines of shell. If that's your whole
+threat model, roll your own.
 
 But most of what sasy-guard does is *not* single-command pattern-matching. A
 `PreToolUse` hook fires **once per tool call, statelessly, seeing only that one
@@ -48,7 +47,7 @@ sasy-guard is one **locked policy engine** that does all four, with every rule
 written as auditable Soufflé Datalog — the *same* policy the SASY SDK enforces —
 instead of a pile of per-developer scripts. Below, each guard group side by side.
 
-<Aside type="note" title="Honest scope (so we're not overselling)">
+<Aside type="note" title="Turn-based scoping">
 The dataflow slice is **turn-scoped**: it resets each turn for precision, so one
 secret read isn't held against every future command forever. Splitting an attack
 across many separate turns is a known gap — and a tunable window over a
