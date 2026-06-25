@@ -30,9 +30,9 @@ them).
    ```
 
    `sasy-guard install` copies the binaries into `~/.sasy/bin` and writes
-   `~/.sasy/config.json`. (Requires [uv](https://docs.astral.sh/uv/).) Already
-   installed? `uv tool install` won't replace an existing version — upgrade with
-   `uv tool upgrade sasy-guard && sasy-guard install`.
+   `~/.sasy/config.json`. (Requires [uv](https://docs.astral.sh/uv/).) Use `uv
+   tool install` for the first install; to upgrade later, see **Upgrading**
+   below.
 
 2. **Add the plugin** (the hooks), the standard Claude Code way:
 
@@ -51,6 +51,20 @@ them).
    below for the exact prompts to try.
 
 </Steps>
+
+<Aside type="caution" title="Upgrading">
+`uv tool upgrade` updates the package but **not** the binaries under `~/.sasy`,
+so an upgrade needs the `install` step too. Run both:
+
+```bash
+uv tool upgrade sasy-guard
+sasy-guard install
+```
+
+First time it's `uv tool install`; after that, `uv tool upgrade`. Either way,
+**always run `sasy-guard install` afterward**, or you keep running the old
+binaries.
+</Aside>
 
 <Aside type="tip" title="Prefer not to use the marketplace?">
 `sasy-guard enable [project]` writes the four hooks straight into
