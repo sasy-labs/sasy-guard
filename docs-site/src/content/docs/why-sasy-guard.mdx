@@ -124,9 +124,12 @@ supposed to guard.
     A file can't reliably protect itself.
   </Card>
   <Card title="🛡️ sasy-guard">
-    Enforcement runs in a separate **locked engine** plus a native binary under
-    `~/.sasy`. Writing agent/editor config (hooks, MCP servers) is a first-class
-    **deny**, and removing the project setting doesn't remove the guard.
+    sasy-guard's hook entry sits in `.claude/settings.json` too — but editing
+    that file is itself a **deny** (`config_persistence`), so the agent can't
+    strip the hook out. The decision lives in a separate **locked engine** under
+    `~/.sasy` with the policy **pinned per session**, so a config edit can't
+    soften it mid-run, and a killed engine denies every call instead of waving
+    it through.
   </Card>
 </CardGrid>
 
