@@ -108,11 +108,12 @@ differently.
   </Card>
 </CardGrid>
 
-## The guard the agent can't switch off
+## The obvious switch-off is denied
 
-The two rules that protect enforcement *itself* are the ones a hook
-structurally cannot deliver — because the hook is co-located with the thing it's
-supposed to guard.
+The first thing a prompt-injected agent reaches for is the off switch. The two
+rules below deny the obvious ways to disable enforcement — edits a hand-rolled
+hook structurally cannot block, because the hook is co-located with the thing
+it's supposed to guard.
 
 ### `config_persistence` <Badge text="deny" variant="danger" />
 
@@ -142,11 +143,22 @@ supposed to guard.
     — and your hook runs entirely at the agent's mercy.
   </Card>
   <Card title="🛡️ sasy-guard">
-    The policy is baked into a locked engine the session can't reconfigure or
-    disable, so the endpoint hijack **and** the config-tampering that would defeat
-    it are both blocked.
+    The policy is baked into a locked engine and pinned per session, so the
+    endpoint hijack **and** the config edits that would neuter a hook are both
+    denied.
   </Card>
 </CardGrid>
+
+<Aside type="note" title="What this covers — and what it doesn't">
+These rules deny the ways an agent can switch the guard off from inside its own
+session: editing `.claude/settings.json`, hijacking the endpoint, or softening
+the policy mid-run. They assume the agent can't abuse same-user OS privilege to
+tear down the **engine process itself** — kill it and bind an allow-all server in
+its place. Closing that fully is a deployment step: run the engine as a separate
+OS user, so the agent's user has no power over it. Until then, sasy-guard stops
+harmful actions and the obvious self-disable; tamper-resistance against a
+privileged teardown is hardening, not the default.
+</Aside>
 
 ## Dataflow — provenance, not "it happened earlier"
 
