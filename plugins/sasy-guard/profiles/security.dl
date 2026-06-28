@@ -427,9 +427,20 @@ DenialReason(idx, "ask", reason,
 // A source the user already rejected → hard block (deny, no re-ask). The
 // !DetaintApproved guard makes an explicit approval authoritative: a later deny
 // (e.g. a mis-scoped one) can't silently revoke a source the user vouched for.
+//
+// Scoped to CurrentDepends(s) (data-dependency reachability), NOT session-wide
+// and NOT InContext(s): only actions that transitively depend on the denied
+// source are blocked. InContext = Current ∪ CurrentDepends would over-block,
+// because the daemon's frontier (Current) is a union across threads — a
+// concurrent subagent that never read the tainted data would inherit it.
+// CurrentDepends follows the dependency (parent) chain, so it keeps blocking
+// every action on the branch that descends from the source — including those
+// after the denied action — while a *reverted* branch correctly drops it. The
+// daemon keeps that chain intact across records it would otherwise skip (system
+// messages, snapshots), so the source isn't lost as the conversation advances.
 // @deny_message: Acting on content from a hidden-text source you previously rejected
-// @suggestion: This taint source was denied; remove it from context to proceed
-Unauthorized(idx) :- Actions(idx, _), InContext(s), HiddenUnicodeSource(s),
+// @suggestion: This taint source was denied; revert the session to before the message that introduced it
+Unauthorized(idx) :- Actions(idx, _), CurrentDepends(s), HiddenUnicodeSource(s),
     DetaintDenied(s), !DetaintApproved(s).
 
 /* ── 9. Public push / issue while tainted (Tier-1, @ask) ───────────── */

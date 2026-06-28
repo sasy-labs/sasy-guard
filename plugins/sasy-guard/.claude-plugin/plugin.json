@@ -1,9 +1,8 @@
 {
   "name": "sasy-guard",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "description": "SASY policy enforcement for Claude Code: PreToolUse checks against a Datalog policy engine (data-loss guards, secret-scan gates, taint policies)",
   "author": { "name": "SASY Labs" },
   "repository": "https://github.com/sasy-labs/sasy",
-  "keywords": ["security", "policy", "enforcement", "datalog", "hooks"],
-  "hooks": "./hooks/hooks.json"
+  "keywords": ["security", "policy", "enforcement", "datalog", "hooks"]
 }

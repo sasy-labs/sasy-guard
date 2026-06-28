@@ -28,7 +28,11 @@ find_watch_bin() {
 ensure_daemon() {
   curl -fsS -m 1 "${BASE}/healthz" >/dev/null 2>&1 && return 0
   BIN=$(find_watch_bin) || return 1
-  $BIN ensure >/dev/null 2>&1
+  # Bound the respawn wait so the PreToolUse script (curl 10s + ensure + curl
+  # 10s) stays under Claude Code's 30s hook timeout — a killed hook never runs
+  # its `exit 2` deny, so an unbounded ensure on an unstartable daemon would
+  # fail OPEN. 6s here ⇒ worst case ~26s ⇒ always reaches the deny in time.
+  $BIN ensure --wait-ms 6000 >/dev/null 2>&1
 }
 
 # Read config.transport (script|native|http) from ~/.sasy/config.json.
