@@ -44,8 +44,9 @@ turns into a project nobody wants to own. Here it is, guard by guard.
 </CardGrid>
 
 sasy-guard is one **locked policy engine** that does all four, with every rule
-written as auditable Soufflé Datalog — the *same* policy the SASY SDK enforces —
-instead of a pile of per-developer scripts. Below, each guard group side by side.
+compiled into the engine from Soufflé Datalog, the *same* policy the SASY SDK
+enforces, instead of a pile of per-developer scripts. Below, each guard group
+side by side.
 
 <Aside type="note" title="Turn-based scoping">
 The dataflow slice is **turn-scoped**: it resets each turn for precision, so one
@@ -297,8 +298,8 @@ verdicts, repo visibility), or state you have to *accumulate* across the session
 
 A hook is a *place to put a check.* sasy-guard is the **engine behind it**:
 dataflow provenance over a reconstructed conversation graph, live out-of-band
-facts, session-wide state, and a locked policy the agent can't edit — all as one
-auditable Datalog policy shared with the SASY SDK, instead of N drifting shell
+facts, session-wide state, and a locked policy the agent can't edit, all as one
+compiled Datalog policy shared with the SASY SDK, instead of N drifting shell
 scripts that each developer maintains and each agent can disable.
 
 Write the hook for `rm -rf`. Use sasy-guard for everything after it.
