@@ -11,6 +11,10 @@ ask / deny** — so a prompt-injected agent that tries to delete your repo,
 exfiltrate secrets, run `curl … | sh`, or push to a public repo while tainted is
 stopped, with a `[SASY] …` reason the agent is told to relay.
 
+The policy ships with the plugin as readable Soufflé Datalog in
+`plugins/sasy-guard/profiles/security.dl`, and that file is the exact policy the
+engine enforces, so a reader sees precisely what runs.
+
 The **runtime** installs from PyPI and the **hooks** install from the plugin
 marketplace — two separate steps.
 

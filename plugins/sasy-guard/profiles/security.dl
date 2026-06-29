@@ -1,0 +1,615 @@
+/*
+    Security profile — the unified "turn it all on" default.
+
+    One policy, thirteen independently-toggleable rule groups (the old separate
+    rm-rf-block / taint-untrusted-fetch / supply-chain profiles are now groups
+    here). Every group is ON by default; a deployment dials coverage via
+    PolicyMetadata flags WITHOUT recompiling (the same baked evaluator serves
+    every configuration — config varies, logic is fixed):
+      - PolicyMetadata("rule_off", "<group>", "")  — drop a group (subtractive).
+      - PolicyMetadata("rule_on",  "<group>", "")  — opt-in mode: ONLY the
+        on-listed groups (e.g. rule_on data_loss == the old rm-rf-block).
+
+    Groups: data_loss, secret_scan, exfil, toxic_flow, reverse_shell,
+            config_persistence, agent_redirect, curl_sh, hidden_unicode,
+            public_push, review_gate, supply_chain, dep_scan.
+
+    All gates are substring/graph heuristics: an agent running arbitrary code
+    can obfuscate around them. The goal is to patch common failure modes, not
+    to stop a determined adversary.
+*/
+
+#include "common_policy.dl"
+
+// Default: authorize everything not explicitly denied below.
+IsAuthorized(idx) :- Actions(idx, _).
+
+/* ── Rule-group enable flags (default: ALL on) ──────────────────────────
+   Every numbered block below is gated on RuleEnabled("<group>"). With NO
+   metadata pinned, all groups are on — this profile is the "turn it all on"
+   default. Two override modes via PolicyMetadata (no recompile — the same
+   baked evaluator serves every configuration):
+     - subtractive:  PolicyMetadata("rule_off", "<group>", "")  removes a group
+                     from the default-all set.
+     - explicit:     PolicyMetadata("rule_on",  "<group>", "")  switches to
+                     opt-in — ONLY the on-listed groups run (minimal/demo
+                     configs, e.g. the old rm-rf-block = rule_on data_loss).
+   Groups: data_loss secret_scan exfil toxic_flow reverse_shell
+           config_persistence agent_redirect curl_sh hidden_unicode
+           public_push review_gate supply_chain dep_scan. */
+.decl KnownRule(group: symbol)
+KnownRule("data_loss").     KnownRule("secret_scan").        KnownRule("exfil").
+KnownRule("toxic_flow").    KnownRule("reverse_shell").      KnownRule("config_persistence").
+KnownRule("agent_redirect").KnownRule("curl_sh").            KnownRule("hidden_unicode").
+KnownRule("public_push").   KnownRule("review_gate").        KnownRule("supply_chain").
+KnownRule("dep_scan").
+
+.decl RuleOff(group: symbol)
+RuleOff(g) :- PolicyMetadata("rule_off", g, _).
+.decl RuleOn(group: symbol)
+RuleOn(g) :- PolicyMetadata("rule_on", g, _).
+.decl ExplicitMode()
+ExplicitMode() :- RuleOn(_).
+
+.decl RuleEnabled(group: symbol)
+RuleEnabled(g) :- KnownRule(g), !ExplicitMode(), !RuleOff(g).  // default-all minus rule_off
+RuleEnabled(g) :- RuleOn(g).                                   // explicit opt-in
+
+// Transitive reachability over the dependency graph (scan-after-edit).
+.decl Reaches(src: symbol, dst: symbol)
+Reaches(src, dst) :- Edge(src, dst).
+Reaches(src, dst) :- Reaches(src, mid), Edge(mid, dst).
+
+.decl InContext(id: symbol)
+InContext(id) :- Current(id).
+InContext(id) :- CurrentDepends(id).
+
+/* ── 1. Data loss ──────────────────────────────────────────────────── */
+
+.decl ShellCommand(idx: unsigned, cmd: symbol)
+ShellCommand(idx, cmd) :-
+    Actions(idx, a),
+    a = $CallTool("Bash", args),
+    cmd = @json_get_str(args, "command").
+
+// Normalized command (lowercased, whitespace-collapsed) — the Tier-0 hard-deny
+// gates below match against THIS so `rm  -RF`, `NC -E`, a `\`-wrapped payload,
+// and HTTP_PROXY/http_proxy all hit one lowercased needle. (Host extraction and
+// case-sensitive path checks still use the raw `cmd`.)
+.decl ShellNorm(idx: unsigned, ncmd: symbol)
+ShellNorm(idx, ncmd) :- ShellCommand(idx, cmd), ncmd = @normalize_cmd(cmd).
+
+.decl RecursiveDelete(idx: unsigned)
+// `rm` with recursive AND force in ANY flag ordering — the functor tokenizes
+// the command and reads rm's flags (-rf / -fr / -vrf / -r --force / --recursive
+// --force / mixes), ignoring positional paths. Substring needles missed natural
+// orderings like `rm -r --force` and `rm -vrf`; this subsumes them.
+RecursiveDelete(idx) :- ShellCommand(idx, cmd), @dangerous_rm(cmd) = 1.
+// Equivalent recursive deletes that aren't `rm` at all.
+RecursiveDelete(idx) :- ShellNorm(idx, n), @str_contains(n, "find ") = 1, @str_contains(n, "-delete") = 1.
+RecursiveDelete(idx) :- ShellNorm(idx, n), @str_contains(n, "find ") = 1, @str_contains(n, "-exec rm") = 1.
+
+.decl ForcePush(idx: unsigned)
+ForcePush(idx) :-
+    ShellCommand(idx, cmd),
+    @str_contains(cmd, "push") = 1,
+    @str_contains(cmd, "--force") = 1,
+    @str_contains(cmd, "--force-with-lease") = 0.
+ForcePush(idx) :- ShellCommand(idx, cmd), @str_contains(cmd, "push -f") = 1.
+
+// @deny_message: Destructive recursive delete (rm -rf) is blocked by policy
+// @suggestion: Delete specific files without rm -rf, or ask the user to run it themselves
+Unauthorized(idx) :- RuleEnabled("data_loss"), RecursiveDelete(idx).
+// @deny_message: Force push rewrites remote history and is blocked by policy
+// @suggestion: Push without --force (or use --force-with-lease), or ask the user to force-push
+Unauthorized(idx) :- RuleEnabled("data_loss"), ForcePush(idx).
+
+/* ── 2. Secret-scan gate on push ───────────────────────────────────── */
+
+// Edits in the current slice (Claude Code edit tools).
+.decl RecentEdit(id: symbol)
+RecentEdit(id) :- CurrentDepends(id), ToolResult(id, "Edit", _).
+RecentEdit(id) :- CurrentDepends(id), ToolResult(id, "Write", _).
+RecentEdit(id) :- CurrentDepends(id), ToolResult(id, "MultiEdit", _).
+
+// A gitleaks run = a Bash tool result that actually INVOKED gitleaks as a
+// command. cmd_invokes (not a substring) so `echo 'gitleaks: no leaks found'`
+// can't spoof a clean scan and clear the push gate.
+.decl GitleaksRun(id: symbol)
+GitleaksRun(id) :-
+    InContext(id),
+    ToolResult(id, "Bash", args),
+    cmd = @json_get_str(args, "command"),
+    @cmd_invokes(cmd, "gitleaks") = 1.
+
+// Clean = gitleaks reported no leaks (success output).
+.decl GitleaksClean(id: symbol)
+GitleaksClean(id) :- GitleaksRun(id), SentMessage(id, msg), @str_contains(msg.contents, "no leaks found") = 1.
+GitleaksClean(id) :- GitleaksRun(id), SentMessage(id, msg), @str_contains(msg.contents, "No leaks found") = 1.
+
+.decl IsPush(idx: unsigned)
+IsPush(idx) :-
+    Actions(idx, a),
+    a = $CallTool("Bash", args),
+    cmd = @json_get_str(args, "command"),
+    @str_contains(cmd, "git") = 1,
+    @str_contains(cmd, "push") = 1,
+    @str_contains(cmd, "stash") = 0.
+
+// An edit is covered if a clean scan ran after it (scan reachable from edit).
+.decl CoveredByGitleaks(edit_id: symbol)
+CoveredByGitleaks(e) :- RecentEdit(e), GitleaksClean(s), Reaches(e, s).
+
+.decl UncoveredEdit(edit_id: symbol)
+UncoveredEdit(e) :- RecentEdit(e), !CoveredByGitleaks(e).
+
+// @deny_message: Push blocked — run a gitleaks scan first (no secret scan is visible in this session)
+// @suggestion: Run `gitleaks detect` (or `gitleaks dir`) and ensure it reports no leaks before pushing
+Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), !GitleaksClean(_).
+
+// @deny_message: Push blocked — edited files have not been covered by a clean gitleaks scan
+// @suggestion: Re-run `gitleaks detect` after your latest edits, then push
+Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), UncoveredEdit(_).
+
+/* ── 3. Prompt-injection exfiltration ──────────────────────────────── */
+
+.decl UntrustedInContext()
+UntrustedInContext() :- InContext(id), ToolResult(id, "WebFetch", _).
+UntrustedInContext() :- InContext(id), ToolResult(id, "WebSearch", _).
+UntrustedInContext() :- InContext(id), ToolResult(id, "RemoteAgent", _).
+
+// Matched on the NORMALIZED command (ShellNorm: lowercased, whitespace
+// collapsed, line-continuations folded) — otherwise `CURL`, `Curl`, or a
+// `cur\<newline>l` line-continuation defeats the egress gate (the highest-value
+// defense), even though the same normalized form already exists for the
+// reverse-shell / curl|sh rules.
+.decl IsExfil(idx: unsigned)
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "curl") = 1.
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "wget") = 1.
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "nc ") = 1.
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "ncat") = 1.
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "netcat") = 1.
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "scp ") = 1.
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "ssh ") = 1.
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "rsync ") = 1.
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "telnet ") = 1.
+// DNS exfil — encode the secret as a subdomain of an attacker NS.
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "dig ") = 1.
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "nslookup ") = 1.
+// Interpreter HTTP clients (the WebFetch-free exfil path).
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "urlopen(") = 1.
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "requests.") = 1.
+IsExfil(idx) :- ShellNorm(idx, n), @str_contains(n, "http.client") = 1.
+
+// @deny_message: Outbound network command blocked — context depends on untrusted web-fetched content (possible prompt-injection exfiltration)
+// @suggestion: Do not send data to the network while acting on fetched web content; if intentional, ask the user to run it
+Unauthorized(idx) :- RuleEnabled("exfil"), IsExfil(idx), UntrustedInContext().
+
+/* ── 3b. Secret-bearing reads → egress (toxic-flow, hard deny) ─────── */
+// Complements the untrusted-source rule above: block an outbound command when
+// secret-bearing files (.env/.ssh) are in the current slice. Block the
+// combination at the *sink* — never the read itself (utility). CVE-2025-55284.
+
+// Secret-bearing paths and the read-ish verbs that pull them into context.
+// Used for both the Read tool (file_path) and Bash (normalized command). The
+// deny still requires an egress sink (IsExfil/WebEgress), so a broad match here
+// stays conservative — it never blocks the read itself.
+.decl SensitivePath(p: symbol)
+SensitivePath(".env").  SensitivePath(".ssh/").  SensitivePath("id_rsa").
+SensitivePath(".aws/credentials").  SensitivePath(".npmrc").  SensitivePath(".netrc").
+.decl SensitiveReadVerb(v: symbol)
+SensitiveReadVerb("cat ").   SensitiveReadVerb("head ").  SensitiveReadVerb("tail ").
+SensitiveReadVerb("less ").  SensitiveReadVerb("more ").  SensitiveReadVerb("grep ").
+SensitiveReadVerb("source "). SensitiveReadVerb("xxd "). SensitiveReadVerb("od ").
+SensitiveReadVerb("strings ").
+
+.decl SensitiveInContext()
+SensitiveInContext() :- InContext(id), ToolResult(id, "Read", args),
+    p = @json_get_str(args, "file_path"), SensitivePath(s), @str_contains(p, s) = 1.
+// Bash that reads a secret path into context. Matched on the normalized command
+// (catches `CAT`, extra whitespace) and any read verb, not just `cat … .env`.
+SensitiveInContext() :- InContext(id), ToolResult(id, "Bash", args),
+    cmd = @json_get_str(args, "command"), n = @normalize_cmd(cmd),
+    SensitiveReadVerb(v), @str_contains(n, v) = 1,
+    SensitivePath(s), @str_contains(n, s) = 1.
+
+// @deny_message: Outbound command blocked — secret-bearing files (.env/.ssh) are in context (possible exfiltration)
+// @suggestion: Don't send secrets to the network; if intentional, run the command yourself
+Unauthorized(idx) :- RuleEnabled("toxic_flow"), IsExfil(idx), SensitiveInContext().
+
+// WebFetch is the tool-native egress channel (its URL/prompt can carry data
+// out) — IsExfil only sees Bash. A WebFetch with a secret in context is the
+// read-secret→exfiltrate pattern (CVE-2025-55284 class). Scoped to
+// SensitiveInContext (NOT UntrustedInContext) to avoid blocking ordinary
+// chained browsing, where a prior WebFetch result is untrusted-in-context.
+.decl WebEgress(idx: unsigned)
+WebEgress(idx) :- Actions(idx, a), a = $CallTool("WebFetch", _).
+// @deny_message: WebFetch blocked — secret-bearing files (.env/.ssh) are in context (possible exfiltration)
+// @suggestion: Don't fetch URLs while secrets are in context; if intentional, run it yourself
+Unauthorized(idx) :- RuleEnabled("toxic_flow"), WebEgress(idx), SensitiveInContext().
+
+/* ── 4. Reverse-shell / remote-exec block (Tier-0, hard deny) ───────── */
+// Tripwire, not a boundary — base64/$IFS obfuscation evades it (pairs with
+// Claude Code's no-egress sandbox). High-signal literals only (SigmaHQ-style),
+// collected into one relation so the denial carries a single message.
+
+// Matched against the NORMALIZED command (case/spacing-insensitive), so
+// `NC -E`, `/DEV/TCP`, `Socat ... EXEC:` are caught too. Needles lowercased.
+.decl ReverseShell(idx: unsigned)
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "/dev/tcp") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "/dev/udp") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "nc -e") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "nc -c") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "ncat -e") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "ncat --exec") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "mkfifo") = 1, @str_contains(n, "nc ") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "mkfifo") = 1, @str_contains(n, "ncat") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "socat") = 1, @str_contains(n, "exec:") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "socat") = 1, @str_contains(n, "system:") = 1.
+// Python: the textbook reverse shell is os/pty-based, not subprocess — match the
+// high-signal primitives directly (pty.spawn, os.dup2) plus the socket+subprocess form.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "import socket") = 1, @str_contains(n, "subprocess") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "pty.spawn") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "os.dup2") = 1, @str_contains(n, "socket") = 1.
+// perl/ruby/php socket-exec one-liners, and the `-e <shell>` exec form used by
+// busybox/traditional nc and others the `nc -e` literal misses.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "fsockopen(") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "-e /bin/sh") = 1.
+ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "-e /bin/bash") = 1.
+
+// @deny_message: Reverse-shell / remote-exec pattern blocked by policy
+// @suggestion: Remove the shell-spawning network command; if legitimate, run it yourself outside the agent
+Unauthorized(idx) :- RuleEnabled("reverse_shell"), ReverseShell(idx).
+
+/* ── 5. Config / hook persistence (Tier-0, hard deny) ──────────────── */
+// Block the agent writing agent/editor config — a real in-the-wild persistence
+// vector (SafeDep malicious hooks, wunderwuzzi). Covers the agent's edit tools
+// (clean file_path) and Bash redirections to a config path.
+
+.decl ConfigPathFrag(frag: symbol)
+ConfigPathFrag(".claude/settings").
+ConfigPathFrag(".claude/hooks").
+ConfigPathFrag(".claude/commands").
+ConfigPathFrag(".claude/agents").
+ConfigPathFrag(".claude.json").
+ConfigPathFrag(".mcp.json").
+ConfigPathFrag(".cursor/rules").
+ConfigPathFrag(".github/copilot-instructions").
+// Generic auto-exec persistence vectors (not agent-specific). Scope .vscode to
+// the task/debug-runner files (auto-exec), NOT all of .vscode/ — editing
+// .vscode/settings.json or extensions.json is routine and shouldn't hard-deny.
+ConfigPathFrag(".git/hooks/").
+ConfigPathFrag(".vscode/tasks.json").
+ConfigPathFrag(".vscode/launch.json").
+ConfigPathFrag(".envrc").
+
+.decl EditTarget(idx: unsigned, path: symbol)
+EditTarget(idx, p) :- Actions(idx, a), a = $CallTool("Edit", args), p = @json_get_str(args, "file_path").
+EditTarget(idx, p) :- Actions(idx, a), a = $CallTool("Write", args), p = @json_get_str(args, "file_path").
+EditTarget(idx, p) :- Actions(idx, a), a = $CallTool("MultiEdit", args), p = @json_get_str(args, "file_path").
+EditTarget(idx, p) :- Actions(idx, a), a = $CallTool("NotebookEdit", args), p = @json_get_str(args, "notebook_path").
+
+.decl TouchesConfig(idx: unsigned)
+TouchesConfig(idx) :- EditTarget(idx, p), ConfigPathFrag(f), @str_contains(p, f) = 1.
+// Bash writes: a config path together with a write operator (redirect/tee/sed -i/cp/mv/ln).
+TouchesConfig(idx) :- ShellCommand(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, ">") = 1.
+TouchesConfig(idx) :- ShellCommand(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "tee ") = 1.
+TouchesConfig(idx) :- ShellCommand(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "sed -i") = 1.
+TouchesConfig(idx) :- ShellCommand(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "cp ") = 1.
+TouchesConfig(idx) :- ShellCommand(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "mv ") = 1.
+TouchesConfig(idx) :- ShellCommand(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "ln ") = 1.
+
+// @deny_message: Writing agent/editor config (hooks, MCP servers, rules) is blocked — a known persistence vector
+// @suggestion: Edit project source instead; change agent/editor settings yourself outside the agent session
+Unauthorized(idx) :- RuleEnabled("config_persistence"), TouchesConfig(idx).
+
+/* ── 6. Agent-redirect environment variables (Tier-0, hard deny) ───── */
+// Setting the API base URL / auth token redirects the agent to an attacker
+// endpoint (CVE-table #13). Near-zero benign use inside a session.
+
+// Matched against the NORMALIZED (lowercased) command, so one needle catches
+// both HTTP_PROXY= and http_proxy=, ANTHROPIC_API_KEY= and any casing.
+.decl AgentRedirect(idx: unsigned)
+// Any *_base_url= override points the model client at an attacker endpoint
+// (covers anthropic_/openai_/bedrock/vertex and future providers in one catch-all).
+AgentRedirect(idx) :- ShellNorm(idx, n), @str_contains(n, "_base_url=") = 1.
+AgentRedirect(idx) :- ShellNorm(idx, n), @str_contains(n, "anthropic_auth_token=") = 1.
+AgentRedirect(idx) :- ShellNorm(idx, n), @str_contains(n, "anthropic_api_key=") = 1.
+// Proxy overrides route ALL agent egress through an attacker MITM — same effect
+// as a base-URL redirect.
+AgentRedirect(idx) :- ShellNorm(idx, n), @str_contains(n, "http_proxy=") = 1.
+AgentRedirect(idx) :- ShellNorm(idx, n), @str_contains(n, "https_proxy=") = 1.
+AgentRedirect(idx) :- ShellNorm(idx, n), @str_contains(n, "all_proxy=") = 1.
+// CA-bundle / TLS-trust overrides enable a silent TLS MITM of agent traffic.
+AgentRedirect(idx) :- ShellNorm(idx, n), @str_contains(n, "node_extra_ca_certs=") = 1.
+AgentRedirect(idx) :- ShellNorm(idx, n), @str_contains(n, "requests_ca_bundle=") = 1.
+AgentRedirect(idx) :- ShellNorm(idx, n), @str_contains(n, "curl_ca_bundle=") = 1.
+AgentRedirect(idx) :- ShellNorm(idx, n), @str_contains(n, "ssl_cert_file=") = 1.
+AgentRedirect(idx) :- ShellNorm(idx, n), @str_contains(n, "node_tls_reject_unauthorized=") = 1.
+
+// @deny_message: Overriding the agent's API endpoint / token via the environment is blocked
+// @suggestion: Do not set ANTHROPIC_BASE_URL / AUTH_TOKEN / OPENAI_BASE_URL from within the agent
+Unauthorized(idx) :- RuleEnabled("agent_redirect"), AgentRedirect(idx).
+
+/* ── 7. curl|sh pipe-to-interpreter → confirm (Tier-1, @ask) ────────── */
+// FP-prone (rustup/homebrew/nvm installers), so soft: @ask unless the URL host
+// is allowlisted via PolicyMetadata("trusted_domain", …). Empty allowlist ⇒
+// every curl|sh prompts for confirmation.
+
+.decl TrustedDomain(d: symbol)
+TrustedDomain(d) :- PolicyMetadata("trusted_domain", d, _).
+
+// Matched against the NORMALIZED command (`CURL … | SH` caught too). The fetch
+// verb and interpreter must co-occur; command-substitution install forms have
+// no literal pipe.
+.decl PipeToInterp(idx: unsigned)
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "curl") = 1, @str_contains(n, "| sh") = 1.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "curl") = 1, @str_contains(n, "| bash") = 1.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "curl") = 1, @str_contains(n, "|sh") = 1.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "curl") = 1, @str_contains(n, "|bash") = 1.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "curl") = 1, @str_contains(n, "| python") = 1.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "curl") = 1, @str_contains(n, "|python") = 1.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "wget") = 1, @str_contains(n, "| sh") = 1.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "wget") = 1, @str_contains(n, "| bash") = 1.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "wget") = 1, @str_contains(n, "|sh") = 1.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "wget") = 1, @str_contains(n, "|bash") = 1.
+// Command-substitution install forms (Homebrew/oh-my-zsh/rustup style): no pipe.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "$(curl") = 1.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "$(wget") = 1.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "<(curl") = 1.
+PipeToInterp(idx) :- ShellNorm(idx, n), @str_contains(n, "<(wget") = 1.
+
+// Match the URL's *registrable domain* (eTLD+1) against the allowlist — not a
+// substring of the command. Blocks subdomain confusion (rustup.rs.evil.com →
+// evil.com) and path confusion (evil.com/rustup.rs → evil.com). TrustedDomain
+// entries are therefore registrable domains (e.g. "rustup.rs", "sh.rs").
+// Host extraction uses the RAW cmd (registrable_domain lowercases internally).
+// Trust requires a SINGLE fetch URL: `@registrable_domain` only reads the first
+// host, so `curl TRUSTED && curl evil | sh` (two `://`) must not inherit trust.
+.decl FromTrustedHost(idx: unsigned)
+FromTrustedHost(idx) :-
+    PipeToInterp(idx), ShellCommand(idx, cmd),
+    @count_urls(cmd) < 2,
+    rd = @registrable_domain(cmd), rd != "", TrustedDomain(rd).
+
+// @ask
+// @deny_message: Piping a downloaded script straight into a shell (curl|sh) from an unrecognized source
+// @suggestion: Download and read the script first, or approve if this is a trusted installer
+Unauthorized(idx) :- RuleEnabled("curl_sh"), PipeToInterp(idx), !FromTrustedHost(idx).
+
+/* ── 8. Hidden Unicode tags (Tier-0, taint source → @ask) ──────────── */
+// Invisible Tags-block text (U+E0000–U+E007F) is a prompt-injection carrier. It
+// is a property of a *dependency* (an upstream tool result the agent read), not
+// of the current action — so taint the SOURCE and confirm any action that
+// transitively depends on it, surfacing the decoded hidden text. The user's
+// decision is remembered (projected from policy metadata, daemon-recorded):
+// approve clears the source (detaint), deny hard-blocks it.
+
+// Any source carrying invisible / display-deceptive Unicode — not just the
+// Tags block, but also bidi overrides (Trojan Source), zero-width / invisible
+// format chars (which also evade the substring command gates), and
+// variation-selector byte smuggling. Tag-block text is additionally decodable
+// and surfaced verbatim below.
+// Gated on the source so the whole group (label, @ask, deny) cascades off AND
+// the per-message @has_deceptive_unicode scan is skipped when disabled. NOTE:
+// the @ask DenialReason and the DetaintDenied deny below inherit this gate
+// transitively (they join on HiddenUnicodeSource) — they carry no explicit
+// RuleEnabled. Any future producer of HiddenUnicodeSource MUST also gate on
+// RuleEnabled("hidden_unicode") or the group becomes un-disablable.
+.decl HiddenUnicodeSource(id: symbol)
+HiddenUnicodeSource(id) :- RuleEnabled("hidden_unicode"), SentMessage(id, m), @has_deceptive_unicode(m.contents) = 1.
+
+// Remembered detaint decisions (node-bound), projected from policy metadata.
+.decl DetaintApproved(node: symbol)
+DetaintApproved(n) :- PolicyMetadata("detaint_approved", n, _).
+.decl DetaintDenied(node: symbol)
+DetaintDenied(n) :- PolicyMetadata("detaint_denied", n, _).
+
+// Undecided source the current action depends on → @ask, showing the decoded
+// hidden text. Written as DenialReason directly so the message can carry the
+// functor-decoded text ("ask" kind does not derive Unauthorized, so the action
+// stays allow-but-confirm).
+// Label the source by its provenance — the tool that produced it, when known.
+.decl HiddenSourceHasTool(s: symbol)
+HiddenSourceHasTool(s) :- HiddenUnicodeSource(s), ToolResult(s, _, _).
+.decl HiddenSourceLabel(s: symbol, label: symbol)
+HiddenSourceLabel(s, label) :- HiddenUnicodeSource(s), ToolResult(s, fn, _), label = cat(cat("a ", fn), " result").
+HiddenSourceLabel(s, "upstream content") :- HiddenUnicodeSource(s), !HiddenSourceHasTool(s).
+
+DenialReason(idx, "ask", reason,
+             "Approve ONLY if this hidden text is benign (remembered as a detaint for this source). If it looks malicious, do NOT approve — revert the session to before the message that introduced it, since the agent has already read it.") :-
+    Actions(idx, _), InContext(s), HiddenUnicodeSource(s),
+    !DetaintApproved(s), !DetaintDenied(s),
+    HiddenSourceLabel(s, label), SentMessage(s, m), decoded = @decode_unicode_tags(m.contents),
+    reason = cat("Invisible or display-deceptive Unicode in ",
+                 cat(label, cat(" — the agent reads it as text you may not see. Decoded hidden text (if any): ", decoded))).
+
+// A source the user already rejected → hard block (deny, no re-ask). The
+// !DetaintApproved guard makes an explicit approval authoritative: a later deny
+// (e.g. a mis-scoped one) can't silently revoke a source the user vouched for.
+//
+// Scoped to CurrentDepends(s) (data-dependency reachability), NOT session-wide
+// and NOT InContext(s): only actions that transitively depend on the denied
+// source are blocked. InContext = Current ∪ CurrentDepends would over-block,
+// because the daemon's frontier (Current) is a union across threads — a
+// concurrent subagent that never read the tainted data would inherit it.
+// CurrentDepends follows the dependency (parent) chain, so it keeps blocking
+// every action on the branch that descends from the source — including those
+// after the denied action — while a *reverted* branch correctly drops it. The
+// daemon keeps that chain intact across records it would otherwise skip (system
+// messages, snapshots), so the source isn't lost as the conversation advances.
+// @deny_message: Acting on content from a hidden-text source you previously rejected
+// @suggestion: This taint source was denied; revert the session to before the message that introduced it
+Unauthorized(idx) :- Actions(idx, _), CurrentDepends(s), HiddenUnicodeSource(s),
+    DetaintDenied(s), !DetaintApproved(s).
+
+/* ── 9. Public push / issue while tainted (Tier-1, @ask) ───────────── */
+// Pushing/posting to a PUBLIC repo while untrusted or secret-bearing content is
+// in context is the nx s1ngularity exfil pattern (injected instructions → data
+// to an attacker-readable location). The daemon resolves repo visibility (origin
+// remote + GitHub API) and asserts `repo_public`; gated on a tainted context so
+// ordinary public-repo work is unaffected.
+
+.decl RepoIsPublic()
+RepoIsPublic() :- ActionMetadata(_, "repo_public", "true", _).
+
+.decl TaintedContext()
+TaintedContext() :- UntrustedInContext().
+TaintedContext() :- SensitiveInContext().
+
+.decl IsRepoSink(idx: unsigned)
+IsRepoSink(idx) :- ShellCommand(idx, cmd), @str_contains(cmd, "git") = 1, @str_contains(cmd, "push") = 1, @str_contains(cmd, "stash") = 0.
+IsRepoSink(idx) :- ShellCommand(idx, cmd), @str_contains(cmd, "gh ") = 1, @str_contains(cmd, "issue create") = 1.
+IsRepoSink(idx) :- ShellCommand(idx, cmd), @str_contains(cmd, "gh ") = 1, @str_contains(cmd, "pr create") = 1.
+// Comments/reviews are an exfil channel too — their body posts to the repo.
+IsRepoSink(idx) :- ShellCommand(idx, cmd), @str_contains(cmd, "gh ") = 1, @str_contains(cmd, "issue comment") = 1.
+IsRepoSink(idx) :- ShellCommand(idx, cmd), @str_contains(cmd, "gh ") = 1, @str_contains(cmd, "pr comment") = 1.
+IsRepoSink(idx) :- ShellCommand(idx, cmd), @str_contains(cmd, "gh ") = 1, @str_contains(cmd, "pr review") = 1.
+
+// @ask
+// @deny_message: Pushing/posting to a PUBLIC repo while untrusted or secret-bearing content is in context (possible exfiltration to an attacker-readable location)
+// @suggestion: Push to a private remote, or approve if this is intended and the destination is trusted
+Unauthorized(idx) :- RuleEnabled("public_push"), IsRepoSink(idx), RepoIsPublic(), TaintedContext().
+
+/* ── 10. Security-review gate on push (Tier-1, @ask) ───────────────── */
+// Require a code/security-review artifact in the slice before a push — a
+// reliably-detectable tool_use node (a review subagent or a review skill).
+// Replaces mandatory SAST. Soft (@ask) on purpose: artifact *existence* is
+// deterministic, but review *quality* is LLM-backed, so don't hard-gate on it.
+
+// A review artifact node — a code/security-review subagent or a review skill.
+.decl ReviewArtifact(id: symbol)
+ReviewArtifact(id) :- InContext(id), ToolResult(id, "Task", args),
+    st = @json_get_str(args, "subagent_type"), @str_contains(st, "review") = 1.
+ReviewArtifact(id) :- InContext(id), ToolResult(id, "Task", args),
+    st = @json_get_str(args, "subagent_type"), @str_contains(st, "security") = 1.
+ReviewArtifact(id) :- InContext(id), ToolResult(id, "Skill", args),
+    sk = @json_get_str(args, "command"), @str_contains(sk, "review") = 1.
+
+// An edit is reviewed iff a review ran *after* it (reachable from the edit), so
+// edits made after the last review stay unreviewed — large audit-suggested
+// fixes need a re-review. Mirrors the secret-scan coverage logic (`Reaches`).
+.decl ReviewedEdit(edit: symbol)
+ReviewedEdit(e) :- RecentEdit(e), ReviewArtifact(r), Reaches(e, r).
+
+// Size of an edit (characters written): Edit→new_string, Write→content,
+// MultiEdit→whole-args length as a proxy.
+.decl EditSize(edit: symbol, size: number)
+EditSize(e, n) :- RecentEdit(e), ToolResult(e, "Edit", args),
+    s = @json_get_str(args, "new_string"), n = @str_len(s).
+EditSize(e, n) :- RecentEdit(e), ToolResult(e, "Write", args),
+    s = @json_get_str(args, "content"), n = @str_len(s).
+EditSize(e, n) :- RecentEdit(e), ToolResult(e, "MultiEdit", args), n = @str_len(args).
+
+// (Re-)review threshold in characters — configurable via policy metadata,
+// default 800. A small fix stays proportional; a substantial change re-gates.
+.decl ReviewThresholdConfigured()
+ReviewThresholdConfigured() :- PolicyMetadata("review_edit_threshold", _, _).
+.decl ReviewEditThreshold(n: number)
+ReviewEditThreshold(n) :- PolicyMetadata("review_edit_threshold", v, _), n = to_number(v).
+ReviewEditThreshold(800) :- !ReviewThresholdConfigured().
+
+// A substantial edit not (re-)reviewed → require a review before push.
+.decl LargeUnreviewedEdit()
+LargeUnreviewedEdit() :- EditSize(e, n), ReviewEditThreshold(t), n > t, !ReviewedEdit(e).
+
+// @ask
+// @deny_message: Pushing substantial code edits not reviewed since they were made (large changes — incl. audit-suggested fixes — need a (re-)review)
+// @suggestion: Run a code-review subagent or /review skill on the latest changes, or approve to push without one
+Unauthorized(idx) :- RuleEnabled("review_gate"), IsPush(idx), LargeUnreviewedEdit().
+
+/* ── 11. Supply-chain cooldown (Tier-0 deny + Tier-1 @ask) ──────────────
+   Gates dependency installs on daemon-resolved per-action metadata: the daemon
+   intercepts an npm/pnpm/yarn/pip/uv install, enumerates the transitive closure,
+   queries the registry packument + OSV, and attaches verdicts via
+   ActionMetadata(idx, "pkg_verdict"|"pkg_age"|"security_update", pkg, v). The
+   Soufflé side stays pure — it reads verdicts and decides (see docs
+   "Metadata binding" for why the daemon, not a functor). Config: cooldown window
+   via PolicyMetadata("cooldown_days", "<n>", "") (default 7). */
+.decl CooldownConfigured()
+CooldownConfigured() :- PolicyMetadata("cooldown_days", _, _).
+.decl CooldownDays(n: number)
+CooldownDays(n) :- PolicyMetadata("cooldown_days", v, _), n = to_number(v).
+CooldownDays(7) :- !CooldownConfigured().
+
+.decl PackageVerdict(idx: unsigned, pkg: symbol, advisory: symbol)
+PackageVerdict(idx, pkg, v) :- ActionMetadata(idx, "pkg_verdict", pkg, v).
+.decl PackageAgeDays(idx: unsigned, pkg: symbol, days: number)
+PackageAgeDays(idx, pkg, d) :- ActionMetadata(idx, "pkg_age", pkg, v), d = to_number(v).
+.decl SecurityUpdate(idx: unsigned, pkg: symbol)
+SecurityUpdate(idx, pkg) :- ActionMetadata(idx, "security_update", pkg, _).
+
+/* ── Enrichment unavailable → @ask (honor fail-closed on a missing signal) ──
+   The daemon resolves supply-chain (OSV/registry) and repo-visibility facts out
+   of band. If that resolution FAILS or times out for a sink action (an install,
+   or a push/post to a remote), the hard/soft rules above never see their fact
+   and would silently allow — a fail-open exploitable by inducing a timeout. In
+   fail-closed mode the daemon instead attaches enrich_unavailable(<group>) so
+   the action @asks rather than slipping through unverified. Gated on the group
+   so a disabled group stays silent. */
+.decl EnrichUnavailable(idx: unsigned, grp: symbol)
+EnrichUnavailable(idx, grp) :- ActionMetadata(idx, "enrich_unavailable", grp, _).
+
+DenialReason(idx, "ask",
+  "Could not verify external context for this action — package advisories or repository visibility were unreachable, so a security check was skipped",
+  "Re-run when the network/registry is reachable, or approve to proceed without the check if you trust this action.") :-
+    Actions(idx, _), EnrichUnavailable(idx, grp), RuleEnabled(grp).
+
+// @deny_message: A dependency in this install is flagged malicious by OSV (MAL-) — blocked
+// @suggestion: Remove the flagged package; if you expected a different name, check for a typosquat
+Unauthorized(idx) :- RuleEnabled("supply_chain"), PackageVerdict(idx, _, v), @str_contains(v, "MAL-") = 1.
+
+.decl TooNew(idx: unsigned, pkg: symbol)
+TooNew(idx, pkg) :-
+    PackageAgeDays(idx, pkg, d), CooldownDays(n), d < n, !SecurityUpdate(idx, pkg).
+// @ask
+// @deny_message: A dependency is newer than the cooldown window — malicious releases are typically caught and unpublished within days
+// @suggestion: Approve if you trust this release, pin an older vetted version, or wait out the cooldown window
+Unauthorized(idx) :- RuleEnabled("supply_chain"), TooNew(idx, _).
+
+/* ── 12. OSV scan gate on dependency changes before push (Tier-1, @ask) ──
+   Complements the install-time supply_chain verdicts (which only see a tracked
+   install command's closure + MAL/age): if a dependency manifest/lockfile
+   changed in the slice and no clean `osv-scanner` run covers it, confirm before
+   push. Catches manifest edits made WITHOUT an install command, and known
+   CVEs/transitive vulns. Mirrors the gitleaks secret-scan gate (graph coverage
+   via Reaches), but @ask — osv-scanner may be absent and some transitive vulns
+   are unfixable, so don't hard-block. Runs over the agent's own osv-scanner
+   invocations (Bash), not an MCP tool. */
+
+.decl DepManifestFrag(frag: symbol)
+DepManifestFrag("package.json").     DepManifestFrag("package-lock.json").
+DepManifestFrag("yarn.lock").        DepManifestFrag("pnpm-lock.yaml").
+DepManifestFrag("requirements.txt"). DepManifestFrag("pyproject.toml").
+DepManifestFrag("poetry.lock").      DepManifestFrag("Pipfile").
+DepManifestFrag("Cargo.toml").       DepManifestFrag("Cargo.lock").
+DepManifestFrag("go.mod").           DepManifestFrag("go.sum").
+DepManifestFrag("Gemfile").          DepManifestFrag("Gemfile.lock").
+
+// An edit (in the slice) to a dependency manifest/lockfile.
+.decl DependencyEdit(id: symbol)
+DependencyEdit(e) :- RecentEdit(e), ToolResult(e, "Edit", args),
+    DepManifestFrag(f), p = @json_get_str(args, "file_path"), @str_contains(p, f) = 1.
+DependencyEdit(e) :- RecentEdit(e), ToolResult(e, "Write", args),
+    DepManifestFrag(f), p = @json_get_str(args, "file_path"), @str_contains(p, f) = 1.
+DependencyEdit(e) :- RecentEdit(e), ToolResult(e, "MultiEdit", args),
+    DepManifestFrag(f), p = @json_get_str(args, "file_path"), @str_contains(p, f) = 1.
+
+// A clean osv-scanner run = a Bash result that INVOKED osv-scanner (cmd_invokes,
+// not a substring → no echo-spoof) and reported no vulns.
+.decl OsvClean(id: symbol)
+OsvClean(id) :-
+    InContext(id), ToolResult(id, "Bash", args),
+    cmd = @json_get_str(args, "command"), @cmd_invokes(cmd, "osv-scanner") = 1,
+    SentMessage(id, msg), @str_contains(msg.contents, "No vulnerabilities found") = 1.
+
+// A dependency edit is covered iff a clean osv-scanner run ran after it.
+.decl OsvCoveredEdit(edit: symbol)
+OsvCoveredEdit(e) :- DependencyEdit(e), OsvClean(s), Reaches(e, s).
+.decl UncoveredDependencyEdit()
+UncoveredDependencyEdit() :- DependencyEdit(e), !OsvCoveredEdit(e).
+
+// @ask
+// @deny_message: Dependency files changed without a clean osv-scanner run — possible vulnerable/known-bad dependencies
+// @suggestion: Run `osv-scanner` over the project (or the changed manifests) until clean, then push; or approve to push anyway
+Unauthorized(idx) :- RuleEnabled("dep_scan"), IsPush(idx), UncoveredDependencyEdit().
