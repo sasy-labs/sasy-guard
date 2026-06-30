@@ -38,7 +38,8 @@ them).
    tool install` for the first install; to upgrade later, see **Upgrading**
    below.
 
-2. **Add the plugin** (the hooks), the standard Claude Code way:
+2. **Add the plugin** (the hooks) the standard Claude Code way. This enables
+   sasy-guard **globally**, for every Claude Code session:
 
    ```bash
    claude plugin marketplace add sasy-labs/sasy-demo
@@ -70,9 +71,12 @@ First time it's `uv tool install`; after that, `uv tool upgrade`. Either way,
 binaries.
 </Aside>
 
-<Aside type="tip" title="Prefer not to use the marketplace?">
-`sasy-guard enable [project]` writes the four hooks straight into
-`<project>/.claude/settings.json` — same enforcement, no plugin install.
+<Aside type="tip" title="Enable it for one project only">
+Step 2 turns sasy-guard on **globally**. To enforce it in a **single project**
+instead, run `sasy-guard enable [project]` (it defaults to the current
+directory). That writes the four hooks straight into
+`<project>/.claude/settings.json`: same enforcement, scoped to that one project,
+no global plugin.
 </Aside>
 
 ## What it enforces
