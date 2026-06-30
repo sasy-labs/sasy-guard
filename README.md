@@ -1,6 +1,6 @@
 # SASY Policy Enforcement Demo
 
-[![sasy-guard installs/week](https://img.shields.io/badge/sasy--guard%20installs%2Fweek-577%20(no%20mirrors)-2563eb)](https://pypistats.org/packages/sasy-guard)
+[![sasy-guard installs/week](https://img.shields.io/pypi/dw/sasy-guard?label=sasy-guard%20installs&color=2563eb)](https://pypistats.org/packages/sasy-guard)
 
 Policy translation and enforcement for LLM agents — write rules in English, enforce them on every tool call.
 
