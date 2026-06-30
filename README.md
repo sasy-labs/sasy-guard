@@ -1,5 +1,7 @@
 # SASY Policy Enforcement Demo
 
+[![sasy-guard PyPI downloads](https://static.pepy.tech/personalized-badge/sasy-guard?period=total&units=international_system&left_text=sasy-guard%20downloads&left_color=grey&right_color=blue)](https://pypi.org/project/sasy-guard/)
+
 Policy translation and enforcement for LLM agents — write rules in English, enforce them on every tool call.
 
 **[Documentation](https://sasy-demo.pages.dev)** |
