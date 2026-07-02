@@ -4,6 +4,8 @@
 
 Policy translation and enforcement for LLM agents — write rules in English, enforce them on every tool call.
 
+> 🛡️ **[sasy-guard](https://sasy-demo.pages.dev/claude-code/):** Claude Code security plugin — set it up in minutes.
+
 **[Documentation](https://sasy-demo.pages.dev)** |
 **[Quick Start](https://sasy-demo.pages.dev/quickstart/)**
 
