@@ -1,43 +1,19 @@
 ---
 title: Sasy Guard
-description: Security guardrails for AI coding agents — write rules in English, compiled to Datalog and enforced on every tool call.
+description: >-
+  A policy compiler for agentic systems: deterministic policies that reason
+  over an agent's data-dependency graph and the provenance of every action.
 template: splash
 hero:
   title: Sasy Guard
   tagline: >
-    Security guardrails for AI coding agents. Write your authorization
-    rules in English; Sasy Guard compiles them to Datalog and enforces
-    them on every tool call your agent makes.
+    A policy compiler for agentic systems. Sasy Guard turns your authorization
+    and safety rules into deterministic policies that run outside the agent and
+    reason over its data-dependency graph, asking where each action's data came
+    from across the whole session, not just how the current step looks.
   actions:
     - text: Sasy Guard for Claude Code
       link: /claude-code/
       icon: right-arrow
       variant: primary
-    - text: How it works
-      link: /quickstart/
-      icon: right-arrow
-      variant: minimal
 ---
-
-import { Card, CardGrid } from '@astrojs/starlight/components';
-
-**Sasy Guard for Claude Code** is the flagship: a security plugin that checks
-every tool call Claude Code makes against a policy you control. Behind it sits a
-pipeline that turns an English policy into verified, enforced Datalog.
-
-<CardGrid stagger>
-  <Card title="Translate" icon="pencil">
-    Write your policy in plain English. The Sasy SDK translates
-    it into verified Datalog in minutes.
-  </Card>
-  <Card title="Verify" icon="approve-check">
-    Empirical confidence from the
-    [tau2 airline benchmark](/benchmarks/tau2-airline/):
-    translation variants measured against a hand-tuned
-    reference and LLM-judge baselines.
-  </Card>
-  <Card title="Enforce" icon="seti:lock">
-    Every tool call your agent makes is checked in real time, on
-    Claude Code or any agent, with no model in the enforcement path.
-  </Card>
-</CardGrid>
