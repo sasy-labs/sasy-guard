@@ -5,12 +5,12 @@ import starlight from '@astrojs/starlight';
 export default defineConfig({
   integrations: [
     starlight({
-      title: 'SASY Policy Translation and Enforcement Demo',
+      title: 'Sasy Guard',
       social: [
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/sasy-labs/sasy-demo',
+          href: 'https://github.com/sasy-labs/sasy-guard',
         },
       ],
       sidebar: [
