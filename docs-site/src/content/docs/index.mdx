@@ -1,23 +1,33 @@
 ---
-title: SASY Policy Translation and Enforcement Demo
-description: Translate English security policies into enforced Datalog for LLM agents.
+title: Sasy Guard
+description: Security guardrails for AI coding agents — write rules in English, compiled to Datalog and enforced on every tool call.
 template: splash
 hero:
+  title: Sasy Guard
   tagline: >
-    Write authorization rules in English.
-    Enforce them on every tool call your agent makes.
+    Security guardrails for AI coding agents. Write your authorization
+    rules in English; Sasy Guard compiles them to Datalog and enforces
+    them on every tool call your agent makes.
   actions:
-    - text: Quick Start
-      link: /quickstart/
+    - text: Sasy Guard for Claude Code
+      link: /claude-code/
       icon: right-arrow
       variant: primary
+    - text: How it works
+      link: /quickstart/
+      icon: right-arrow
+      variant: minimal
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
+**Sasy Guard for Claude Code** is the flagship: a security plugin that checks
+every tool call Claude Code makes against a policy you control. Behind it sits a
+pipeline that turns an English policy into verified, enforced Datalog.
+
 <CardGrid stagger>
   <Card title="Translate" icon="pencil">
-    Write your policy in plain English. The SASY SDK translates
+    Write your policy in plain English. The Sasy SDK translates
     it into verified Datalog in minutes.
   </Card>
   <Card title="Verify" icon="approve-check">
@@ -27,7 +37,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     reference and LLM-judge baselines.
   </Card>
   <Card title="Enforce" icon="seti:lock">
-    Upload the policy. Every tool call your agent makes is
-    checked in real time.
+    Every tool call your agent makes is checked in real time, on
+    Claude Code or any agent, with no model in the enforcement path.
   </Card>
 </CardGrid>
