@@ -1,0 +1,10 @@
+// Cloudflare Workers (Static Assets) config for guard.sasy.ai (Sasy Guard docs).
+// Astro Starlight static build. Deployed via Workers Builds, git-connected to
+// sasy-labs/sasy-guard with Workers Build root directory: docs-site/,
+// build command: npm run build, build output: dist/.
+{
+  "name": "sasy-guard",
+  "compatibility_date": "2026-07-01",
+  "assets": { "directory": "./dist" },
+  "observability": { "enabled": true }
+}
