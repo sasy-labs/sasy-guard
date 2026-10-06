@@ -124,22 +124,29 @@ async function authHeaderFile($: EngineInterface, port: string): Promise<string 
   }
 }
 
+/** A check's reply: the daemon's body, or why there is none and of what kind. */
+type CheckReply = { body: string } | { error: string; kind: 'unreachable' | 'auth' | 'answer' }
+
 /** One POST to /v1/pretooluse; the answer's body, or why there is none. */
 async function postCheck(
   $: EngineInterface,
   port: string,
   input: CheckInput,
-): Promise<{ body: string } | { error: string }> {
+): Promise<CheckReply> {
   const argv = checkArgv(port, await authHeaderFile($, port))
   let ran: { exitCode: number; stdout: string }
   try {
     ran = await $.process.run(argv, { stdin: JSON.stringify(input), timeoutMs: CHECK_TIMEOUT_MS })
   } catch {
-    return { error: 'could not run curl' }
+    return { error: 'could not run curl', kind: 'unreachable' }
   }
-  if (ran.exitCode !== 0) return { error: `sasy-watch unreachable on port ${port}` }
+  if (ran.exitCode !== 0) {
+    return { error: `sasy-watch unreachable on port ${port}`, kind: 'unreachable' }
+  }
   const { body, status } = splitStatus(ran.stdout)
-  return status === '200' ? { body } : { error: `sasy-watch answered HTTP ${status}` }
+  if (status === '200') return { body }
+  const kind = status === '401' || status === '403' ? 'auth' : 'answer'
+  return { error: `sasy-watch answered HTTP ${status}`, kind }
 }
 
 /** Starts the daemon if it is down, as the settings hook's lib.sh does. */
@@ -159,15 +166,20 @@ async function ensureDaemon($: EngineInterface): Promise<void> {
  */
 async function checkCall($: EngineInterface, input: CheckInput): Promise<PreToolUseResult> {
   const port = await daemonPort($)
-  let answer: { body: string } | { error: string } =
-    port === undefined ? { error: 'SASY_WATCH_PORT is not a port number' } : await postCheck($, port, input)
+  let answer: CheckReply =
+    port === undefined
+      ? { error: 'SASY_WATCH_PORT is not a port number', kind: 'answer' }
+      : await postCheck($, port, input)
   if ('error' in answer && port !== undefined) {
     await ensureDaemon($)
     answer = await postCheck($, port, input)
   }
   const result = 'body' in answer ? toResult(answer.body) : undefined
   if (result !== undefined) return result
-  if ((await $.env.get('SASY_FAIL_OPEN')) === 'true') return {}
+  // SASY_FAIL_OPEN covers an unreachable daemon only, as in the hook: never a
+  // refused authentication or an answer that is no decision.
+  const isDown = 'error' in answer && answer.kind === 'unreachable'
+  if (isDown && (await $.env.get('SASY_FAIL_OPEN')) === 'true') return {}
   const why = 'error' in answer ? answer.error : 'sasy-watch gave an answer that is not a decision'
   return { deny: `[SASY] security check unavailable (${why})` }
 }
@@ -242,10 +254,11 @@ async function record(
   $: EngineInterface,
   e: Readonly<Record<string, unknown>>,
   result: PreToolUseResult,
+  isChecked: boolean,
 ): Promise<void> {
   const found = verdictOf(result)
   const total = await update($, counts, c => ({
-    checked: c.checked + 1,
+    checked: c.checked + (isChecked ? 1 : 0),
     denied: c.denied + (found?.verdict === 'deny' ? 1 : 0),
     asked: c.asked + (found?.verdict === 'ask' ? 1 : 0),
   }))
@@ -264,9 +277,14 @@ async function record(
  * the call to the .catch handler, which replays only the downstream result and
  * would lose this mod's own decision.
  */
-async function recordSafely($: EngineInterface, e: unknown, result: PreToolUseResult): Promise<void> {
+async function recordSafely(
+  $: EngineInterface,
+  e: unknown,
+  result: PreToolUseResult,
+  isChecked: boolean,
+): Promise<void> {
   try {
-    await record($, e as Readonly<Record<string, unknown>>, result)
+    await record($, e as Readonly<Record<string, unknown>>, result, isChecked)
   } catch {
     // The counts and the band miss one call; the decision stands.
   }
@@ -350,8 +368,10 @@ export const register: Register = on => {
         ? info?.agentType ?? undefined
         : (await $.agent.list()).find(a => a.id === agentId)?.type
     if (info === null || (agentId !== undefined && agentType === undefined)) {
+      // Not counted as checked by the mod; a [SASY] verdict from the hook is
+      // still shown.
       const deferred = await next(e)
-      await recordSafely($, e, deferred)
+      await recordSafely($, e, deferred, false)
       return deferred
     }
     const ours = await checkCall($, {
@@ -375,10 +395,12 @@ export const register: Register = on => {
         result = combine(ours, await next(e))
       } finally {
         checking.delete(tool_use_id)
-        await publishChecking($, checking)
+        // Runs after next: a failure here must not reach the .catch, which
+        // would replace this mod's decision with the downstream result.
+        await publishChecking($, checking).catch(() => undefined)
       }
     }
-    await recordSafely($, e, result)
+    await recordSafely($, e, result, true)
     return result
   }).catch(($, e, next) =>
     next.called ? next(e) : { deny: '[SASY] security check failed inside the sasy-guard mod' },

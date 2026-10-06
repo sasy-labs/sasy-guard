@@ -52,7 +52,14 @@ export function splitStatus(stdout: string): { body: string; status: string } {
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
-const DECISIONS = [undefined, 'allow', 'ask', 'deny']
+const DECISIONS = ['allow', 'ask', 'deny']
+const HOOK_KEYS = [
+  'hookEventName',
+  'permissionDecision',
+  'permissionDecisionReason',
+  'updatedInput',
+  'additionalContext',
+]
 
 /**
  * The daemon's hook output as a `classic.PreToolUse` result, or undefined when
@@ -71,7 +78,13 @@ export function toResult(body: string): PreToolUseResult | undefined {
   // The daemon's "no objection" is exactly `{}`; anything else without a
   // decision block (an error object, say) is no answer.
   if (hs === undefined) return Object.keys(out).length === 0 ? {} : undefined
-  if (!isRecord(hs) || !DECISIONS.includes(hs.permissionDecision as string | undefined)) {
+  if (!isRecord(hs) || !Object.keys(hs).every(key => HOOK_KEYS.includes(key))) return undefined
+  // A block without a decision is the daemon rewriting the input or adding
+  // context for the model; with neither, it is no answer.
+  const decision = hs.permissionDecision
+  if (decision === undefined) {
+    if (hs.updatedInput === undefined && hs.additionalContext === undefined) return undefined
+  } else if (!DECISIONS.includes(decision as string)) {
     return undefined
   }
   const { permissionDecision, permissionDecisionReason, updatedInput, additionalContext } =

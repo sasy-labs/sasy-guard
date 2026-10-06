@@ -39,6 +39,10 @@ const HEALTH = {
 function policy(command: string): unknown {
   if (command === 'answer-array') return []
   if (command === 'answer-error') return { error: 'session unavailable' }
+  if (command === 'answer-hs-error') return { hookSpecificOutput: { error: 'session unavailable' } }
+  if (command === 'answer-transform') {
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { command: 'ls -1' } } }
+  }
   if (command === 'answer-unknown') return { hookSpecificOutput: { permissionDecision: 'block' } }
   if (command === 'answer-escapes') {
     return {
@@ -75,6 +79,8 @@ type World = {
 type WorldOptions = {
   /** curl's exit code for /v1/pretooluse (0: the daemon answers). */
   checkExit?: number
+  /** The HTTP status the daemon answers checks with (200 unless given). */
+  checkStatus?: string
   /** curl's output for /healthz: exit code, body and HTTP status. */
   health?: { exitCode: number; body: string; status?: string }
   /** Whether a hook-auth header file exists. */
@@ -133,7 +139,7 @@ function world(on: On, options: WorldOptions = {}): World {
       const input = JSON.parse(e.init?.stdin ?? '{}') as Record<string, unknown>
       w.checks.push(input)
       const command = String((input.tool_input as { command?: unknown }).command ?? '')
-      return ran(0, `${JSON.stringify(policy(command))}\n200`)
+      return ran(0, `${JSON.stringify(policy(command))}\n${options.checkStatus ?? '200'}`)
     }
     if (url.endsWith('/healthz')) {
       const h = options.health ?? { exitCode: 0, body: JSON.stringify(HEALTH) }
@@ -395,10 +401,12 @@ test('an answer the mod does not recognise fails closed', async ($, on) => {
   const array = await $.tool.call({ tool: 'Bash', command: 'answer-array' })
   const unknown = await $.tool.call({ tool: 'Bash', command: 'answer-unknown' })
   const error = await $.tool.call({ tool: 'Bash', command: 'answer-error' })
+  const hsError = await $.tool.call({ tool: 'Bash', command: 'answer-hs-error' })
 
   expect(array.deny ?? array.text).toContain('[SASY] security check unavailable')
   expect(unknown.deny ?? unknown.text).toContain('[SASY] security check unavailable')
   expect(error.deny ?? error.text).toContain('[SASY] security check unavailable')
+  expect(hsError.deny ?? hsError.text).toContain('[SASY] security check unavailable')
   expect(w.hookCalls).toEqual([])
 })
 
@@ -433,6 +441,8 @@ test('before SessionStart the mod leaves the call to the settings hook', async (
   expect(w.checks).toHaveLength(0)
   expect(w.hookCalls).toEqual(['ls'])
   expect(w.seenByHooks.ls).toBeUndefined()
+  // The hook checked it, not the mod.
+  expect(w.lines.at(-1)).toBe('0 checked · 0 denied · 0 asked')
 })
 
 test('the session agent type from SessionStart is sent with main-thread checks', async ($, on) => {
@@ -455,4 +465,24 @@ test('terminal escapes in a call are not drawn', async ($, on) => {
   const heading = await ui.find({ type: 'Text', text: /sasy-guard denied Bash/ })
   expect(heading?.text).not.toContain('\u001b')
   await ui.unmount()
+})
+
+test('an input rewrite without a decision is an answer, not a failure', async ($, on) => {
+  const w = world(on)
+  await started($)
+
+  const call = await $.tool.call({ tool: 'Bash', command: 'answer-transform' })
+
+  expect(call.deny).toBeUndefined()
+  expect(w.hookCalls).toEqual(['answer-transform'])
+})
+
+test('SASY_FAIL_OPEN does not cover a refused authentication', async ($, on) => {
+  const w = world(on, { checkStatus: '401', env: { SASY_FAIL_OPEN: 'true' } })
+  await started($)
+
+  const call = await $.tool.call({ tool: 'Bash', command: 'ls' })
+
+  expect(call.deny ?? call.text).toContain('sasy-watch answered HTTP 401')
+  expect(w.hookCalls).toEqual([])
 })
