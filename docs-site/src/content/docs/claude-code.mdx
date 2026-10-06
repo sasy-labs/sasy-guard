@@ -189,8 +189,10 @@ and it refuses the call, asks you, or lets it go on to your other hooks. It
 fails closed the same way: when the daemon cannot be reached after one attempt
 to start it, the call is refused (unless `SASY_FAIL_OPEN=true`). The plugin's
 `PreToolUse` hook stays installed and stands aside for exactly the calls the
-mod checked, so each call is checked once. Where the mod does not load, the
-hook checks every call as before, so nothing needs to be turned off by hand.
+mod checked, so each call is checked once. The hook checks the rest: a
+subagent's calls (its payload carries the subagent's own working directory),
+and every call where the mod does not load, so nothing needs to be turned off by
+hand.
 
 The mod also shows the decisions:
 

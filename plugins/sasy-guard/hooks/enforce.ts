@@ -16,7 +16,7 @@ export type CheckInput = {
   tool_use_id: string
   cwd: string
   transcript_path?: string
-  agent_id?: string
+  /** A session started with --agent: its agent type, as the hook receives it. */
   agent_type?: string
 }
 

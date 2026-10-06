@@ -305,9 +305,9 @@ export const register: Register = on => {
   // skipped, and one that fails after next leaves next's result standing.
   // Whether /guard registered; if another plugin owns the name, pass it on.
   let ownsCommand = false
-  // The subagent behind each call in flight, by tool_use_id (tool.call has it,
+  // The subagent calls in flight (tool.call knows the caller,
   // classic.PreToolUse does not), and the calls this mod is checking now.
-  const agentOf = new Map<string, string>()
+  const fromSubagent = new Set<string>()
   const checking = new Set<string>()
   // Writes of SASY_GUARD_MOD_CHECKED, one after another: two in flight could
   // otherwise land out of order and drop a call from the list, and the hook
@@ -345,36 +345,30 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // Subagent calls are left to the settings hook: its payload carries the
+  // subagent's own working directory and identity, which a mod cannot see.
   on('tool.call', async ($, e, next) => {
     if (e.agentId === undefined) return next(e)
-    agentOf.set(e.tool_use_id, e.agentId)
+    fromSubagent.add(e.tool_use_id)
     try {
       return await next(e)
     } finally {
-      agentOf.delete(e.tool_use_id)
+      fromSubagent.delete(e.tool_use_id)
     }
   })
 
-  // Enforcement. A failure before the daemon answered denies the call (fail
-  // closed); after `next`, the result `next` settled to stands.
+  // Enforcement, for main-thread calls once SessionStart has said what the
+  // hook payload would carry. A failure before the daemon answered denies the
+  // call (fail closed); after `next`, the result `next` settled to stands.
   on('classic.PreToolUse', async ($, e, next) => {
     const { tool, tool_use_id, ...args } = e as unknown as Record<string, unknown> & {
       tool: string
       tool_use_id: string
     }
-    // The check needs the caller's identity as the hook payload carries it.
-    // Where the mod cannot tell it (SessionStart not seen yet, or a subagent
-    // the agent list does not show), the call is left to the settings hook,
-    // which receives it from Claude Code.
     const info = await read($, sessionInfo)
-    const agentId = agentOf.get(tool_use_id)
-    const agentType =
-      agentId === undefined
-        ? info?.agentType ?? undefined
-        : (await $.agent.list()).find(a => a.id === agentId)?.type
-    if (info === null || (agentId !== undefined && agentType === undefined)) {
-      // Not counted as checked by the mod; a [SASY] verdict from the hook is
-      // still shown.
+    if (info === null || fromSubagent.has(tool_use_id)) {
+      // The hook checks it. Not counted as checked by the mod; a [SASY]
+      // verdict from the hook is still shown.
       const deferred = await next(e)
       await recordSafely($, e, deferred, false)
       return deferred
@@ -386,26 +380,23 @@ export const register: Register = on => {
       tool_use_id,
       cwd: await $.session.cwd(),
       ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
-      ...(agentId === undefined ? {} : { agent_id: agentId }),
-      ...(agentType === undefined ? {} : { agent_type: agentType }),
+      ...(info.agentType === null ? {} : { agent_type: info.agentType }),
     })
+    // The other settings hooks run whatever SASY answered, as they would beside
+    // the plugin's own hook; the plugin's hook stands aside for this call.
+    checking.add(tool_use_id)
+    publishing = publishing.catch(() => undefined).then(() => publishChecking($, checking))
+    await publishing
     let result: PreToolUseResult
-    if (ours.deny !== undefined) {
-      // Refused: the other settings hooks need not run, as when the script denies.
-      result = ours
-    } else {
-      checking.add(tool_use_id)
+    try {
+      const theirs = await next(e)
+      result = ours.deny !== undefined ? ours : combine(ours, theirs)
+    } finally {
+      checking.delete(tool_use_id)
+      // Runs after next: a failure here must not reach the .catch, which
+      // would replace this mod's decision with the downstream result.
       publishing = publishing.catch(() => undefined).then(() => publishChecking($, checking))
-      await publishing
-      try {
-        result = combine(ours, await next(e))
-      } finally {
-        checking.delete(tool_use_id)
-        // Runs after next: a failure here must not reach the .catch, which
-        // would replace this mod's decision with the downstream result.
-        publishing = publishing.catch(() => undefined).then(() => publishChecking($, checking))
-        await publishing.catch(() => undefined)
-      }
+      await publishing.catch(() => undefined)
     }
     await recordSafely($, e, result, true)
     return result

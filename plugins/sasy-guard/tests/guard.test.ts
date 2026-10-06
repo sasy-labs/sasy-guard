@@ -193,8 +193,9 @@ test('the mod asks the daemon about each call and enforces its answer', async ($
     cwd: '/work',
   })
   expect(typeof w.checks[0]?.tool_use_id).toBe('string')
-  // A denied call never reaches the other settings hooks.
-  expect(w.hookCalls).toEqual(['ls'])
+  // The other settings hooks still see a denied call, as beside the plugin's hook.
+  expect(w.hookCalls).toEqual(['ls', 'rm -rf build'])
+  expect(w.seenByHooks['rm -rf build']).toBe(String(w.checks[1]?.tool_use_id))
 })
 
 test('the plugin script stands aside for exactly the calls the mod checked', async ($, on) => {
@@ -252,7 +253,7 @@ test('an unreachable daemon fails closed', async ($, on) => {
   // It tried once, started the daemon, and tried again.
   expect(w.argvs.filter(a => a.at(-1)?.endsWith('/v1/pretooluse'))).toHaveLength(2)
   expect(w.argvs.some(a => a[1] === 'ensure')).toBe(true)
-  expect(w.hookCalls).toEqual([])
+  expect(w.hookCalls).toEqual(['ls'])
 })
 
 test('SASY_FAIL_OPEN=true lets calls through when the daemon is down', async ($, on) => {
@@ -414,7 +415,7 @@ test('an answer the mod does not recognise fails closed', async ($, on) => {
   expect(unknown.deny ?? unknown.text).toContain('[SASY] security check unavailable')
   expect(error.deny ?? error.text).toContain('[SASY] security check unavailable')
   expect(hsError.deny ?? hsError.text).toContain('[SASY] security check unavailable')
-  expect(w.hookCalls).toEqual([])
+  expect(w.hookCalls).toHaveLength(4)
 })
 
 test('the transcript path from SessionStart is sent with each check', async ($, on) => {
@@ -491,7 +492,6 @@ test('SASY_FAIL_OPEN does not cover a refused authentication', async ($, on) => 
   const call = await $.tool.call({ tool: 'Bash', command: 'ls' })
 
   expect(call.deny ?? call.text).toContain('sasy-watch answered HTTP 401')
-  expect(w.hookCalls).toEqual([])
 })
 
 test('only the daemon\'s own answer shapes are decisions', () => {

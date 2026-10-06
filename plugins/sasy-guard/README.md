@@ -56,8 +56,9 @@ same payload the hook sends, with the daemon's hook-auth header when one
 exists) and refuses the call, asks the user, or passes it on. It fails closed
 like the hook (`SASY_FAIL_OPEN=true` to override). The calls it checked are
 listed in `SASY_GUARD_MOD_CHECKED`, and `scripts/pretooluse.sh` stands aside
-for exactly those, so each call is checked once; where the mod does not load,
-the script checks every call as before. `disableAllHooks` turns off both.
+for exactly those, so each call is checked once. The script checks the rest:
+subagent calls (whose working directory a mod cannot see) and every call where
+the mod does not load. `disableAllHooks` turns off both.
 
 The mod also shows a status entry with the session's checked / denied / asked
 totals, a band above the prompt explaining the latest `[SASY]` denial or ask
