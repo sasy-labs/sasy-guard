@@ -56,10 +56,10 @@ claude-code-guard-serve:
 MOD_DEMO_PROJECT := $(or $(PROJECT),$(CURDIR)/output/mod-demo)
 
 claude-code-guard-mod-demo:
-	mkdir -p $(MOD_DEMO_PROJECT)
+	mkdir -p "$(MOD_DEMO_PROJECT)"
 	$(UV_RUN_SDK) python -m demo.cc_guard.serve_mock \
 	  --scenario $(or $(GROUP),toxic_flow) --setup-fixtures \
-	  --project $(MOD_DEMO_PROJECT) --plugin-dir $(CURDIR)/plugins/sasy-guard
+	  --project "$(MOD_DEMO_PROJECT)" --plugin-dir "$(CURDIR)/plugins/sasy-guard"
 
 # ── Documentation ──────────────────────────────────
 

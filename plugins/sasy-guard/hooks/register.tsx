@@ -85,6 +85,10 @@ async function daemonHealth($: EngineInterface): Promise<string> {
     } catch {
       return `daemon: ${url} answered HTTP ${response.status} with a body that is not JSON`
     }
+    // Something else may hold the port: require the daemon's own fields.
+    const isDaemon =
+      typeof h === 'object' && h !== null && h.ok === true && typeof h.endpoint === 'string'
+    if (!isDaemon) return `daemon: ${url} answered, but not as the sasy-watch daemon`
     const state = h.ready === true ? 'up, policy engine ready' : 'up, policy engine not ready'
     return (
       `daemon: ${state} · endpoint ${String(h.endpoint)} · ` +

@@ -116,7 +116,13 @@ test('/guard reports daemon health and recent decisions without a model turn', a
   const urls: string[] = []
   on('http.fetch', ($, e) => {
     urls.push(e.url)
-    const health = { ready: true, endpoint: 'localhost:50061', failMode: 'closed', sessions: 1 }
+    const health = {
+      ok: true,
+      ready: true,
+      endpoint: 'localhost:50061',
+      failMode: 'closed',
+      sessions: 1,
+    }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(health) } }
   })
 
@@ -167,4 +173,16 @@ test('the status entry is pinned again after /clear', async ($, on) => {
   await $.classic.SessionStart({ source: 'clear' })
 
   expect(lines.length).toBe(before + 1)
+})
+
+test('/guard does not mistake another service on the port for the daemon', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  mock.env(on, {})
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '{}' } }))
+  statusLines(on)
+
+  await $.session.start(START)
+  const out = await $.command.run(GUARD)
+
+  expect(out.text).toContain('answered, but not as the sasy-watch daemon')
 })
