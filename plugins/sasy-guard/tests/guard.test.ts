@@ -108,8 +108,12 @@ function world(on: On, options: WorldOptions = {}): World {
   let checked: string | undefined
   mock.clock(on, { now: 0 })
   mock.env(on, options.env ?? {})
-  on('env.set', ($, e) => {
+  let writes = 0
+  on('env.set', async ($, e) => {
     if (e.name === 'SASY_GUARD_MOD_CHECKED') {
+      // Earlier writes take longer, so unserialised writes would land out of order.
+      const ticks = Math.max(0, 40 - 10 * writes++)
+      for (let i = 0; i < ticks; i++) await Promise.resolve()
       checked = e.value
       w.checkedSets.push(e.value)
     }
@@ -514,4 +518,17 @@ test('SASY\'s input rewrite wins over another hook\'s', () => {
   expect(combine(ours, theirs).updatedInput).toEqual(ours.updatedInput)
   expect(combine({}, theirs).updatedInput).toEqual(theirs.updatedInput)
   expect(combine(ours, { deny: 'no' })).toEqual({ deny: 'no' })
+})
+
+test('concurrent calls each find themselves in the list the hook reads', async ($, on) => {
+  const w = world(on)
+  await started($)
+
+  await Promise.all(['pwd', 'ls', 'date'].map(command => $.tool.call({ tool: 'Bash', command })))
+
+  for (const command of ['pwd', 'ls', 'date']) {
+    const id = String(w.checks.find(c => (c.tool_input as { command?: string }).command === command)?.tool_use_id)
+    expect(w.seenByHooks[command]?.split(' ')).toContain(id)
+  }
+  expect(w.checkedSets.at(-1)).toBeUndefined()
 })

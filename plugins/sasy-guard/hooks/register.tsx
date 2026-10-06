@@ -296,6 +296,7 @@ async function recordSafely(
  * for exactly those tool_use_ids.
  */
 async function publishChecking($: EngineInterface, ids: ReadonlySet<string>): Promise<void> {
+  // Reads the set when it runs, not when it was queued: see `publishing`.
   await $.env.set('SASY_GUARD_MOD_CHECKED', ids.size === 0 ? undefined : [...ids].join(' '))
 }
 
@@ -308,6 +309,10 @@ export const register: Register = on => {
   // classic.PreToolUse does not), and the calls this mod is checking now.
   const agentOf = new Map<string, string>()
   const checking = new Set<string>()
+  // Writes of SASY_GUARD_MOD_CHECKED, one after another: two in flight could
+  // otherwise land out of order and drop a call from the list, and the hook
+  // would then check that call a second time.
+  let publishing: Promise<void> = Promise.resolve()
 
   on('session.start', async ($, e, next) => {
     $.ui.status(statusText(await read($, counts)))
@@ -390,14 +395,16 @@ export const register: Register = on => {
       result = ours
     } else {
       checking.add(tool_use_id)
-      await publishChecking($, checking)
+      publishing = publishing.catch(() => undefined).then(() => publishChecking($, checking))
+      await publishing
       try {
         result = combine(ours, await next(e))
       } finally {
         checking.delete(tool_use_id)
         // Runs after next: a failure here must not reach the .catch, which
         // would replace this mod's decision with the downstream result.
-        await publishChecking($, checking).catch(() => undefined)
+        publishing = publishing.catch(() => undefined).then(() => publishChecking($, checking))
+        await publishing.catch(() => undefined)
       }
     }
     await recordSafely($, e, result, true)
