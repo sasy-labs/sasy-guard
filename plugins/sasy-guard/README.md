@@ -54,7 +54,8 @@ Code [mod](https://code.claude.com/docs/en/plugins/mods/overview). At
 `classic.PreToolUse` it posts each call to the daemon's `/v1/pretooluse` (the
 same payload the hook sends, with the daemon's hook-auth header when one
 exists) and refuses the call, asks the user, or passes it on. It fails closed
-like the hook (`SASY_FAIL_OPEN=true` to override). The calls it checked are
+like the hook (`SASY_FAIL_OPEN=true` overrides only with the daemon's hook-auth
+file in place). The calls it checked are
 listed in `SASY_GUARD_MOD_CHECKED`, and `scripts/pretooluse.sh` stands aside
 for exactly those, so each call is checked once. The script checks the rest:
 subagent calls (whose working directory a mod cannot see) and every call where

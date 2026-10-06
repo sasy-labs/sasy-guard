@@ -185,10 +185,18 @@ async function checkCall($: EngineInterface, input: CheckInput): Promise<PreTool
   }
   const result = 'body' in answer ? toResult(answer.body) : undefined
   if (result !== undefined) return result
-  // SASY_FAIL_OPEN covers an unreachable daemon only, as in the hook: never a
-  // refused authentication or an answer that is no decision.
+  // SASY_FAIL_OPEN covers an unreachable daemon only, and, as in the hook,
+  // only with the daemon's hook-auth file in place: never a refused or missing
+  // authentication, nor an answer that is no decision.
   const isDown = 'error' in answer && answer.kind === 'unreachable'
-  if (isDown && (await $.env.get('SASY_FAIL_OPEN')) === 'true') return {}
+  if (
+    isDown &&
+    port !== undefined &&
+    (await $.env.get('SASY_FAIL_OPEN')) === 'true' &&
+    (await authHeaderFile($, port)) !== undefined
+  ) {
+    return {}
+  }
   const why = 'error' in answer ? answer.error : 'sasy-watch gave an answer that is not a decision'
   return { deny: `[SASY] security check unavailable (${why})` }
 }

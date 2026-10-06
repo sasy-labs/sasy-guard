@@ -257,7 +257,7 @@ test('an unreachable daemon fails closed', async ($, on) => {
 })
 
 test('SASY_FAIL_OPEN=true lets calls through when the daemon is down', async ($, on) => {
-  const w = world(on, { checkExit: 7, env: { SASY_FAIL_OPEN: 'true' } })
+  const w = world(on, { checkExit: 7, hasAuthFile: true, env: { SASY_FAIL_OPEN: 'true' } })
   await started($)
 
   const call = await $.tool.call({ tool: 'Bash', command: 'ls' })
@@ -551,4 +551,13 @@ test('a SASY denial keeps the context notes of other hooks', () => {
     { additionalContext: ['org: open an incident ticket'] },
   )
   expect(merged).toEqual({ deny: '[SASY] no', additionalContext: ['sasy note', 'org: open an incident ticket'] })
+})
+
+test('SASY_FAIL_OPEN needs the hook-auth file, as the hook does', async ($, on) => {
+  world(on, { checkExit: 7, env: { SASY_FAIL_OPEN: 'true' } })
+  await started($)
+
+  const call = await $.tool.call({ tool: 'Bash', command: 'ls' })
+
+  expect(call.deny ?? call.text).toContain('[SASY] security check unavailable')
 })

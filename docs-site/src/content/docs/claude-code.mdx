@@ -187,7 +187,8 @@ Where the mod loads, **it does the policy check**. Before each tool call it
 sends the `sasy-watch` daemon the same question the `PreToolUse` hook would,
 and it refuses the call, asks you, or lets it go on to your other hooks. It
 fails closed the same way: when the daemon cannot be reached after one attempt
-to start it, the call is refused (unless `SASY_FAIL_OPEN=true`). The plugin's
+to start it, the call is refused, unless `SASY_FAIL_OPEN=true` and the daemon's
+hook-authentication file is in place. The plugin's
 `PreToolUse` hook stays installed and stands aside for exactly the calls the
 mod checked, so each call is checked once. The hook checks the rest: a
 subagent's calls (its payload carries the subagent's own working directory),
