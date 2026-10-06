@@ -54,8 +54,8 @@ The plugin also ships a Claude Code
 observes: it reads each `PreToolUse` decision through `classic.PreToolUse` and
 shows a status entry with the session's checked / denied / asked totals, a band
 above the prompt that explains the latest `[SASY]` denial or ask (with a
-Dismiss button), and an instant `/guard` command that reports the daemon's
-`/healthz` and recent decisions. Enforcement stays entirely in the settings
+Dismiss button), and a `/guard` command that answers without a model turn,
+reporting the daemon's `/healthz` and recent decisions. Enforcement stays entirely in the settings
 hooks, so a session where only mods are blocked (`allowManagedModsOnly`) is
 enforced the same way. `disableAllHooks` turns off both, so nothing is enforced.
 
@@ -67,7 +67,8 @@ claude plugin test plugins/sasy-guard       # tests/guard.test.ts
 Requires Claude Code v2.1.287 or later; drawing appears in the terminal and the
 Desktop Code tab only.
 
-Demo (scripted mock, plugin loaded from this checkout): from the repo root,
+Demo (scripted mock, plugin loaded from a checkout): in the public
+[sasy-guard](https://github.com/sasy-labs/sasy-guard) repo, run
 `make claude-code-guard-mod-demo` and follow the printed commands.
 
 ## Profiles (`profiles/`)
