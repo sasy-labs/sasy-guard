@@ -89,9 +89,7 @@ export function toResult(body: string): PreToolUseResult | undefined {
       ? { deny: why || '[SASY] denied by policy' }
       : decision === 'ask'
         ? { ask: why || '[SASY] approval needed' }
-        : decision === 'allow'
-          ? { allow: true }
-          : {}
+        : {} // an `allow` too: SASY never skips Claude Code's own permission prompt
   return {
     ...decided,
     ...(isRecord(updatedInput) ? { updatedInput } : {}),
@@ -107,17 +105,17 @@ export function denyWith(ours: PreToolUseResult & { deny: string }, theirs: PreT
 
 /** One answer from several PreToolUse deciders: deny over ask over allow. */
 export function combine(ours: PreToolUseResult, theirs: PreToolUseResult): PreToolUseResult {
-  if (theirs.deny !== undefined) return theirs
   const context = [...(ours.additionalContext ?? []), ...(theirs.additionalContext ?? [])]
   // SASY's rewrite is part of what it authorised, so it wins over another
   // hook's rewrite of the same call.
   const updatedInput = ours.updatedInput ?? theirs.updatedInput
+  if (theirs.deny !== undefined) return denyWith({ ...theirs, deny: theirs.deny }, ours)
   const extra = {
     ...(updatedInput === undefined ? {} : { updatedInput }),
     ...(context.length === 0 ? {} : { additionalContext: context }),
   }
   if (ours.ask !== undefined) return { ask: ours.ask, ...extra }
   if (theirs.ask !== undefined) return { ask: theirs.ask, ...extra }
-  if (ours.allow === true || theirs.allow === true) return { allow: true, ...extra }
+  if (theirs.allow === true) return { allow: true, ...extra }
   return extra
 }

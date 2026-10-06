@@ -501,6 +501,8 @@ test('only the daemon\'s own answer shapes are decisions', () => {
   expect(toResult('{}')).toEqual({})
   expect(toResult(block({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: '[SASY] no' })))
     .toEqual({ deny: '[SASY] no' })
+  // SASY never answers allow: Claude Code's permission prompt still applies.
+  expect(toResult(block({ hookEventName: 'PreToolUse', permissionDecision: 'allow' }))).toEqual({})
   expect(toResult(block({ hookEventName: 'PreToolUse', updatedInput: { command: 'ls -1' } })))
     .toEqual({ updatedInput: { command: 'ls -1' } })
   // No answer: each of these fails closed.
@@ -520,6 +522,10 @@ test('SASY\'s input rewrite wins over another hook\'s', () => {
   expect(combine(ours, theirs).updatedInput).toEqual(ours.updatedInput)
   expect(combine({}, theirs).updatedInput).toEqual(theirs.updatedInput)
   expect(combine(ours, { deny: 'no' })).toEqual({ deny: 'no' })
+  expect(combine({ additionalContext: ['sasy note'] }, { deny: 'org: no' })).toEqual({
+    deny: 'org: no',
+    additionalContext: ['sasy note'],
+  })
 })
 
 test('concurrent calls each find themselves in the list the hook reads', async ($, on) => {
