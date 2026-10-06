@@ -131,6 +131,9 @@ def _print_banner(scenario_group: str, expected: str, headline: str,
     print(f"    export ANTHROPIC_BASE_URL={base_url}")
     print("    export ANTHROPIC_API_KEY=sk-mock-not-used")
     print("    unset SASY_API_KEY SASY_AUTH_TOKEN")
+    if (project / "bin" / "gitleaks").exists():
+        # The fixture gitleaks stub stands in for a real scan (review_gate, dep_scan).
+        print(f"    export PATH={shlex.quote(str(project / 'bin'))}:$PATH")
     if plugin_dir is None:
         print("    claude --dangerously-skip-permissions")
     else:
