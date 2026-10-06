@@ -43,7 +43,10 @@ export function parseDecision(body: unknown): Decision | undefined {
   const reason = typeof r === "string" && r.trim() !== "" ? r : `${MARKER} blocked by policy`;
   if (d === "deny") return { kind: "deny", reason };
   if (d === "ask") return { kind: "ask", reason };
-  return { kind: "allow" };
+  // No decision (an input rewrite only) or an explicit allow; any other value
+  // is unknown to this extension and fails closed.
+  if (d === undefined || d === "allow") return { kind: "allow" };
+  return undefined;
 }
 
 /** The reason without the `[SASY]` marker, for display. */
@@ -102,45 +105,62 @@ export function guardReport(health: string, c: Counts, recent: readonly Decision
 
 /** The largest text block pushed whole; longer ones are cut (the rest elided). */
 export const MAX_PUSHED_TEXT = 256 * 1024;
+/** The most text pushed for one entry, across all its blocks and arguments. */
+export const MAX_ENTRY_TEXT = 1024 * 1024;
 /** The largest request body the guard sends (the daemon accepts 4 MiB). */
 export const MAX_PUSH_BYTES = 3 * 1024 * 1024;
 
-function cutText(text: string): string {
-  if (text.length <= MAX_PUSHED_TEXT) return text;
-  return `${text.slice(0, MAX_PUSHED_TEXT)}\n[sasy-guard: ${text.length - MAX_PUSHED_TEXT} characters not sent]`;
+/** Cuts texts to MAX_PUSHED_TEXT each and MAX_ENTRY_TEXT in all, noting what was left out. */
+function textCutter(): (text: string) => string {
+  let left = MAX_ENTRY_TEXT;
+  return (text) => {
+    const keep = Math.max(0, Math.min(MAX_PUSHED_TEXT, left, text.length));
+    left -= keep;
+    if (keep === text.length) return text;
+    return `${text.slice(0, keep)}\n[sasy-guard: ${text.length - keep} characters not sent]`;
+  };
 }
 
 /**
- * A copy of a session entry whose long texts are cut to MAX_PUSHED_TEXT, so
- * one large tool output cannot push a request past the daemon's limit. Images
- * are dropped (the daemon reads text only).
+ * A copy of a session entry sized to fit the daemon's request limit: texts
+ * (and a tool call's string arguments) are cut by `textCutter`, images and
+ * `details` (which the daemon does not read) are dropped, and so is the data
+ * of other extensions' custom entries.
  */
 export function shrinkEntry(entry: unknown): unknown {
   if (!entry || typeof entry !== "object") return entry;
   const e = entry as Record<string, unknown>;
+  if (e.type === "custom" && e.customType !== "sasy-guard") {
+    const { data: _data, ...rest } = e;
+    return rest;
+  }
+  const cut = textCutter();
+  const out: Record<string, unknown> = { ...e };
+  if (typeof out.content === "string") out.content = cut(out.content);
+  if (typeof out.summary === "string") out.summary = cut(out.summary);
   const m = e.message as Record<string, unknown> | undefined;
-  if (!m || typeof m !== "object") return entry;
-  const msg: Record<string, unknown> = { ...m };
-  if (typeof msg.content === "string") msg.content = cutText(msg.content);
+  if (!m || typeof m !== "object") return out;
+  const { details: _details, ...msg } = m;
+  if (typeof msg.content === "string") msg.content = cut(msg.content);
   else if (Array.isArray(msg.content)) {
     msg.content = msg.content
       .filter((b) => !(b && typeof b === "object" && (b as { type?: unknown }).type === "image"))
       .map((b) => {
         if (!b || typeof b !== "object") return b;
         const blk = b as Record<string, unknown>;
-        if (typeof blk.text === "string") return { ...blk, text: cutText(blk.text) };
+        if (typeof blk.text === "string") return { ...blk, text: cut(blk.text) };
         // A tool call's string arguments (a write's content, say) are cut too.
         if (blk.type === "toolCall" && blk.arguments && typeof blk.arguments === "object") {
           const args = Object.fromEntries(
-            Object.entries(blk.arguments as Record<string, unknown>).map(([k, v]) => [k, typeof v === "string" ? cutText(v) : v]),
+            Object.entries(blk.arguments as Record<string, unknown>).map(([k, v]) => [k, typeof v === "string" ? cut(v) : v]),
           );
           return { ...blk, arguments: args };
         }
         return b;
       });
   }
-  if (typeof msg.output === "string") msg.output = cutText(msg.output);
-  return { ...e, message: msg };
+  if (typeof msg.output === "string") msg.output = cut(msg.output);
+  return { ...out, message: msg };
 }
 
 /** Splits entries into batches whose JSON stays under MAX_PUSH_BYTES. */

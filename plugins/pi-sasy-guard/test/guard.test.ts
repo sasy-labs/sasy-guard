@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 
-import { batches, guardReport, MAX_PUSHED_TEXT, parseDecision, shrinkEntry, widgetLines } from "../core.ts";
+import { batches, guardReport, MAX_ENTRY_TEXT, MAX_PUSHED_TEXT, parseDecision, shrinkEntry, widgetLines } from "../core.ts";
 import { DaemonClient } from "../daemon.ts";
 import { createGuard } from "../index.ts";
 
@@ -68,13 +68,16 @@ function harness(opts: { hasUI?: boolean; confirm?: boolean; daemonPort?: number
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
   const ui = { status: [] as (string | undefined)[], widget: undefined as string[] | undefined, notes: [] as string[], confirms: 0, choices: [] as string[] };
   const entries: { id: string; parentId: string | null; type: string; message?: unknown }[] = [];
+  // The branch pi is on: the entries, unless a test moves to another one.
+  let branchOverride: typeof entries | undefined;
+  const branch = () => branchOverride ?? entries;
   const ctx = {
     hasUI: opts.hasUI ?? true,
     cwd: "/work/project",
     sessionManager: {
       getSessionId: () => "pi-session-1",
       getSessionFile: () => "/home/u/.pi/agent/sessions/x/1_pi-session-1.jsonl",
-      getBranch: () => entries,
+      getBranch: () => branch(),
     },
     ui: {
       setStatus: (_k: string, t: string | undefined) => ui.status.push(t),
@@ -98,7 +101,8 @@ function harness(opts: { hasUI?: boolean; confirm?: boolean; daemonPort?: number
   });
   createGuard({ client, now: () => 0 })(pi as never);
   const fire = (name: string, event: unknown) => handlers.get(name)!(event, ctx);
-  return { fire, ctx, ui, entries, commands, appended };
+  const moveTo = (b: typeof entries) => (branchOverride = b);
+  return { fire, ctx, ui, entries, commands, appended, moveTo };
 }
 
 const readEnv = { type: "tool_call", toolName: "read", toolCallId: "c1", input: { path: ".env" } };
@@ -146,6 +150,33 @@ test("a push the daemon does not accept blocks the call", async () => {
   assert.equal(out.block, true);
   assert.match(out.reason, /did not accept \/v1\/session\/start/);
   assert.equal(requests.filter((r) => r.path === "/v1/pretooluse").length, 0);
+});
+
+test("moving to another branch resends that branch as a reset", async () => {
+  const h = harness();
+  const e1 = { id: "e1", parentId: null, type: "message", message: { role: "user", content: "a" } };
+  const e2 = { id: "e2", parentId: "e1", type: "message", message: { role: "user", content: "b" } };
+  h.entries.push(e1, e2);
+  await h.fire("tool_call", readEnv);
+  const pushes = () => requests.filter((r) => r.path === "/v1/session/events");
+  assert.equal(pushes().at(-1)!.body.reset, false);
+  // Back to e1, nothing new: the leaf moved to an entry already sent.
+  h.moveTo([e1]);
+  await h.fire("user_bash", { type: "user_bash", command: "ls", excludeFromContext: false, cwd: "/w" });
+  assert.equal(pushes().at(-1)!.body.reset, true);
+  assert.deepEqual((pushes().at(-1)!.body.entries as { id: string }[]).map((e) => e.id), ["e1"]);
+  // A new entry continuing from e1 while the daemon last saw e1: no reset.
+  const e3 = { id: "e3", parentId: "e1", type: "message", message: { role: "user", content: "c" } };
+  h.moveTo([e1, e3]);
+  await h.fire("tool_call", readEnv);
+  assert.equal(pushes().at(-1)!.body.reset, false);
+  assert.deepEqual((pushes().at(-1)!.body.entries as { id: string }[]).map((e) => e.id), ["e3"]);
+  // Back on the e2 branch, continued by e4: e4's parent is not the last leaf.
+  const e4 = { id: "e4", parentId: "e2", type: "message", message: { role: "user", content: "d" } };
+  h.moveTo([e1, e2, e4]);
+  await h.fire("tool_call", readEnv);
+  assert.equal(pushes().at(-1)!.body.reset, true);
+  assert.deepEqual((pushes().at(-1)!.body.entries as { id: string }[]).map((e) => e.id), ["e1", "e2", "e4"]);
 });
 
 test("no objection lets the call run", async () => {
@@ -217,6 +248,8 @@ test("decisions parse from the daemon's hook output", () => {
   assert.equal(parseDecision(null), undefined);
   assert.equal(parseDecision({ error: "session missing" }), undefined);
   assert.equal(parseDecision([]), undefined);
+  assert.equal(parseDecision({ hookSpecificOutput: { permissionDecision: "block" } }), undefined);
+  assert.deepEqual(parseDecision({ hookSpecificOutput: { updatedInput: {} } }), { kind: "allow" });
   assert.equal(parseDecision({ hookSpecificOutput: 3 }), undefined);
 });
 
@@ -228,6 +261,13 @@ test("pushed entries are cut to size and batched under the request limit", () =>
   const cut = shrinkEntry(call) as { message: { content: { arguments: { path: string; content: string } }[] } };
   assert.equal(cut.message.content[0].arguments.path, "a");
   assert.ok(cut.message.content[0].arguments.content.endsWith("[sasy-guard: 5 characters not sent]"));
+  // Many large blocks in one entry stay under the per-entry budget.
+  const many = { id: "e7", parentId: null, type: "message", message: { role: "toolResult", details: { big: "x" }, content: Array.from({ length: 20 }, () => ({ type: "text", text: "q".repeat(MAX_PUSHED_TEXT) })) } };
+  const capped = shrinkEntry(many) as { message: { details?: unknown; content: { text: string }[] } };
+  const total = capped.message.content.reduce((n, b) => n + b.text.replace(/\n\[sasy-guard: \d+ characters not sent\]$/, "").length, 0);
+  assert.ok(total <= MAX_ENTRY_TEXT);
+  assert.equal(capped.message.details, undefined);
+  assert.deepEqual(shrinkEntry({ type: "custom", id: "c", parentId: null, customType: "other", data: { huge: 1 } }), { type: "custom", id: "c", parentId: null, customType: "other" });
   assert.ok(small.message.content[0].text.endsWith("[sasy-guard: 10 characters not sent]"));
   assert.equal(batches([1, 2, 3].map((n) => ({ n, pad: "y".repeat(40) })), 100).length, 3);
   assert.deepEqual(batches([]), []);

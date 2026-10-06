@@ -44,6 +44,8 @@ export function createGuard(opts: GuardOptions = {}) {
     const client = opts.client ?? new DaemonClient();
     const now = opts.now ?? Date.now;
     let sent = new Set<string>();
+    /** The leaf of the branch last pushed, to notice pi moving to another branch. */
+    let lastLeaf: string | null = null;
     let rejected: string[] = [];
     let counts: Counts = { checked: 0, denied: 0, asked: 0 };
     let decisions: DecisionRecord[] = [];
@@ -86,10 +88,18 @@ export function createGuard(opts: GuardOptions = {}) {
     function push(ctx: ExtensionContext): Promise<void> {
       const run = pushChain.then(async () => {
         await start(ctx);
-        const fresh = ctx.sessionManager.getBranch().filter((e) => !sent.has(e.id));
+        const branch = ctx.sessionManager.getBranch();
+        const leaf = branch.at(-1)?.id ?? null;
+        const firstFresh = branch.find((e) => !sent.has(e.id));
+        // pi moved to another branch of its session tree (navigating back, or
+        // continuing from an earlier entry): resend the whole branch as a reset,
+        // so the daemon judges the next call by this branch's history.
+        const jumped =
+          lastLeaf !== null && (firstFresh ? (firstFresh.parentId ?? null) !== lastLeaf : leaf !== lastLeaf);
+        const toSend = jumped ? branch : branch.filter((e) => !sent.has(e.id));
         const reported = [...rejected];
-        if (fresh.length === 0 && reported.length === 0) return;
-        const parts = batches(fresh.map(shrinkEntry));
+        if (toSend.length === 0 && reported.length === 0) return;
+        const parts = batches(toSend.map(shrinkEntry));
         if (parts.length === 0) parts.push([]);
         for (const [i, part] of parts.entries()) {
           await postOk("/v1/session/events", {
@@ -98,9 +108,11 @@ export function createGuard(opts: GuardOptions = {}) {
             ...sessionFile(ctx),
             entries: part,
             rejected_tool_call_ids: i === 0 ? reported : [],
+            reset: jumped && i === 0,
           });
           for (const e of part as { id: string }[]) sent.add(e.id);
         }
+        lastLeaf = leaf;
         rejected = rejected.filter((id) => !reported.includes(id));
       });
       pushChain = run.catch(() => {});
@@ -166,6 +178,7 @@ export function createGuard(opts: GuardOptions = {}) {
 
     pi.on("session_start", async (_event, ctx) => {
       sent = new Set();
+      lastLeaf = null;
       rejected = [];
       counts = { checked: 0, denied: 0, asked: 0 };
       decisions = [];
