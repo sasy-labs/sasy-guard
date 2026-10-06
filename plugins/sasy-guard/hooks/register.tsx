@@ -125,9 +125,10 @@ async function authHeaderFile($: EngineInterface, port: string): Promise<string 
   }
 }
 
-/** curl exits that mean the daemon did not answer: could not connect, timed
- *  out, empty reply, or the connection dropped while receiving. */
-const UNREACHABLE_CURL_EXITS = [7, 28, 52, 56]
+/** curl exits that mean the daemon did not answer: could not connect (7),
+ *  partial reply (18), timed out (28), empty reply (52), the connection dropped
+ *  while sending (55) or receiving (56). */
+const UNREACHABLE_CURL_EXITS = [7, 18, 28, 52, 55, 56]
 
 /** A check's reply: the daemon's body, or why there is none and of what kind. */
 type CheckReply = { body: string } | { error: string; kind: 'unreachable' | 'auth' | 'answer' }
@@ -143,7 +144,8 @@ async function postCheck(
   try {
     ran = await $.process.run(argv, { stdin: JSON.stringify(input), timeoutMs: CHECK_TIMEOUT_MS })
   } catch {
-    return { error: 'could not run curl', kind: 'unreachable' }
+    // curl did not run at all: nothing is known about the daemon.
+    return { error: 'could not run curl', kind: 'answer' }
   }
   if (ran.exitCode !== 0) {
     // Only a daemon that is down or not answering is "unreachable" (the one

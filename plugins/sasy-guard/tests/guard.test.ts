@@ -82,6 +82,8 @@ type World = {
 type WorldOptions = {
   /** curl's exit code for /v1/pretooluse (0: the daemon answers). */
   checkExit?: number
+  /** curl cannot be started at all. */
+  curlMissing?: boolean
   /** The HTTP status the daemon answers checks with (200 unless given). */
   checkStatus?: string
   /** curl's output for /healthz: exit code, body and HTTP status. */
@@ -142,6 +144,7 @@ function world(on: On, options: WorldOptions = {}): World {
     w.argvs.push(argv)
     const url = argv.at(-1) ?? ''
     if (url.endsWith('/v1/pretooluse')) {
+      if (options.curlMissing === true) return { deny: 'curl: no such file' }
       if ((options.checkExit ?? 0) !== 0) return ran(options.checkExit ?? 7, '')
       const input = JSON.parse(e.init?.stdin ?? '{}') as Record<string, unknown>
       w.checks.push(input)
@@ -566,4 +569,14 @@ test('SASY_FAIL_OPEN needs the hook-auth file, as the hook does', async ($, on) 
   const call = await $.tool.call({ tool: 'Bash', command: 'ls' })
 
   expect(call.deny ?? call.text).toContain('[SASY] security check unavailable')
+})
+
+test('curl that cannot run never fails open', async ($, on) => {
+  const w = world(on, { curlMissing: true, hasAuthFile: true, env: { SASY_FAIL_OPEN: 'true' } })
+  await started($)
+
+  const call = await $.tool.call({ tool: 'Bash', command: 'ls' })
+
+  expect(call.deny ?? call.text).toContain('could not run curl')
+  expect(w.argvs.some(a => a[1] === 'ensure')).toBe(false)
 })
