@@ -17,7 +17,7 @@ const RECENT_IN_COMMAND = 5
 /** The band shows the policy's reason and fix; /guard has the rest. */
 const BAND_REASON_LINES = 3
 const TARGET_CHARS = 80
-const HEALTH_TIMEOUT_MS = 1500
+const HEALTH_TIMEOUT_MS = 3000
 const DEFAULT_PORT = '51711'
 const MARKER = '[SASY]'
 
@@ -70,34 +70,52 @@ function clockTime(ms: number): string {
   return new Date(ms).toTimeString().slice(0, 8)
 }
 
-/** One line on the sasy-watch daemon, from its /healthz route. */
+/** The /healthz fields /guard prints, each held to the shape the daemon sends. */
+const ENDPOINT = /^[A-Za-z0-9.:[\]_-]{1,255}$/
+const FAIL_MODES = ['open', 'closed']
+
+/**
+ * One line on the sasy-watch daemon, from its /healthz route.
+ *
+ * Read with curl so the request has a hard time and size limit: the port is
+ * plain HTTP on loopback, and anything holding it can answer. The answer is
+ * printed into the transcript, which the model reads, so only values in the
+ * daemon's own shapes are printed.
+ */
 async function daemonHealth($: EngineInterface): Promise<string> {
   const port = (await $.env.get('SASY_WATCH_PORT')) || DEFAULT_PORT
+  if (!/^[0-9]{1,5}$/.test(port)) return `daemon: SASY_WATCH_PORT is not a port number`
   const url = `http://127.0.0.1:${port}/healthz`
-  const timeout = $.clock.sleep(HEALTH_TIMEOUT_MS).then(() => null)
+  const argv = ['curl', '-sS', '--max-time', '2', '--max-filesize', '65536', url]
+  let ran: { exitCode: number; stdout: string }
   try {
-    const response = await Promise.race([$.http.fetch(url), timeout])
-    if (response === null) return `daemon: no answer from ${url} within ${HEALTH_TIMEOUT_MS} ms`
-    if (!response.ok) return `daemon: ${url} answered HTTP ${response.status}`
-    let h: Record<string, unknown>
-    try {
-      h = JSON.parse(response.text) as Record<string, unknown>
-    } catch {
-      return `daemon: ${url} answered HTTP ${response.status} with a body that is not JSON`
-    }
-    // Something else may hold the port: require the daemon's own fields.
-    const isDaemon =
-      typeof h === 'object' && h !== null && h.ok === true && typeof h.endpoint === 'string'
-    if (!isDaemon) return `daemon: ${url} answered, but not as the sasy-watch daemon`
-    const state = h.ready === true ? 'up, policy engine ready' : 'up, policy engine not ready'
-    return (
-      `daemon: ${state} · endpoint ${String(h.endpoint)} · ` +
-      `fail mode ${String(h.failMode)} · ${String(h.sessions)} session(s)`
-    )
-  } catch (error) {
-    const why = error instanceof Error ? error.message : String(error)
-    return `daemon: unreachable at ${url} (${shorten(why, 120)})`
+    ran = await $.process.run(argv, { timeoutMs: HEALTH_TIMEOUT_MS })
+  } catch {
+    return `daemon: could not run curl to reach ${url}`
   }
+  if (ran.exitCode !== 0) return `daemon: unreachable at ${url} (curl exit ${ran.exitCode})`
+  let h: unknown
+  try {
+    h = JSON.parse(ran.stdout)
+  } catch {
+    return `daemon: ${url} answered with a body that is not JSON`
+  }
+  const r = (typeof h === 'object' && h !== null ? h : {}) as Record<string, unknown>
+  const isDaemon =
+    r.ok === true &&
+    typeof r.ready === 'boolean' &&
+    typeof r.endpoint === 'string' &&
+    ENDPOINT.test(r.endpoint) &&
+    typeof r.failMode === 'string' &&
+    FAIL_MODES.includes(r.failMode) &&
+    Number.isInteger(r.sessions) &&
+    (r.sessions as number) >= 0
+  if (!isDaemon) return `daemon: ${url} answered, but not as the sasy-watch daemon`
+  const state = r.ready ? 'up, policy engine ready' : 'up, policy engine not ready'
+  return (
+    `daemon: ${state} · endpoint ${r.endpoint} · ` +
+    `fail mode ${r.failMode} · ${r.sessions} session(s)`
+  )
 }
 
 /** One decision for /guard: a heading, then its reason, whole or first line. */
@@ -110,12 +128,18 @@ function decisionLines(d: GuardDecision, isWhole: boolean): string[] {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: COMMAND,
-      description: 'Show sasy-guard daemon health and recent policy decisions',
-      immediate: true,
-    })
     $.ui.status(statusText(await read($, counts)))
+    try {
+      await $.command.register({
+        name: COMMAND,
+        description: 'Show sasy-guard daemon health and recent policy decisions',
+        immediate: true,
+      })
+    } catch (error) {
+      // Another plugin may own the name; the status line and band still work.
+      const why = error instanceof Error ? error.message : String(error)
+      $.ui.toast(`sasy-guard: /${COMMAND} is unavailable (${shorten(why, 120)})`)
+    }
     return next(e)
   })
 

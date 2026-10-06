@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import signal
 import sys
 from pathlib import Path
@@ -126,14 +127,15 @@ def _print_banner(scenario_group: str, expected: str, headline: str,
         marker = "▸" if i == len(steps) else "·"
         print(f"    {marker} {i}. {_summarize(step)}")
     print(f"\n  In another terminal, run claude against this mock:\n")
-    print(f"    cd {project}")
+    print(f"    cd {shlex.quote(str(project))}")
     print(f"    export ANTHROPIC_BASE_URL={base_url}")
     print("    export ANTHROPIC_API_KEY=sk-mock-not-used")
     print("    unset SASY_API_KEY SASY_AUTH_TOKEN")
     if plugin_dir is None:
         print("    claude --dangerously-skip-permissions")
     else:
-        print(f"    claude --plugin-dir {plugin_dir} --dangerously-skip-permissions")
+        print(f"    claude --plugin-dir {shlex.quote(str(plugin_dir))} "
+              "--dangerously-skip-permissions")
     print("\n  Then type any prompt (e.g. 'do the task'). The mock replays the")
     print("  steps above; SASY gates each one. Ctrl-C here when done.")
     if plugin_dir is not None:

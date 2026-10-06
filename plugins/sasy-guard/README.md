@@ -53,11 +53,12 @@ The plugin also ships a Claude Code
 `hooks/register.tsx`, listed under `modules` in `hooks/hooks.json`. It only
 observes: it reads each `PreToolUse` decision through `classic.PreToolUse` and
 shows a status entry with the session's checked / denied / asked totals, a band
-above the prompt that explains the latest `[SASY]` denial or ask (with a
-Dismiss button), and a `/guard` command that answers without a model turn,
-reporting the daemon's `/healthz` and recent decisions. Enforcement stays entirely in the settings
-hooks, so a session where only mods are blocked (`allowManagedModsOnly`) is
-enforced the same way. `disableAllHooks` turns off both, so nothing is enforced.
+above the prompt that explains the latest `[SASY]` denial or ask (with a Dismiss
+button), and a `/guard` command that answers without a model turn, reporting the
+daemon's `/healthz` and recent decisions. Enforcement stays entirely in the
+settings hooks, so a session where only mods are blocked
+(`allowManagedModsOnly`) is enforced the same way. `disableAllHooks` turns off
+both, so nothing is enforced.
 
 ```sh
 claude plugin validate plugins/sasy-guard   # what the mod hooks and calls
