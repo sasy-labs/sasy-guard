@@ -219,7 +219,7 @@ test('/guard does not mistake another service on the port for the daemon', async
   expect(out.text).toContain('answered, but not as the sasy-watch daemon')
 })
 
-test('a taken /guard name still leaves the status entry pinned', async ($, on) => {
+test('a taken /guard name keeps the status entry and passes /guard on', async ($, on) => {
   mock.clock(on, { now: 0 })
   const lines: string[] = []
   on('ui.status', ($, e) => {
@@ -233,10 +233,14 @@ test('a taken /guard name still leaves the status entry pinned', async ($, on) =
   on('command.register', () => ({ deny: 'the name is taken' }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
 
+  on('command.run', () => ({ text: "the other plugin's /guard" }))
+
   await $.session.start(START)
+  const out = await $.command.run(GUARD)
 
   expect(lines[0]).toBe('0 checked · 0 denied · 0 asked')
   expect(lines.some(line => line.startsWith('toast: sasy-guard: /guard is unavailable'))).toBe(true)
+  expect(out.text).toBe("the other plugin's /guard")
 })
 
 test('the status entry is pinned again after /clear', async ($, on) => {

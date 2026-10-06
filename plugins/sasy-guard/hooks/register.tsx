@@ -136,6 +136,11 @@ function decisionLines(d: GuardDecision, isWhole: boolean): string[] {
 }
 
 export const register: Register = on => {
+  // Hooks that only observe carry no .catch: one that fails before next is
+  // skipped, and one that fails after next leaves next's result standing.
+  // Whether /guard registered; if another plugin owns the name, pass it on.
+  let ownsCommand = false
+
   on('session.start', async ($, e, next) => {
     $.ui.status(statusText(await read($, counts)))
     try {
@@ -144,6 +149,7 @@ export const register: Register = on => {
         description: 'Show sasy-guard daemon health and recent policy decisions',
         immediate: true,
       })
+      ownsCommand = true
     } catch (error) {
       // Another plugin may own the name; the status line and band still work.
       const why = error instanceof Error ? error.message : String(error)
@@ -156,7 +162,7 @@ export const register: Register = on => {
   on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
     $.ui.status(statusText(await read($, counts)))
     return next(e)
-  }).catch(($, e, next) => next(e))
+  })
 
   on('classic.PreToolUse', async ($, e, next) => {
     const result = await next(e)
@@ -182,9 +188,10 @@ export const register: Register = on => {
       })
     }
     return result
-  }).catch(($, e, next) => next(e))
+  })
 
-  on('command.run', { command: COMMAND }, async $ => {
+  on('command.run', { command: COMMAND }, async ($, e, next) => {
+    if (!ownsCommand) return next(e)
     const c = await read($, counts)
     const recent = (await read($, decisions)).slice(-RECENT_IN_COMMAND).reverse()
     const lines = [
