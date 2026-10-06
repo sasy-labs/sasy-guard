@@ -33,7 +33,9 @@ const MARKER = "[SASY]";
  * caller treats as no answer (fail closed).
  */
 export function parseDecision(body: unknown): Decision | undefined {
-  if (typeof body !== "object" || body === null) return undefined;
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+  // An error body is no decision, even with HTTP 200.
+  if ("error" in body) return undefined;
   const hs = (body as { hookSpecificOutput?: unknown }).hookSpecificOutput;
   if (hs === undefined) return { kind: "allow" };
   if (typeof hs !== "object" || hs === null) return undefined;
@@ -124,8 +126,15 @@ export function shrinkEntry(entry: unknown): unknown {
     msg.content = msg.content
       .filter((b) => !(b && typeof b === "object" && (b as { type?: unknown }).type === "image"))
       .map((b) => {
-        if (b && typeof b === "object" && typeof (b as { text?: unknown }).text === "string") {
-          return { ...(b as object), text: cutText((b as { text: string }).text) };
+        if (!b || typeof b !== "object") return b;
+        const blk = b as Record<string, unknown>;
+        if (typeof blk.text === "string") return { ...blk, text: cutText(blk.text) };
+        // A tool call's string arguments (a write's content, say) are cut too.
+        if (blk.type === "toolCall" && blk.arguments && typeof blk.arguments === "object") {
+          const args = Object.fromEntries(
+            Object.entries(blk.arguments as Record<string, unknown>).map(([k, v]) => [k, typeof v === "string" ? cutText(v) : v]),
+          );
+          return { ...blk, arguments: args };
         }
         return b;
       });

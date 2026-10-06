@@ -51,17 +51,30 @@ export function createGuard(opts: GuardOptions = {}) {
     let started: Promise<void> | undefined;
 
     const sessionId = (ctx: ExtensionContext) => ctx.sessionManager.getSessionId();
+    /** The session file, so a daemon that restarted can rebuild the session from it. */
+    const sessionFile = (ctx: ExtensionContext) => {
+      const f = ctx.sessionManager.getSessionFile();
+      return f ? { pi_session_file: f } : {};
+    };
+
+    /** POSTs and requires the daemon's `{ ok: true }`. */
+    async function postOk(path: string, body: unknown): Promise<void> {
+      const out = (await client.postEnsuring(path, body)) as { ok?: unknown } | null;
+      if (!out || out.ok !== true) throw new Error(`sasy-watch did not accept ${path}`);
+    }
+
+    /**
+     * Records a call pi will not run: for the next push, and as a custom session
+     * entry (kept out of the model's context) so a resumed session still knows.
+     */
+    function reject(toolCallId: string): void {
+      rejected.push(toolCallId);
+      pi.appendEntry(KEY, { rejected: [toolCallId] });
+    }
 
     /** Registers the session with the daemon (once per pi session). */
     function start(ctx: ExtensionContext): Promise<void> {
-      started ??= client
-        .postEnsuring("/v1/session/start", {
-          session_id: sessionId(ctx),
-          cwd: ctx.cwd,
-          agent: "pi",
-          ...(ctx.sessionManager.getSessionFile() ? { pi_session_file: ctx.sessionManager.getSessionFile() } : {}),
-        })
-        .then(() => undefined)
+      started ??= postOk("/v1/session/start", { session_id: sessionId(ctx), cwd: ctx.cwd, agent: "pi", ...sessionFile(ctx) })
         .catch((err) => {
           started = undefined; // retried on the next check
           throw err;
@@ -74,14 +87,15 @@ export function createGuard(opts: GuardOptions = {}) {
       const run = pushChain.then(async () => {
         await start(ctx);
         const fresh = ctx.sessionManager.getBranch().filter((e) => !sent.has(e.id));
-        const reported = rejected;
+        const reported = [...rejected];
         if (fresh.length === 0 && reported.length === 0) return;
         const parts = batches(fresh.map(shrinkEntry));
         if (parts.length === 0) parts.push([]);
         for (const [i, part] of parts.entries()) {
-          await client.postEnsuring("/v1/session/events", {
+          await postOk("/v1/session/events", {
             session_id: sessionId(ctx),
             cwd: ctx.cwd,
+            ...sessionFile(ctx),
             entries: part,
             rejected_tool_call_ids: i === 0 ? reported : [],
           });
@@ -124,6 +138,7 @@ export function createGuard(opts: GuardOptions = {}) {
           tool_input: input ?? {},
           tool_use_id: toolCallId,
           cwd: ctx.cwd,
+          ...sessionFile(ctx),
         });
         const d = parseDecision(out);
         if (d) return d;
@@ -174,11 +189,11 @@ export function createGuard(opts: GuardOptions = {}) {
         const { approved, outcome } = await settleAsk(ctx, d, event.toolName, event.input);
         record(ctx, d, event.toolName, event.input, outcome);
         if (approved) return undefined;
-        rejected.push(event.toolCallId);
+        reject(event.toolCallId);
         return { block: true, reason: outcome === "no-ui" ? `${d.reason}\n(no UI to approve it, so it was blocked)` : `${d.reason}\n(the user declined)` };
       }
       record(ctx, d, event.toolName, event.input);
-      rejected.push(event.toolCallId);
+      reject(event.toolCallId);
       return { block: true, reason: d.reason };
     });
 
