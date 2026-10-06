@@ -1,6 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 
+import { combine, toResult } from '../hooks/enforce'
+
 const DENY_REASON =
   '[SASY] Recursive delete of build/ is blocked (data_loss).\n' +
   'Fix:\n  delete the specific files instead.\n' +
@@ -47,16 +49,17 @@ function policy(command: string): unknown {
   if (command === 'answer-escapes') {
     return {
       hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason: `[SASY] blocked \u001b[8mhidden\u001b[0m ${'x'.repeat(5000)}`,
       },
     }
   }
   if (command.includes('rm -rf')) {
-    return { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: DENY_REASON } }
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: DENY_REASON } }
   }
   if (command.startsWith('git push')) {
-    return { hookSpecificOutput: { permissionDecision: 'ask', permissionDecisionReason: ASK_REASON } }
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: ASK_REASON } }
   }
   return {}
 }
@@ -485,4 +488,30 @@ test('SASY_FAIL_OPEN does not cover a refused authentication', async ($, on) => 
 
   expect(call.deny ?? call.text).toContain('sasy-watch answered HTTP 401')
   expect(w.hookCalls).toEqual([])
+})
+
+test('only the daemon\'s own answer shapes are decisions', () => {
+  const block = (hs: object) => JSON.stringify({ hookSpecificOutput: hs })
+  expect(toResult('{}')).toEqual({})
+  expect(toResult(block({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: '[SASY] no' })))
+    .toEqual({ deny: '[SASY] no' })
+  expect(toResult(block({ hookEventName: 'PreToolUse', updatedInput: { command: 'ls -1' } })))
+    .toEqual({ updatedInput: { command: 'ls -1' } })
+  // No answer: each of these fails closed.
+  expect(toResult('[]')).toBeUndefined()
+  expect(toResult('{"error":"x"}')).toBeUndefined()
+  expect(toResult(block({ permissionDecision: 'allow' }))).toBeUndefined()
+  expect(toResult(block({ hookEventName: 'PreToolUse' }))).toBeUndefined()
+  expect(toResult(block({ hookEventName: 'PreToolUse', permissionDecision: 'block' }))).toBeUndefined()
+  expect(toResult(block({ hookEventName: 'PreToolUse', updatedInput: null }))).toBeUndefined()
+  expect(toResult(block({ hookEventName: 'PreToolUse', additionalContext: 7 }))).toBeUndefined()
+  expect(toResult(block({ hookEventName: 'PreToolUse', permissionDecision: 'allow', extra: 1 }))).toBeUndefined()
+})
+
+test('SASY\'s input rewrite wins over another hook\'s', () => {
+  const ours = { updatedInput: { command: 'aws --profile restricted s3 ls' } }
+  const theirs = { updatedInput: { command: 'aws s3 ls', timeout: 5 } }
+  expect(combine(ours, theirs).updatedInput).toEqual(ours.updatedInput)
+  expect(combine({}, theirs).updatedInput).toEqual(theirs.updatedInput)
+  expect(combine(ours, { deny: 'no' })).toEqual({ deny: 'no' })
 })

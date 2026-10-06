@@ -20,13 +20,6 @@ export type CheckInput = {
   agent_type?: string
 }
 
-type HookSpecific = {
-  permissionDecision?: unknown
-  permissionDecisionReason?: unknown
-  updatedInput?: unknown
-  additionalContext?: unknown
-}
-
 /**
  * curl's arguments for one check: bounded in time and size, never via a proxy,
  * the body on stdin, the HTTP status appended on a line of its own. A daemon
@@ -52,19 +45,15 @@ export function splitStatus(stdout: string): { body: string; status: string } {
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
-const DECISIONS = ['allow', 'ask', 'deny']
-const HOOK_KEYS = [
-  'hookEventName',
-  'permissionDecision',
-  'permissionDecisionReason',
-  'updatedInput',
-  'additionalContext',
-]
 
 /**
  * The daemon's hook output as a `classic.PreToolUse` result, or undefined when
- * it is not one: anything unrecognised fails closed rather than passing a call
- * the backup hook would then skip.
+ * it is not one. The accepted shapes are exactly the daemon's: `{}` (no
+ * objection), or `{ hookSpecificOutput }` with `hookEventName: "PreToolUse"`,
+ * an optional decision with its reason, and an optional input rewrite and
+ * context note, each of its own type, with at least one of decision, rewrite
+ * or note. Anything else fails closed rather than passing a call the backup
+ * hook would then skip.
  */
 export function toResult(body: string): PreToolUseResult | undefined {
   let out: unknown
@@ -74,45 +63,49 @@ export function toResult(body: string): PreToolUseResult | undefined {
     return undefined
   }
   if (!isRecord(out)) return undefined
-  const hs = out.hookSpecificOutput
-  // The daemon's "no objection" is exactly `{}`; anything else without a
-  // decision block (an error object, say) is no answer.
-  if (hs === undefined) return Object.keys(out).length === 0 ? {} : undefined
-  if (!isRecord(hs) || !Object.keys(hs).every(key => HOOK_KEYS.includes(key))) return undefined
-  // A block without a decision is the daemon rewriting the input or adding
-  // context for the model; with neither, it is no answer.
-  const decision = hs.permissionDecision
-  if (decision === undefined) {
-    if (hs.updatedInput === undefined && hs.additionalContext === undefined) return undefined
-  } else if (!DECISIONS.includes(decision as string)) {
-    return undefined
-  }
-  const { permissionDecision, permissionDecisionReason, updatedInput, additionalContext } =
-    hs as HookSpecific
-  const reason = typeof permissionDecisionReason === 'string' ? permissionDecisionReason : ''
+  const keys = Object.keys(out)
+  if (keys.length === 0) return {}
+  if (keys.length !== 1 || !isRecord(out.hookSpecificOutput)) return undefined
+  const {
+    hookEventName,
+    permissionDecision: decision,
+    permissionDecisionReason: reason,
+    updatedInput,
+    additionalContext: note,
+    ...unknown
+  } = out.hookSpecificOutput
+  const isValid =
+    Object.keys(unknown).length === 0 &&
+    hookEventName === 'PreToolUse' &&
+    (decision === undefined || decision === 'allow' || decision === 'ask' || decision === 'deny') &&
+    (reason === undefined || typeof reason === 'string') &&
+    (updatedInput === undefined || isRecord(updatedInput)) &&
+    (note === undefined || typeof note === 'string') &&
+    (decision !== undefined || updatedInput !== undefined || note !== undefined)
+  if (!isValid) return undefined
+  const why = typeof reason === 'string' ? reason : ''
   const decided: PreToolUseResult =
-    permissionDecision === 'deny'
-      ? { deny: reason || '[SASY] denied by policy' }
-      : permissionDecision === 'ask'
-        ? { ask: reason || '[SASY] approval needed' }
-        : permissionDecision === 'allow'
+    decision === 'deny'
+      ? { deny: why || '[SASY] denied by policy' }
+      : decision === 'ask'
+        ? { ask: why || '[SASY] approval needed' }
+        : decision === 'allow'
           ? { allow: true }
           : {}
-  const extra: { updatedInput?: Record<string, unknown>; additionalContext?: string[] } = {}
-  if (typeof updatedInput === 'object' && updatedInput !== null && !Array.isArray(updatedInput)) {
-    extra.updatedInput = updatedInput as Record<string, unknown>
+  return {
+    ...decided,
+    ...(isRecord(updatedInput) ? { updatedInput } : {}),
+    ...(typeof note === 'string' && note !== '' ? { additionalContext: [note] } : {}),
   }
-  if (typeof additionalContext === 'string' && additionalContext !== '') {
-    extra.additionalContext = [additionalContext]
-  }
-  return { ...decided, ...extra }
 }
 
 /** One answer from several PreToolUse deciders: deny over ask over allow. */
 export function combine(ours: PreToolUseResult, theirs: PreToolUseResult): PreToolUseResult {
   if (theirs.deny !== undefined) return theirs
   const context = [...(ours.additionalContext ?? []), ...(theirs.additionalContext ?? [])]
-  const updatedInput = theirs.updatedInput ?? ours.updatedInput
+  // SASY's rewrite is part of what it authorised, so it wins over another
+  // hook's rewrite of the same call.
+  const updatedInput = ours.updatedInput ?? theirs.updatedInput
   const extra = {
     ...(updatedInput === undefined ? {} : { updatedInput }),
     ...(context.length === 0 ? {} : { additionalContext: context }),
