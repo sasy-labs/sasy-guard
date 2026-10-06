@@ -1,0 +1,21 @@
+{
+  "name": "pi-sasy-guard",
+  "version": "0.1.0",
+  "description": "Sasy Guard for the pi coding agent: checks every tool call against a SASY policy before it runs",
+  "type": "module",
+  "keywords": ["pi-package", "security", "policy", "sasy"],
+  "repository": "https://github.com/sasy-labs/sasy-guard",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "files": ["index.ts", "core.ts", "daemon.ts", "README.md"],
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "engines": {
+    "node": ">=22.19"
+  }
+}
