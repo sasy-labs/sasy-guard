@@ -13,7 +13,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PreToolUseResult, Register } from 'claude-code'
 
-import type { GuardCounts, GuardDecision, GuardVerdict } from '../types'
+import type { GuardCounts, GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
 import type { CheckInput } from './enforce'
 import {
   CHECK_TIMEOUT_MS,
@@ -43,13 +43,19 @@ const counts = atom({ plugin: 'sasy-guard', key: 'counts' } as const, {
 })
 const decisions = atom({ plugin: 'sasy-guard', key: 'decisions' } as const, [])
 const dismissedSeq = atom({ plugin: 'sasy-guard', key: 'dismissedSeq' } as const, 0)
-const transcriptPath = atom({ plugin: 'sasy-guard', key: 'transcriptPath' } as const, null)
+const sessionInfo = atom(
+  { plugin: 'sasy-guard', key: 'sessionInfo' } as const,
+  null as GuardSessionInfo | null,
+)
 
 /** The tool-call fields that name what a call acts on, in order of preference. */
 const TARGET_FIELDS = ['command', 'file_path', 'notebook_path', 'url', 'path', 'pattern']
 
+/** C0 and C1 control characters other than newline and tab. */
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f\u0080-\u009f]/g
+
 function shorten(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, ' ').trim()
+  const flat = text.replace(/\s+/g, ' ').replace(CONTROL, '').trim()
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`
 }
 
@@ -68,7 +74,7 @@ function targetOf(e: Readonly<Record<string, unknown>>): string {
  * small and free of terminal escapes.
  */
 function cleanReason(text: string): string {
-  const clean = text.replace(/[\u0000-\u0008\u000b-\u001f\u007f\u0080-\u009f]/g, '').trim()
+  const clean = text.replace(CONTROL, '').trim()
   return clean.length <= REASON_CHARS ? clean : `${clean.slice(0, REASON_CHARS - 1)}…`
 }
 
@@ -254,6 +260,19 @@ async function record(
 }
 
 /**
+ * record(), never throwing: it runs after `next`, where a failure would hand
+ * the call to the .catch handler, which replays only the downstream result and
+ * would lose this mod's own decision.
+ */
+async function recordSafely($: EngineInterface, e: unknown, result: PreToolUseResult): Promise<void> {
+  try {
+    await record($, e as Readonly<Record<string, unknown>>, result)
+  } catch {
+    // The counts and the band miss one call; the decision stands.
+  }
+}
+
+/**
  * Lists the calls this mod is checking in SASY_GUARD_MOD_CHECKED, which the
  * settings hooks Claude Code starts next inherit; pretooluse.sh stands aside
  * for exactly those tool_use_ids.
@@ -294,7 +313,11 @@ export const register: Register = on => {
   // and keep the transcript path the daemon is sent with each check.
   on('classic.SessionStart', async ($, e, next) => {
     const path = typeof e.transcript_path === 'string' ? e.transcript_path : ''
-    await update($, transcriptPath, () => (path === '' ? null : path))
+    const type = typeof e.agent_type === 'string' ? e.agent_type : ''
+    await update($, sessionInfo, () => ({
+      transcriptPath: path === '' ? null : path,
+      agentType: type === '' ? null : type,
+    }))
     $.ui.status(statusText(await read($, counts)))
     return next(e)
   })
@@ -316,19 +339,28 @@ export const register: Register = on => {
       tool: string
       tool_use_id: string
     }
+    // The check needs the caller's identity as the hook payload carries it.
+    // Where the mod cannot tell it (SessionStart not seen yet, or a subagent
+    // the agent list does not show), the call is left to the settings hook,
+    // which receives it from Claude Code.
+    const info = await read($, sessionInfo)
     const agentId = agentOf.get(tool_use_id)
-    let agentType: string | undefined
-    if (agentId !== undefined) {
-      agentType = (await $.agent.list()).find(a => a.id === agentId)?.type
+    const agentType =
+      agentId === undefined
+        ? info?.agentType ?? undefined
+        : (await $.agent.list()).find(a => a.id === agentId)?.type
+    if (info === null || (agentId !== undefined && agentType === undefined)) {
+      const deferred = await next(e)
+      await recordSafely($, e, deferred)
+      return deferred
     }
-    const transcript = await read($, transcriptPath)
     const ours = await checkCall($, {
       session_id: await $.session.id(),
       tool_name: String(tool),
       tool_input: args,
       tool_use_id,
       cwd: await $.session.cwd(),
-      ...(transcript === null ? {} : { transcript_path: transcript }),
+      ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
       ...(agentId === undefined ? {} : { agent_id: agentId }),
       ...(agentType === undefined ? {} : { agent_type: agentType }),
     })
@@ -346,7 +378,7 @@ export const register: Register = on => {
         await publishChecking($, checking)
       }
     }
-    await record($, e as unknown as Readonly<Record<string, unknown>>, result)
+    await recordSafely($, e, result)
     return result
   }).catch(($, e, next) =>
     next.called ? next(e) : { deny: '[SASY] security check failed inside the sasy-guard mod' },

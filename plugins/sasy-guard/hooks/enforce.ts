@@ -68,7 +68,9 @@ export function toResult(body: string): PreToolUseResult | undefined {
   }
   if (!isRecord(out)) return undefined
   const hs = out.hookSpecificOutput
-  if (hs === undefined) return {}
+  // The daemon's "no objection" is exactly `{}`; anything else without a
+  // decision block (an error object, say) is no answer.
+  if (hs === undefined) return Object.keys(out).length === 0 ? {} : undefined
   if (!isRecord(hs) || !DECISIONS.includes(hs.permissionDecision as string | undefined)) {
     return undefined
   }

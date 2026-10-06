@@ -15,6 +15,9 @@ export type GuardDecision = {
   reason: string
 }
 
+/** The session facts a check needs from classic.SessionStart. */
+export type GuardSessionInfo = { transcriptPath: string | null; agentType: string | null }
+
 /** Per-session totals over every tool call sasy-guard checked. */
 export type GuardCounts = { checked: number; denied: number; asked: number }
 
@@ -26,9 +29,11 @@ declare module 'claude-code' {
       decisions: GuardDecision[]
       /** The `seq` of the decision the user dismissed from the band. */
       dismissedSeq: number
-      /** The session's transcript file, from classic.SessionStart; sent with each
-       *  check so a restarted daemon can rebuild the session from it. */
-      transcriptPath: string | null
+      /** What classic.SessionStart said about the session, or null before it
+       *  fired: the transcript file (sent with each check so a restarted daemon
+       *  can rebuild the session) and the agent type of a session started with
+       *  --agent. The mod checks a call only once it knows these. */
+      sessionInfo: GuardSessionInfo | null
     }
   }
 }

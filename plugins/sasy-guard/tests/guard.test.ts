@@ -38,6 +38,7 @@ const HEALTH = {
 /** What the fake daemon answers for one check, by the command checked. */
 function policy(command: string): unknown {
   if (command === 'answer-array') return []
+  if (command === 'answer-error') return { error: 'session unavailable' }
   if (command === 'answer-unknown') return { hookSpecificOutput: { permissionDecision: 'block' } }
   if (command === 'answer-escapes') {
     return {
@@ -47,7 +48,7 @@ function policy(command: string): unknown {
       },
     }
   }
-  if (command.startsWith('rm -rf')) {
+  if (command.includes('rm -rf')) {
     return { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: DENY_REASON } }
   }
   if (command.startsWith('git push')) {
@@ -140,6 +141,7 @@ function world(on: On, options: WorldOptions = {}): World {
     }
     return ran(1, '') // sasy-watch ensure: not installed in the test
   })
+  on('classic.SessionStart', () => ({}))
   // The other settings hooks: they deny `curl` without a [SASY] marker.
   on('classic.PreToolUse', ($, e) => {
     const command = e.tool === 'Bash' ? e.command : ''
@@ -156,8 +158,14 @@ function world(on: On, options: WorldOptions = {}): World {
   return w
 }
 
+/** Claude Code's SessionStart, which the mod waits for before it checks calls. */
+async function started($: { classic: { SessionStart: (e: never) => Promise<unknown> } }): Promise<void> {
+  await $.classic.SessionStart({ source: 'startup', transcript_path: '/t/session-1.jsonl' } as never)
+}
+
 test('the mod asks the daemon about each call and enforces its answer', async ($, on) => {
   const w = world(on)
+  await started($)
 
   const listed = await $.tool.call({ tool: 'Bash', command: 'ls' })
   const denied = await $.tool.call({ tool: 'Bash', command: 'rm -rf build' })
@@ -178,6 +186,7 @@ test('the mod asks the daemon about each call and enforces its answer', async ($
 
 test('the plugin script stands aside for exactly the calls the mod checked', async ($, on) => {
   const w = world(on)
+  await started($)
 
   await $.tool.call({ tool: 'Bash', command: 'ls' })
   await $.tool.call({ tool: 'Bash', command: 'pwd' })
@@ -190,6 +199,7 @@ test('the plugin script stands aside for exactly the calls the mod checked', asy
 
 test('an ask from the daemon asks the user even when other hooks allow', async ($, on) => {
   const w = world(on)
+  await started($)
 
   await $.tool.call({ tool: 'Bash', command: 'git push origin main' })
 
@@ -199,6 +209,7 @@ test('an ask from the daemon asks the user even when other hooks allow', async (
 
 test('counts every checked call and only [SASY] verdicts', async ($, on) => {
   const w = world(on)
+  await started($)
 
   await $.tool.call({ tool: 'Bash', command: 'ls' })
   await $.tool.call({ tool: 'Bash', command: 'rm -rf build' })
@@ -210,6 +221,7 @@ test('counts every checked call and only [SASY] verdicts', async ($, on) => {
 
 test('the daemon is sent its hook-auth header file when one exists', async ($, on) => {
   const w = world(on, { hasAuthFile: true })
+  await started($)
 
   await $.tool.call({ tool: 'Bash', command: 'ls' })
 
@@ -219,6 +231,7 @@ test('the daemon is sent its hook-auth header file when one exists', async ($, o
 
 test('an unreachable daemon fails closed', async ($, on) => {
   const w = world(on, { checkExit: 7 })
+  await started($)
 
   const call = await $.tool.call({ tool: 'Bash', command: 'ls' })
 
@@ -231,6 +244,7 @@ test('an unreachable daemon fails closed', async ($, on) => {
 
 test('SASY_FAIL_OPEN=true lets calls through when the daemon is down', async ($, on) => {
   const w = world(on, { checkExit: 7, env: { SASY_FAIL_OPEN: 'true' } })
+  await started($)
 
   const call = await $.tool.call({ tool: 'Bash', command: 'ls' })
 
@@ -240,6 +254,7 @@ test('SASY_FAIL_OPEN=true lets calls through when the daemon is down', async ($,
 
 test('the band explains the latest decision until dismissed', async ($, on) => {
   world(on)
+  await started($)
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const empty = await $.ui.mount({ ...BAND, surface })
@@ -274,6 +289,7 @@ test('the band explains the latest decision until dismissed', async ($, on) => {
 
 test('/guard reports daemon health and recent decisions without a model turn', async ($, on) => {
   const w = world(on, { env: { SASY_WATCH_PORT: '51799' } })
+  await started($)
 
   await $.session.start(START)
   await $.tool.call({ tool: 'Bash', command: 'rm -rf build' })
@@ -363,7 +379,7 @@ test('a taken /guard name keeps the status entry and passes /guard on', async ($
 
 test('the status entry is pinned again after /clear', async ($, on) => {
   const w = world(on)
-  on('classic.SessionStart', () => ({}))
+  await started($)
 
   await $.tool.call({ tool: 'Bash', command: 'rm -rf build' })
   const before = w.lines.length
@@ -374,18 +390,20 @@ test('the status entry is pinned again after /clear', async ($, on) => {
 
 test('an answer the mod does not recognise fails closed', async ($, on) => {
   const w = world(on)
+  await started($)
 
   const array = await $.tool.call({ tool: 'Bash', command: 'answer-array' })
   const unknown = await $.tool.call({ tool: 'Bash', command: 'answer-unknown' })
+  const error = await $.tool.call({ tool: 'Bash', command: 'answer-error' })
 
   expect(array.deny ?? array.text).toContain('[SASY] security check unavailable')
   expect(unknown.deny ?? unknown.text).toContain('[SASY] security check unavailable')
+  expect(error.deny ?? error.text).toContain('[SASY] security check unavailable')
   expect(w.hookCalls).toEqual([])
 })
 
 test('the transcript path from SessionStart is sent with each check', async ($, on) => {
   const w = world(on)
-  on('classic.SessionStart', () => ({}))
 
   await $.classic.SessionStart({ source: 'startup', transcript_path: '/t/session-1.jsonl' })
   await $.tool.call({ tool: 'Bash', command: 'ls' })
@@ -395,6 +413,7 @@ test('the transcript path from SessionStart is sent with each check', async ($, 
 
 test('a reason is kept without terminal escapes and held to a size', async ($, on) => {
   const w = world(on, {})
+  await started($)
 
   await $.session.start(START)
   await $.tool.call({ tool: 'Bash', command: 'answer-escapes' })
@@ -404,4 +423,36 @@ test('a reason is kept without terminal escapes and held to a size', async ($, o
   expect(out.text).toContain('blocked [8mhidden[0m')
   expect((out.text ?? '').length).toBeLessThan(4600)
   expect(w.lines.at(-1)).toBe('1 checked · 1 denied · 0 asked')
+})
+
+test('before SessionStart the mod leaves the call to the settings hook', async ($, on) => {
+  const w = world(on)
+
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+
+  expect(w.checks).toHaveLength(0)
+  expect(w.hookCalls).toEqual(['ls'])
+  expect(w.seenByHooks.ls).toBeUndefined()
+})
+
+test('the session agent type from SessionStart is sent with main-thread checks', async ($, on) => {
+  const w = world(on)
+
+  await $.classic.SessionStart({ source: 'startup', agent_type: 'restricted-reviewer' })
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+
+  expect(w.checks[0]?.agent_type).toBe('restricted-reviewer')
+  expect(w.checks[0]?.agent_id).toBeUndefined()
+})
+
+test('terminal escapes in a call are not drawn', async ($, on) => {
+  world(on)
+  await started($)
+
+  await $.tool.call({ tool: 'Bash', command: 'rm -rf \u001b[2Jbuild' })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const heading = await ui.find({ type: 'Text', text: /sasy-guard denied Bash/ })
+  expect(heading?.text).not.toContain('\u001b')
+  await ui.unmount()
 })
