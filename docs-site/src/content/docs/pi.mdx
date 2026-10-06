@@ -145,7 +145,8 @@ pi ──extension──▶ sasy-watch daemon ──gRPC──▶ sasy engine
   which calls never ran, because they were blocked or you declined them, so
   those are not treated as having produced output, and records them in the pi
   session as an entry pi keeps for extensions and never shows the model, so a
-  resumed session knows too.
+  resumed session knows too. If the daemon restarts, the extension notices and
+  sends the session's whole current branch again.
 - The **daemon** translates pi's tools into the tool names the policy uses
   (`bash` becomes `Bash`, `read` becomes `Read` with an absolute `file_path`,
   resolved as pi resolves it, `~` and all,

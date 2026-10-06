@@ -59,10 +59,25 @@ export function createGuard(opts: GuardOptions = {}) {
       return f ? { pi_session_file: f } : {};
     };
 
-    /** POSTs and requires the daemon's `{ ok: true }`. */
-    async function postOk(path: string, body: unknown): Promise<void> {
-      const out = (await client.postEnsuring(path, body)) as { ok?: unknown } | null;
+    /** The daemon run the session's history was last pushed to. */
+    let instance: string | undefined;
+    /** Push sequence numbers grow with the clock, so they keep growing across
+     *  pi restarts that resume a session against the same daemon. */
+    let seqCounter = 0;
+    const nextSeq = () => Date.now() * 1000 + (seqCounter++ % 1000);
+
+    /**
+     * POSTs and requires the daemon's `{ ok: true }`. Returns whether the
+     * daemon is a different run from the one the history went to (it restarted
+     * and lost the session), in which case the caller resends the whole branch.
+     */
+    async function postOk(path: string, body: unknown): Promise<boolean> {
+      const out = (await client.postEnsuring(path, body)) as { ok?: unknown; instance?: unknown } | null;
       if (!out || out.ok !== true) throw new Error(`sasy-watch did not accept ${path}`);
+      const now = typeof out.instance === "string" ? out.instance : undefined;
+      const changed = instance !== undefined && now !== undefined && now !== instance;
+      if (now !== undefined) instance = now;
+      return changed;
     }
 
     /**
@@ -77,6 +92,7 @@ export function createGuard(opts: GuardOptions = {}) {
     /** Registers the session with the daemon (once per pi session). */
     function start(ctx: ExtensionContext): Promise<void> {
       started ??= postOk("/v1/session/start", { session_id: sessionId(ctx), cwd: ctx.cwd, agent: "pi", ...sessionFile(ctx) })
+        .then(() => undefined)
         .catch((err) => {
           started = undefined; // retried on the next check
           throw err;
@@ -88,32 +104,42 @@ export function createGuard(opts: GuardOptions = {}) {
     function push(ctx: ExtensionContext): Promise<void> {
       const run = pushChain.then(async () => {
         await start(ctx);
-        const branch = ctx.sessionManager.getBranch();
-        const leaf = branch.at(-1)?.id ?? null;
-        const firstFresh = branch.find((e) => !sent.has(e.id));
-        // pi moved to another branch of its session tree (navigating back, or
-        // continuing from an earlier entry): resend the whole branch as a reset,
-        // so the daemon judges the next call by this branch's history.
-        const jumped =
-          lastLeaf !== null && (firstFresh ? (firstFresh.parentId ?? null) !== lastLeaf : leaf !== lastLeaf);
-        const toSend = jumped ? branch : branch.filter((e) => !sent.has(e.id));
-        const reported = [...rejected];
-        if (toSend.length === 0 && reported.length === 0) return;
-        const parts = batches(toSend.map(shrinkEntry));
-        if (parts.length === 0) parts.push([]);
-        for (const [i, part] of parts.entries()) {
-          await postOk("/v1/session/events", {
-            session_id: sessionId(ctx),
-            cwd: ctx.cwd,
-            ...sessionFile(ctx),
-            entries: part,
-            rejected_tool_call_ids: i === 0 ? reported : [],
-            reset: jumped && i === 0,
-          });
-          for (const e of part as { id: string }[]) sent.add(e.id);
+        // Twice at most: a second pass resends the whole branch when the daemon
+        // turns out to be a new run that lost what was pushed before.
+        for (let pass = 0; pass < 2; pass++) {
+          const branch = ctx.sessionManager.getBranch();
+          const leaf = branch.at(-1)?.id ?? null;
+          const firstFresh = branch.find((e) => !sent.has(e.id));
+          // pi moved to another branch of its session tree (navigating back, or
+          // continuing from an earlier entry): resend the whole branch as a reset,
+          // so the daemon judges the next call by this branch's history.
+          const jumped =
+            lastLeaf !== null && (firstFresh ? (firstFresh.parentId ?? null) !== lastLeaf : leaf !== lastLeaf);
+          const toSend = jumped ? branch : branch.filter((e) => !sent.has(e.id));
+          const reported = [...rejected];
+          if (toSend.length === 0 && reported.length === 0) return;
+          const parts = batches(toSend.map(shrinkEntry));
+          if (parts.length === 0) parts.push([]);
+          let restarted = false;
+          for (const [i, part] of parts.entries()) {
+            restarted =
+              (await postOk("/v1/session/events", {
+                session_id: sessionId(ctx),
+                cwd: ctx.cwd,
+                ...sessionFile(ctx),
+                seq: nextSeq(),
+                entries: part,
+                rejected_tool_call_ids: i === 0 ? reported : [],
+                reset: jumped && i === 0,
+              })) || restarted;
+            for (const e of part as { id: string }[]) sent.add(e.id);
+          }
+          lastLeaf = leaf;
+          rejected = rejected.filter((id) => !reported.includes(id));
+          if (!restarted) return;
+          sent = new Set();
+          lastLeaf = null;
         }
-        lastLeaf = leaf;
-        rejected = rejected.filter((id) => !reported.includes(id));
       });
       pushChain = run.catch(() => {});
       return run;

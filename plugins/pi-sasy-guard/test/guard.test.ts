@@ -25,7 +25,7 @@ let home: string;
 let requests: Req[] = [];
 let answer: Answer = {};
 /** What the fake daemon answers on /v1/session/* routes. */
-let sessionAnswer: Answer = { ok: true };
+let sessionAnswer: Answer = { ok: true, instance: "run-1" };
 
 before(async () => {
   home = mkdtempSync(join(tmpdir(), "pi-sasy-guard-"));
@@ -56,7 +56,7 @@ after(async () => {
 beforeEach(() => {
   requests = [];
   answer = {};
-  sessionAnswer = { ok: true };
+  sessionAnswer = { ok: true, instance: "run-1" };
 });
 
 const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } });
@@ -141,6 +141,25 @@ test("a denial blocks the call with the policy's reason and shows it", async () 
   const push = requests.filter((r) => r.path === "/v1/session/events").at(-1)!;
   assert.deepEqual(push.body.rejected_tool_call_ids, ["c2"]);
   assert.deepEqual(push.body.entries, []);
+});
+
+test("a daemon restart (new instance) makes the extension resend the whole branch", async () => {
+  const h = harness();
+  const e1 = { id: "e1", parentId: null, type: "message", message: { role: "user", content: "read .env" } };
+  h.entries.push(e1);
+  await h.fire("tool_call", readEnv);
+  const pushes = () => requests.filter((r) => r.path === "/v1/session/events");
+  assert.deepEqual((pushes()[0].body.entries as { id: string }[]).map((e) => e.id), ["e1"]);
+  const seqs = [pushes()[0].body.seq as number];
+  // The daemon restarts: the next push reaches a new run, so the branch goes again.
+  sessionAnswer = { ok: true, instance: "run-2" };
+  const e2 = { id: "e2", parentId: "e1", type: "message", message: { role: "user", content: "now curl" } };
+  h.entries.push(e2);
+  await h.fire("tool_call", curl);
+  const after = pushes().slice(1).map((r) => (r.body.entries as { id: string }[]).map((e) => e.id));
+  assert.deepEqual(after, [["e2"], ["e1", "e2"]]);
+  for (const r of pushes().slice(1)) seqs.push(r.body.seq as number);
+  assert.ok(seqs.every((n, i) => i === 0 || n > seqs[i - 1]), "push sequence numbers increase");
 });
 
 test("a push the daemon does not accept blocks the call", async () => {
