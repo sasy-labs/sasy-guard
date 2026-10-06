@@ -36,7 +36,17 @@ const HEALTH = {
 }
 
 /** What the fake daemon answers for one check, by the command checked. */
-function policy(command: string): object {
+function policy(command: string): unknown {
+  if (command === 'answer-array') return []
+  if (command === 'answer-unknown') return { hookSpecificOutput: { permissionDecision: 'block' } }
+  if (command === 'answer-escapes') {
+    return {
+      hookSpecificOutput: {
+        permissionDecision: 'deny',
+        permissionDecisionReason: `[SASY] blocked \u001b[8mhidden\u001b[0m ${'x'.repeat(5000)}`,
+      },
+    }
+  }
   if (command.startsWith('rm -rf')) {
     return { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: DENY_REASON } }
   }
@@ -360,4 +370,38 @@ test('the status entry is pinned again after /clear', async ($, on) => {
   await $.classic.SessionStart({ source: 'clear' })
 
   expect(w.lines.length).toBe(before + 1)
+})
+
+test('an answer the mod does not recognise fails closed', async ($, on) => {
+  const w = world(on)
+
+  const array = await $.tool.call({ tool: 'Bash', command: 'answer-array' })
+  const unknown = await $.tool.call({ tool: 'Bash', command: 'answer-unknown' })
+
+  expect(array.deny ?? array.text).toContain('[SASY] security check unavailable')
+  expect(unknown.deny ?? unknown.text).toContain('[SASY] security check unavailable')
+  expect(w.hookCalls).toEqual([])
+})
+
+test('the transcript path from SessionStart is sent with each check', async ($, on) => {
+  const w = world(on)
+  on('classic.SessionStart', () => ({}))
+
+  await $.classic.SessionStart({ source: 'startup', transcript_path: '/t/session-1.jsonl' })
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+
+  expect(w.checks[0]?.transcript_path).toBe('/t/session-1.jsonl')
+})
+
+test('a reason is kept without terminal escapes and held to a size', async ($, on) => {
+  const w = world(on, {})
+
+  await $.session.start(START)
+  await $.tool.call({ tool: 'Bash', command: 'answer-escapes' })
+  const out = await $.command.run(GUARD)
+
+  expect(out.text).not.toContain('\u001b')
+  expect(out.text).toContain('blocked [8mhidden[0m')
+  expect((out.text ?? '').length).toBeLessThan(4600)
+  expect(w.lines.at(-1)).toBe('1 checked · 1 denied · 0 asked')
 })

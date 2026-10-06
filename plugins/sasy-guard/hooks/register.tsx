@@ -34,6 +34,7 @@ const BAND_REASON_LINES = 3
 const TARGET_CHARS = 80
 const HEALTH_TIMEOUT_MS = 3000
 const MARKER = '[SASY]'
+const REASON_CHARS = 4000
 
 const counts = atom({ plugin: 'sasy-guard', key: 'counts' } as const, {
   checked: 0,
@@ -42,6 +43,7 @@ const counts = atom({ plugin: 'sasy-guard', key: 'counts' } as const, {
 })
 const decisions = atom({ plugin: 'sasy-guard', key: 'decisions' } as const, [])
 const dismissedSeq = atom({ plugin: 'sasy-guard', key: 'dismissedSeq' } as const, 0)
+const transcriptPath = atom({ plugin: 'sasy-guard', key: 'transcriptPath' } as const, null)
 
 /** The tool-call fields that name what a call acts on, in order of preference. */
 const TARGET_FIELDS = ['command', 'file_path', 'notebook_path', 'url', 'path', 'pattern']
@@ -59,6 +61,17 @@ function targetOf(e: Readonly<Record<string, unknown>>): string {
   return ''
 }
 
+/**
+ * A policy reason as the band and /guard show it: control characters other
+ * than newline and tab removed, and held to REASON_CHARS. The model has already
+ * read the same text as the call's result; this keeps the session's own copy
+ * small and free of terminal escapes.
+ */
+function cleanReason(text: string): string {
+  const clean = text.replace(/[\u0000-\u0008\u000b-\u001f\u007f\u0080-\u009f]/g, '').trim()
+  return clean.length <= REASON_CHARS ? clean : `${clean.slice(0, REASON_CHARS - 1)}…`
+}
+
 /** The sasy-guard verdict in a PreToolUse result, or none for any other. */
 function verdictOf(result: PreToolUseResult): { verdict: GuardVerdict; reason: string } | null {
   const pairs: [GuardVerdict, string | undefined][] = [
@@ -70,7 +83,7 @@ function verdictOf(result: PreToolUseResult): { verdict: GuardVerdict; reason: s
     // the policy's own words start at the marker.
     const at = text?.indexOf(MARKER) ?? -1
     if (text !== undefined && at >= 0) {
-      return { verdict, reason: text.slice(at + MARKER.length).trim() }
+      return { verdict, reason: cleanReason(text.slice(at + MARKER.length)) }
     }
   }
   return null
@@ -276,8 +289,12 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // /clear, /resume and /branch reset $.state without a new session.start.
-  on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
+  // Fires at startup and after /clear, /resume, /branch and compaction. The
+  // resets clear $.state without a new session.start: re-pin the status line,
+  // and keep the transcript path the daemon is sent with each check.
+  on('classic.SessionStart', async ($, e, next) => {
+    const path = typeof e.transcript_path === 'string' ? e.transcript_path : ''
+    await update($, transcriptPath, () => (path === '' ? null : path))
     $.ui.status(statusText(await read($, counts)))
     return next(e)
   })
@@ -304,12 +321,14 @@ export const register: Register = on => {
     if (agentId !== undefined) {
       agentType = (await $.agent.list()).find(a => a.id === agentId)?.type
     }
+    const transcript = await read($, transcriptPath)
     const ours = await checkCall($, {
       session_id: await $.session.id(),
       tool_name: String(tool),
       tool_input: args,
       tool_use_id,
       cwd: await $.session.cwd(),
+      ...(transcript === null ? {} : { transcript_path: transcript }),
       ...(agentId === undefined ? {} : { agent_id: agentId }),
       ...(agentType === undefined ? {} : { agent_type: agentType }),
     })

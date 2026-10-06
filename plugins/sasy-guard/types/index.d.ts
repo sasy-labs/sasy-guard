@@ -26,6 +26,9 @@ declare module 'claude-code' {
       decisions: GuardDecision[]
       /** The `seq` of the decision the user dismissed from the band. */
       dismissedSeq: number
+      /** The session's transcript file, from classic.SessionStart; sent with each
+       *  check so a restarted daemon can rebuild the session from it. */
+      transcriptPath: string | null
     }
   }
 }

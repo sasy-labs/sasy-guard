@@ -15,6 +15,7 @@ export type CheckInput = {
   tool_input: Record<string, unknown>
   tool_use_id: string
   cwd: string
+  transcript_path?: string
   agent_id?: string
   agent_type?: string
 }
@@ -49,7 +50,15 @@ export function splitStatus(stdout: string): { body: string; status: string } {
   return { body: stdout.slice(0, Math.max(cut, 0)), status: stdout.slice(cut + 1) }
 }
 
-/** The daemon's hook output as a `classic.PreToolUse` result, or undefined. */
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+const DECISIONS = [undefined, 'allow', 'ask', 'deny']
+
+/**
+ * The daemon's hook output as a `classic.PreToolUse` result, or undefined when
+ * it is not one: anything unrecognised fails closed rather than passing a call
+ * the backup hook would then skip.
+ */
 export function toResult(body: string): PreToolUseResult | undefined {
   let out: unknown
   try {
@@ -57,10 +66,12 @@ export function toResult(body: string): PreToolUseResult | undefined {
   } catch {
     return undefined
   }
-  if (typeof out !== 'object' || out === null) return undefined
-  const hs = (out as { hookSpecificOutput?: unknown }).hookSpecificOutput
+  if (!isRecord(out)) return undefined
+  const hs = out.hookSpecificOutput
   if (hs === undefined) return {}
-  if (typeof hs !== 'object' || hs === null) return undefined
+  if (!isRecord(hs) || !DECISIONS.includes(hs.permissionDecision as string | undefined)) {
+    return undefined
+  }
   const { permissionDecision, permissionDecisionReason, updatedInput, additionalContext } =
     hs as HookSpecific
   const reason = typeof permissionDecisionReason === 'string' ? permissionDecisionReason : ''
