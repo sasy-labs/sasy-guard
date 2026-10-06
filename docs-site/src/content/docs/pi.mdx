@@ -115,7 +115,7 @@ the demo below.
 
 From a clone of this repository, `make pi-guard-demo` starts a scripted stand-in
 for the model: a local server that speaks the Anthropic Messages API and replays
-a fixed list of tool calls. It creates a throwaway project under `output/pi-demo`
+a fixed list of tool calls. Each run creates a new project under `output/pi-demo`
 (with a fake `.env`) and prints the `pi` command to run in a second terminal.
 That command loads the sasy-guard extension and a small demo provider
 (`plugins/pi-sasy-guard/demo/mock-model.ts`) that points pi at the stand-in.

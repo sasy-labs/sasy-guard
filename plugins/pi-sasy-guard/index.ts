@@ -140,6 +140,8 @@ export function createGuard(opts: GuardOptions = {}) {
           sent = new Set();
           lastLeaf = null;
         }
+        // The daemon restarted again during the resend: its history may be partial.
+        throw new Error("sasy-watch restarted while the session was being resent");
       });
       pushChain = run.catch(() => {});
       return run;
@@ -253,9 +255,10 @@ export function createGuard(opts: GuardOptions = {}) {
     });
 
     pi.on("tool_result", async (event, ctx) => {
-      // Best effort: tells the daemon the call ran (approvals, detaint).
-      client
-        .post("/v1/posttooluse", { session_id: sessionId(ctx), tool_use_id: event.toolCallId, tool_name: event.toolName })
+      // Tells the daemon the call ran (approvals, detaint), before pi moves on to
+      // the next call; a failure here does not change the call's result.
+      await client
+        .post("/v1/posttooluse", { session_id: sessionId(ctx), tool_use_id: event.toolCallId, tool_name: event.toolName }, 3_000)
         .catch(() => {});
       return undefined;
     });

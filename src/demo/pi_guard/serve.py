@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import argparse
 import shlex
-import signal
 import sys
+import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -144,7 +145,9 @@ def main(argv: list[str] | None = None) -> int:
         help="rule group to script (--list to see all)",
     )
     parser.add_argument(
-        "--project", default="output/pi-demo", help="throwaway project directory"
+        "--project",
+        default=None,
+        help="project directory (default: a new one under output/pi-demo)",
     )
     parser.add_argument("--list", action="store_true", help="list scenarios and exit")
     args = parser.parse_args(argv)
@@ -158,7 +161,13 @@ def main(argv: list[str] | None = None) -> int:
             f"error: unknown scenario {args.scenario!r} (try --list)", file=sys.stderr
         )
         return 1
-    proj = Path(args.project).resolve()
+    if args.project is None:
+        # A new directory each run, so a scenario never acts on files left behind.
+        base = Path("output/pi-demo")
+        base.mkdir(parents=True, exist_ok=True)
+        proj = Path(tempfile.mkdtemp(prefix=f"{scenario.group}-", dir=base)).resolve()
+    else:
+        proj = Path(args.project).resolve()
     proj.mkdir(parents=True, exist_ok=True)
     created = _setup_project(proj)
 
@@ -183,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     print("  editor and /guard. Ctrl-C here when done.")
     print(f"{bar}\n", flush=True)
     try:
-        signal.pause()
+        threading.Event().wait()
     except KeyboardInterrupt:
         pass
     finally:

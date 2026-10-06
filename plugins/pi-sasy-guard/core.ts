@@ -172,14 +172,18 @@ export function shrinkEntry(entry: unknown): unknown {
   };
 }
 
-/** Splits entries into batches whose JSON stays under MAX_PUSH_BYTES. */
+/** Room left in each request for its other fields and the array's punctuation. */
+const ENVELOPE_BYTES = 64 * 1024;
+
+/** Splits entries into batches whose request stays under MAX_PUSH_BYTES. */
 export function batches(entries: readonly unknown[], max = MAX_PUSH_BYTES): unknown[][] {
   const out: unknown[][] = [];
   let current: unknown[] = [];
   let size = 0;
+  const room = Math.max(1, max - ENVELOPE_BYTES);
   for (const entry of entries) {
-    const n = Buffer.byteLength(JSON.stringify(entry));
-    if (current.length > 0 && size + n > max) {
+    const n = Buffer.byteLength(JSON.stringify(entry)) + 1; // and its comma
+    if (current.length > 0 && size + n > room) {
       out.push(current);
       current = [];
       size = 0;

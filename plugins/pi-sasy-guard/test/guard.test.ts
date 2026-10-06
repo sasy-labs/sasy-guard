@@ -49,8 +49,8 @@ before(async () => {
 });
 
 after(async () => {
-  await new Promise<void>((r) => server.close(() => r()));
-  rmSync(home, { recursive: true, force: true });
+  if (server) await new Promise<void>((r) => server.close(() => r()));
+  if (home) rmSync(home, { recursive: true, force: true });
 });
 
 beforeEach(() => {
@@ -160,6 +160,24 @@ test("a daemon restart (new instance) makes the extension resend the whole branc
   assert.deepEqual(after, [["e2"], ["e1", "e2"]]);
   for (const r of pushes().slice(1)) seqs.push(r.body.seq as number);
   assert.ok(seqs.every((n, i) => i === 0 || n > seqs[i - 1]), "push sequence numbers increase");
+});
+
+test("a daemon that restarts again during the resend blocks the call", async () => {
+  const h = harness();
+  h.entries.push({ id: "e1", parentId: null, type: "message", message: { role: "user", content: "a" } });
+  await h.fire("tool_call", readEnv);
+  // Every push now reaches a different daemon run.
+  let n = 0;
+  sessionAnswer = {
+    ok: true,
+    get instance() {
+      return `run-x${n++}`;
+    },
+  };
+  h.entries.push({ id: "e2", parentId: "e1", type: "message", message: { role: "user", content: "b" } });
+  const out = (await h.fire("tool_call", curl)) as { block: boolean; reason: string };
+  assert.equal(out.block, true);
+  assert.match(out.reason, /restarted while the session was being resent/);
 });
 
 test("a push the daemon does not accept blocks the call", async () => {
@@ -302,7 +320,9 @@ test("pushed entries are cut to size and batched under the request limit", () =>
     message: { role: "toolResult", toolCallId: "t9", toolName: "read", content: [{ type: "text", text: "[sasy-guard: entry too large to send]" }] },
   });
   assert.ok(small.message.content[0].text.endsWith("[sasy-guard: 10 characters not sent]"));
-  assert.equal(batches([1, 2, 3].map((n) => ({ n, pad: "y".repeat(40) })), 100).length, 3);
+  // Each request leaves room for its envelope: three ~60-byte entries under a
+  // limit just above the envelope go one per batch.
+  assert.equal(batches([1, 2, 3].map((n) => ({ n, pad: "y".repeat(40) })), 64 * 1024 + 100).length, 3);
   assert.deepEqual(batches([]), []);
   assert.deepEqual(widgetLines({ at: 0, tool: "bash", target: "ls", kind: "deny", reason: "[SASY] a\nb\nc\nd" }), [
     "sasy-guard denied bash: ls",
