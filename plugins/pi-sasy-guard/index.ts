@@ -63,8 +63,8 @@ export function createGuard(opts: GuardOptions = {}) {
     let instance: string | undefined;
     /** Push sequence numbers grow with the clock, so they keep growing across
      *  pi restarts that resume a session against the same daemon. */
-    let seqCounter = 0;
-    const nextSeq = () => Date.now() * 1000 + (seqCounter++ % 1000);
+    let lastSeq = 0;
+    const nextSeq = () => (lastSeq = Math.max(lastSeq + 1, Date.now() * 1000));
 
     /**
      * POSTs and requires the daemon's `{ ok: true }`. Returns whether the
@@ -117,7 +117,8 @@ export function createGuard(opts: GuardOptions = {}) {
             lastLeaf !== null && (firstFresh ? (firstFresh.parentId ?? null) !== lastLeaf : leaf !== lastLeaf);
           const toSend = jumped ? branch : branch.filter((e) => !sent.has(e.id));
           const reported = [...rejected];
-          if (toSend.length === 0 && reported.length === 0) return;
+          // Even with nothing new, the push goes: its answer shows whether the
+          // daemon restarted (and lost the session) since the last one.
           const parts = batches(toSend.map(shrinkEntry));
           if (parts.length === 0) parts.push([]);
           let restarted = false;

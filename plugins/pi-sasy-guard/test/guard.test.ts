@@ -141,6 +141,10 @@ test("a denial blocks the call with the policy's reason and shows it", async () 
   const push = requests.filter((r) => r.path === "/v1/session/events").at(-1)!;
   assert.deepEqual(push.body.rejected_tool_call_ids, ["c2"]);
   assert.deepEqual(push.body.entries, []);
+  // With nothing new the push still goes, so a daemon restart is noticed.
+  const before = requests.filter((r) => r.path === "/v1/session/events").length;
+  await h.fire("tool_call", readEnv);
+  assert.equal(requests.filter((r) => r.path === "/v1/session/events").length, before + 1);
 });
 
 test("a daemon restart (new instance) makes the extension resend the whole branch", async () => {
