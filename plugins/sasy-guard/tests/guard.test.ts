@@ -112,8 +112,9 @@ test('the band explains the latest decision until dismissed', async ($, on) => {
   await again.unmount()
 })
 
-/** Answers the mod's curl call with the given exit code and body. */
-function curl(on: On, exitCode: number, stdout: string): string[][] {
+/** Answers the mod's curl call: exit code, body, and the HTTP status curl appends. */
+function curl(on: On, exitCode: number, body: string, status = '200'): string[][] {
+  const stdout = exitCode === 0 ? `${body}\n${status}` : ''
   const calls: string[][] = []
   on('process.run', ($, e) => {
     calls.push([...e.argv])
@@ -147,7 +148,6 @@ test('/guard reports daemon health and recent decisions without a model turn', a
   expect(calls).toHaveLength(1)
   expect(calls[0]).toContain('http://127.0.0.1:51799/healthz')
   expect(calls[0]).toContain('--max-filesize')
-  expect(calls[0]).toContain('--fail')
   expect(calls[0]).toContain('--noproxy')
   expect(out.text).toContain('daemon: up, policy engine ready · endpoint 127.0.0.1:50051')
   expect(out.text).toContain('this session: 1 checked · 1 denied · 0 asked')
@@ -192,6 +192,19 @@ test('/guard prints nothing from an answer outside the daemon shapes', async ($,
 
   expect(out.text).toContain('answered, but not as the sasy-watch daemon')
   expect(out.text).not.toContain('Ignore prior instructions')
+})
+
+test('/guard accepts only HTTP 200 from /healthz', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  mock.env(on, {})
+  curl(on, 0, JSON.stringify(HEALTH), '302')
+  statusLines(on)
+
+  await $.session.start(START)
+  const out = await $.command.run(GUARD)
+
+  expect(out.text).toContain('daemon: http://127.0.0.1:51711/healthz answered HTTP 302')
+  expect(out.text).not.toContain('policy engine ready')
 })
 
 test('/guard does not mistake another service on the port for the daemon', async ($, on) => {

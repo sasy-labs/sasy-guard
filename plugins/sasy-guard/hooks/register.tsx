@@ -86,10 +86,11 @@ async function daemonHealth($: EngineInterface): Promise<string> {
   const port = (await $.env.get('SASY_WATCH_PORT')) || DEFAULT_PORT
   if (!/^[0-9]{1,5}$/.test(port)) return `daemon: SASY_WATCH_PORT is not a port number`
   const url = `http://127.0.0.1:${port}/healthz`
-  // --fail: the daemon answers 200; --noproxy: loopback never goes via a proxy.
+  // --noproxy: loopback never goes via a proxy. --write-out appends the HTTP
+  // status on a line of its own; the daemon answers /healthz with 200.
   const argv = [
-    'curl', '-sS', '--fail', '--noproxy', '*',
-    '--max-time', '2', '--max-filesize', '65536', url,
+    'curl', '-sS', '--noproxy', '*', '--max-time', '2', '--max-filesize', '65536',
+    '--write-out', '\n%{http_code}', url,
   ]
   let ran: { exitCode: number; stdout: string }
   try {
@@ -98,9 +99,13 @@ async function daemonHealth($: EngineInterface): Promise<string> {
     return `daemon: could not run curl to reach ${url}`
   }
   if (ran.exitCode !== 0) return `daemon: unreachable at ${url} (curl exit ${ran.exitCode})`
+  const cut = ran.stdout.lastIndexOf('\n')
+  const status = ran.stdout.slice(cut + 1)
+  if (!/^[0-9]{3}$/.test(status)) return `daemon: ${url} gave no HTTP status`
+  if (status !== '200') return `daemon: ${url} answered HTTP ${status}`
   let h: unknown
   try {
-    h = JSON.parse(ran.stdout)
+    h = JSON.parse(ran.stdout.slice(0, Math.max(cut, 0)))
   } catch {
     return `daemon: ${url} answered with a body that is not JSON`
   }
