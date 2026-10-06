@@ -249,6 +249,7 @@ test("decisions parse from the daemon's hook output", () => {
   assert.equal(parseDecision({ error: "session missing" }), undefined);
   assert.equal(parseDecision([]), undefined);
   assert.equal(parseDecision({ hookSpecificOutput: { permissionDecision: "block" } }), undefined);
+  assert.equal(parseDecision({ hookSpecificOutput: [] }), undefined);
   assert.deepEqual(parseDecision({ hookSpecificOutput: { updatedInput: {} } }), { kind: "allow" });
   assert.equal(parseDecision({ hookSpecificOutput: 3 }), undefined);
 });
@@ -268,6 +269,18 @@ test("pushed entries are cut to size and batched under the request limit", () =>
   assert.ok(total <= MAX_ENTRY_TEXT);
   assert.equal(capped.message.details, undefined);
   assert.deepEqual(shrinkEntry({ type: "custom", id: "c", parentId: null, customType: "other", data: { huge: 1 } }), { type: "custom", id: "c", parentId: null, customType: "other" });
+  // Nested strings (a system prompt's sections, structured arguments) are cut too.
+  const nested = { id: "e6", parentId: "e5", type: "message", message: { role: "system", content: "", sections: { a: "s".repeat(MAX_PUSHED_TEXT + 1) } } };
+  const n = shrinkEntry(nested) as { message: { sections: { a: string } } };
+  assert.ok(n.message.sections.a.endsWith("[sasy-guard: 1 characters not sent]"));
+  // An entry that stays too large after cutting is sent as a stub keeping its place.
+  const wide = { id: "e5", parentId: "e4", type: "message", message: { role: "toolResult", toolCallId: "t9", toolName: "read", content: [], extra: Array.from({ length: 2_000_000 }, () => 1) } };
+  assert.deepEqual(shrinkEntry(wide), {
+    type: "message",
+    id: "e5",
+    parentId: "e4",
+    message: { role: "toolResult", toolCallId: "t9", toolName: "read", content: [{ type: "text", text: "[sasy-guard: entry too large to send]" }] },
+  });
   assert.ok(small.message.content[0].text.endsWith("[sasy-guard: 10 characters not sent]"));
   assert.equal(batches([1, 2, 3].map((n) => ({ n, pad: "y".repeat(40) })), 100).length, 3);
   assert.deepEqual(batches([]), []);

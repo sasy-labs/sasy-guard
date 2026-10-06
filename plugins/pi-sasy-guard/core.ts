@@ -38,7 +38,7 @@ export function parseDecision(body: unknown): Decision | undefined {
   if ("error" in body) return undefined;
   const hs = (body as { hookSpecificOutput?: unknown }).hookSpecificOutput;
   if (hs === undefined) return { kind: "allow" };
-  if (typeof hs !== "object" || hs === null) return undefined;
+  if (typeof hs !== "object" || hs === null || Array.isArray(hs)) return undefined;
   const { permissionDecision: d, permissionDecisionReason: r } = hs as Record<string, unknown>;
   const reason = typeof r === "string" && r.trim() !== "" ? r : `${MARKER} blocked by policy`;
   if (d === "deny") return { kind: "deny", reason };
@@ -121,11 +121,34 @@ function textCutter(): (text: string) => string {
   };
 }
 
+/** Keys whose string values name structure (ids, roles, tool names); never cut. */
+const STRUCTURAL = new Set(["type", "id", "parentId", "role", "customType", "toolCallId", "toolName", "name", "targetId"]);
+
+/** Every string in `value` cut by `cut`, images and `details` dropped. */
+function cutAll(value: unknown, cut: (text: string) => string, key?: string): unknown {
+  if (typeof value === "string") return key !== undefined && STRUCTURAL.has(key) ? value : cut(value);
+  if (Array.isArray(value)) {
+    return value
+      .filter((v) => !(v && typeof v === "object" && (v as { type?: unknown }).type === "image"))
+      .map((v) => cutAll(v, cut));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([k]) => k !== "details")
+        .map(([k, v]) => [k, cutAll(v, cut, k)]),
+    );
+  }
+  return value;
+}
+
 /**
- * A copy of a session entry sized to fit the daemon's request limit: texts
- * (and a tool call's string arguments) are cut by `textCutter`, images and
+ * A copy of a session entry sized to fit the daemon's request limit. Every
+ * string is cut by `textCutter` (structural ones excepted), images and
  * `details` (which the daemon does not read) are dropped, and so is the data
- * of other extensions' custom entries.
+ * of other extensions' custom entries. An entry still too large is sent as a
+ * stub that keeps its place in the tree and its role and tool-call ids, so
+ * the push goes through and the tool result keeps its provenance.
  */
 export function shrinkEntry(entry: unknown): unknown {
   if (!entry || typeof entry !== "object") return entry;
@@ -134,33 +157,18 @@ export function shrinkEntry(entry: unknown): unknown {
     const { data: _data, ...rest } = e;
     return rest;
   }
-  const cut = textCutter();
-  const out: Record<string, unknown> = { ...e };
-  if (typeof out.content === "string") out.content = cut(out.content);
-  if (typeof out.summary === "string") out.summary = cut(out.summary);
-  const m = e.message as Record<string, unknown> | undefined;
-  if (!m || typeof m !== "object") return out;
-  const { details: _details, ...msg } = m;
-  if (typeof msg.content === "string") msg.content = cut(msg.content);
-  else if (Array.isArray(msg.content)) {
-    msg.content = msg.content
-      .filter((b) => !(b && typeof b === "object" && (b as { type?: unknown }).type === "image"))
-      .map((b) => {
-        if (!b || typeof b !== "object") return b;
-        const blk = b as Record<string, unknown>;
-        if (typeof blk.text === "string") return { ...blk, text: cut(blk.text) };
-        // A tool call's string arguments (a write's content, say) are cut too.
-        if (blk.type === "toolCall" && blk.arguments && typeof blk.arguments === "object") {
-          const args = Object.fromEntries(
-            Object.entries(blk.arguments as Record<string, unknown>).map(([k, v]) => [k, typeof v === "string" ? cut(v) : v]),
-          );
-          return { ...blk, arguments: args };
-        }
-        return b;
-      });
-  }
-  if (typeof msg.output === "string") msg.output = cut(msg.output);
-  return { ...out, message: msg };
+  const out = cutAll(e, textCutter()) as Record<string, unknown>;
+  if (Buffer.byteLength(JSON.stringify(out)) <= MAX_PUSH_BYTES) return out;
+  const m = (e.message ?? {}) as Record<string, unknown>;
+  const note = "[sasy-guard: entry too large to send]";
+  return {
+    type: e.type,
+    id: e.id,
+    parentId: e.parentId,
+    ...(e.message
+      ? { message: { role: m.role, toolCallId: m.toolCallId, toolName: m.toolName, content: [{ type: "text", text: note }] } }
+      : {}),
+  };
 }
 
 /** Splits entries into batches whose JSON stays under MAX_PUSH_BYTES. */
