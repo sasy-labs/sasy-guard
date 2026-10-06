@@ -44,6 +44,26 @@ claude --plugin-dir plugins/sasy-guard
 # Inside the session: `rm -rf` and force pushes are denied with a [SASY] reason.
 ```
 
+## In-session view (mod)
+
+The plugin also ships a Claude Code
+[mod](https://code.claude.com/docs/en/plugins/mods/overview):
+`hooks/register.tsx`, listed under `modules` in `hooks/hooks.json`. It only
+observes: it reads each `PreToolUse` decision through `classic.PreToolUse` and
+shows a status entry with the session's checked / denied / asked totals, a band
+above the prompt that explains the latest `[SASY]` denial or ask (with a
+Dismiss button), and an instant `/guard` command that reports the daemon's
+`/healthz` and recent decisions. Enforcement stays entirely in the settings
+hooks, so a session where mods are off is enforced the same way.
+
+```sh
+claude plugin validate plugins/sasy-guard   # what the mod hooks and calls
+claude plugin test plugins/sasy-guard       # tests/guard.test.ts
+```
+
+Requires Claude Code v2.1.287 or later; drawing appears in the terminal and the
+Desktop Code tab only.
+
 ## Profiles (`profiles/`)
 
 - `security.dl` — the unified policy: twelve independently-toggleable

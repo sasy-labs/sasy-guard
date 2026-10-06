@@ -163,6 +163,45 @@ flow; the **outbound** call afterward is what's denied.
 - `supply_chain` / `public_push` — need live network facts (OSV verdicts, GitHub
   repo visibility), so they don't fire in an offline dummy repo.
 
+## See decisions in the session
+
+The plugin also contains a **mod**. A mod is Claude Code plugin code that runs
+inside Claude Code itself and can draw in its interface; the plugin's hooks, by
+contrast, are separate programs that Claude Code runs for each event. The mod
+only observes. It reads each decision the `PreToolUse` hook returns and shows it,
+while the hook remains the only thing that allows, asks or denies. See the
+[Claude Code mods documentation](https://code.claude.com/docs/en/plugins/mods/overview)
+for how mods work in general.
+
+The mod adds three things to a session:
+
+- **A status entry** under the prompt with this session's totals:
+  `sasy-guard: 4 checked · 2 denied · 0 asked`. A call counts as *checked* when
+  it passes through the `PreToolUse` hook, and as *denied* or *asked* when the
+  hook's answer carries a `[SASY]` reason.
+- **A band above the prompt** after a denial or an approval request. It names
+  the tool and what the call acted on (the command, path or URL), followed by the
+  policy's reason and suggested fix. **Dismiss** hides the band until the next
+  decision. To reach the button from the keyboard, press `ctrl+x` then `Tab`.
+- **A `/guard` command** that answers immediately, without a turn of the model,
+  even while Claude is working. It reports whether the `sasy-watch` daemon (the
+  local process that runs the checks) answers on its health route, which policy
+  engine endpoint it uses and its fail mode, followed by this session's totals and
+  the five most recent decisions. The newest decision is printed in full.
+
+<Aside>
+Mods need Claude Code v2.1.287 or later. The band and status entry are drawn
+only in the terminal and in the Code tab of the Desktop app; the VS Code chat
+panel and `claude -p` draw nothing, and there `/guard` still answers. Where mods
+are turned off (for example by `disableAllHooks` or an organization's
+`allowManagedModsOnly` setting), the hooks still enforce the policy and only the
+in-session view is missing.
+</Aside>
+
+The totals reflect the decision Claude Code receives. When the daemon turns an
+`ask` into a denial that offers a one-time bypass question, the call counts as
+denied.
+
 ## Run the bundled demo
 
 If you've cloned this repo, two `make` targets drive a **real headless `claude`**

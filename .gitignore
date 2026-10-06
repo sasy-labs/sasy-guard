@@ -54,3 +54,6 @@ tau2-bench/.venv/
 # output/ is local translation/test scratch)
 benchmarks/tau2-airline/output/
 output/
+
+# Claude Code lays its mod API types here on each load
+plugins/sasy-guard/.claude-plugin/types/
