@@ -21,6 +21,7 @@ import {
   ENSURE_TIMEOUT_MS,
   checkArgv,
   combine,
+  denyWith,
   splitStatus,
   toResult,
 } from './enforce'
@@ -124,6 +125,10 @@ async function authHeaderFile($: EngineInterface, port: string): Promise<string 
   }
 }
 
+/** curl exits that mean the daemon did not answer: could not connect, timed
+ *  out, empty reply, or the connection dropped while receiving. */
+const UNREACHABLE_CURL_EXITS = [7, 28, 52, 56]
+
 /** A check's reply: the daemon's body, or why there is none and of what kind. */
 type CheckReply = { body: string } | { error: string; kind: 'unreachable' | 'auth' | 'answer' }
 
@@ -141,7 +146,11 @@ async function postCheck(
     return { error: 'could not run curl', kind: 'unreachable' }
   }
   if (ran.exitCode !== 0) {
-    return { error: `sasy-watch unreachable on port ${port}`, kind: 'unreachable' }
+    // Only a daemon that is down or not answering is "unreachable" (the one
+    // failure SASY_FAIL_OPEN covers); curl failing otherwise, as on an auth
+    // header file it cannot read, is not.
+    const kind = UNREACHABLE_CURL_EXITS.includes(ran.exitCode) ? 'unreachable' : 'answer'
+    return { error: `curl exit ${ran.exitCode} on port ${port}`, kind }
   }
   const { body, status } = splitStatus(ran.stdout)
   if (status === '200') return { body }
@@ -170,7 +179,7 @@ async function checkCall($: EngineInterface, input: CheckInput): Promise<PreTool
     port === undefined
       ? { error: 'SASY_WATCH_PORT is not a port number', kind: 'answer' }
       : await postCheck($, port, input)
-  if ('error' in answer && port !== undefined) {
+  if ('error' in answer && answer.kind === 'unreachable' && port !== undefined) {
     await ensureDaemon($)
     answer = await postCheck($, port, input)
   }
@@ -390,7 +399,7 @@ export const register: Register = on => {
     let result: PreToolUseResult
     try {
       const theirs = await next(e)
-      result = ours.deny !== undefined ? ours : combine(ours, theirs)
+      result = ours.deny !== undefined ? denyWith(ours, theirs) : combine(ours, theirs)
     } finally {
       checking.delete(tool_use_id)
       // Runs after next: a failure here must not reach the .catch, which

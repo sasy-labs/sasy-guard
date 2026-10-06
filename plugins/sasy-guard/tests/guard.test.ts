@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 
-import { combine, toResult } from '../hooks/enforce'
+import { combine, denyWith, toResult } from '../hooks/enforce'
 
 const DENY_REASON =
   '[SASY] Recursive delete of build/ is blocked (data_loss).\n' +
@@ -492,6 +492,8 @@ test('SASY_FAIL_OPEN does not cover a refused authentication', async ($, on) => 
   const call = await $.tool.call({ tool: 'Bash', command: 'ls' })
 
   expect(call.deny ?? call.text).toContain('sasy-watch answered HTTP 401')
+  // A running daemon that refuses is not restarted.
+  expect(w.argvs.some(a => a[1] === 'ensure')).toBe(false)
 })
 
 test('only the daemon\'s own answer shapes are decisions', () => {
@@ -531,4 +533,22 @@ test('concurrent calls each find themselves in the list the hook reads', async (
     expect(w.seenByHooks[command]?.split(' ')).toContain(id)
   }
   expect(w.checkedSets.at(-1)).toBeUndefined()
+})
+
+test('a curl failure other than an unreachable daemon never fails open', async ($, on) => {
+  const w = world(on, { checkExit: 26, env: { SASY_FAIL_OPEN: 'true' } })
+  await started($)
+
+  const call = await $.tool.call({ tool: 'Bash', command: 'ls' })
+
+  expect(call.deny ?? call.text).toContain('curl exit 26')
+  expect(w.argvs.some(a => a[1] === 'ensure')).toBe(false)
+})
+
+test('a SASY denial keeps the context notes of other hooks', () => {
+  const merged = denyWith(
+    { deny: '[SASY] no', additionalContext: ['sasy note'] },
+    { additionalContext: ['org: open an incident ticket'] },
+  )
+  expect(merged).toEqual({ deny: '[SASY] no', additionalContext: ['sasy note', 'org: open an incident ticket'] })
 })

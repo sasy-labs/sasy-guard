@@ -99,6 +99,12 @@ export function toResult(body: string): PreToolUseResult | undefined {
   }
 }
 
+/** SASY's denial, keeping the context notes other hooks added to the call. */
+export function denyWith(ours: PreToolUseResult & { deny: string }, theirs: PreToolUseResult): PreToolUseResult {
+  const context = [...(ours.additionalContext ?? []), ...(theirs.additionalContext ?? [])]
+  return { deny: ours.deny, ...(context.length === 0 ? {} : { additionalContext: context }) }
+}
+
 /** One answer from several PreToolUse deciders: deny over ask over allow. */
 export function combine(ours: PreToolUseResult, theirs: PreToolUseResult): PreToolUseResult {
   if (theirs.deny !== undefined) return theirs
