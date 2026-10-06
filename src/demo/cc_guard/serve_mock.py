@@ -15,6 +15,11 @@ the scenario's tool calls in order, advancing one step per assistant turn. The
 script therefore plays once per fresh ``claude`` session — to run a different
 scenario, restart this server with a new ``--scenario`` and start ``claude``
 again.
+
+With ``--plugin-dir`` the banner's ``claude`` command loads the sasy-guard
+plugin from that folder (its hooks and its mod) instead of relying on an
+installed plugin, so the mod's status entry, decision band and ``/guard``
+command show in the session.
 """
 
 from __future__ import annotations
@@ -63,6 +68,8 @@ def _setup_fixtures(proj: Path) -> list[str]:
             path.chmod(0o755)
         created.append(rel)
 
+    # toxic_flow: a fake secret to read before the outbound call.
+    _write(".env", "AWS_SECRET_ACCESS_KEY=AKIA-not-real\n")
     # data_loss: a tree to (not) delete.
     _write("build/artifact.txt", "stale build output\n")
     # secret_scan / review_gate: a source file with a known edit anchor.
@@ -93,8 +100,20 @@ def _summarize(step: Step) -> str:
 
 def _print_banner(scenario_group: str, expected: str, headline: str,
                   note: str, steps: tuple[Step, ...], project: Path,
-                  base_url: str) -> None:
-    """Print the ready-to-use connection details and the scripted plan."""
+                  base_url: str, plugin_dir: Path | None = None) -> None:
+    """Print the ready-to-use connection details and the scripted plan.
+
+    Args:
+        scenario_group: The rule group the script exercises.
+        expected: The verdict the gating call should get.
+        headline: One-line description of the scenario.
+        note: Why the scenario is gated.
+        steps: The scripted tool calls, the gating call last.
+        project: The directory ``claude`` should run in.
+        base_url: The mock endpoint's URL.
+        plugin_dir: The sasy-guard plugin folder to load with
+            ``--plugin-dir``, or None to rely on an installed plugin.
+    """
     bar = "═" * 66
     print(f"\n{bar}")
     print(f"  mock Anthropic ready — scenario: {scenario_group} "
@@ -111,9 +130,19 @@ def _print_banner(scenario_group: str, expected: str, headline: str,
     print(f"    export ANTHROPIC_BASE_URL={base_url}")
     print("    export ANTHROPIC_API_KEY=sk-mock-not-used")
     print("    unset SASY_API_KEY SASY_AUTH_TOKEN")
-    print("    claude --dangerously-skip-permissions")
+    if plugin_dir is None:
+        print("    claude --dangerously-skip-permissions")
+    else:
+        print(f"    claude --plugin-dir {plugin_dir} --dangerously-skip-permissions")
     print("\n  Then type any prompt (e.g. 'do the task'). The mock replays the")
     print("  steps above; SASY gates each one. Ctrl-C here when done.")
+    if plugin_dir is not None:
+        print("\n  The plugin's mod shows each decision in the session:")
+        print("    · a status entry under the prompt: checked / denied / asked")
+        print("    · a band above the prompt explaining the latest denial or ask")
+        print("    · /guard: daemon health and recent decisions, no model turn")
+        print("  (Disable an installed sasy-guard plugin first, or its hooks run")
+        print("  twice.)")
     print(f"{bar}\n", flush=True)
 
 
@@ -139,6 +168,11 @@ def main(argv: list[str] | None = None) -> int:
              "multi-step scenarios need; never overwrites existing files",
     )
     parser.add_argument(
+        "--plugin-dir", default=None,
+        help="sasy-guard plugin folder for the printed claude command to load "
+             "with --plugin-dir (shows the plugin's mod in the session)",
+    )
+    parser.add_argument(
         "--list", action="store_true", help="list scenarios and exit",
     )
     args = parser.parse_args(argv)
@@ -153,6 +187,13 @@ def main(argv: list[str] | None = None) -> int:
     if not project.is_dir():
         print(f"error: project dir not found: {project}", file=sys.stderr)
         return 1
+
+    plugin_dir = None
+    if args.plugin_dir is not None:
+        plugin_dir = Path(args.plugin_dir).resolve()
+        if not (plugin_dir / ".claude-plugin" / "plugin.json").is_file():
+            print(f"error: not a plugin folder: {plugin_dir}", file=sys.stderr)
+            return 1
 
     if args.setup_fixtures:
         created = _setup_fixtures(project)
@@ -169,7 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     mock.set_script(list(concrete.steps))
     mock.start()
     _print_banner(scenario.group, scenario.expected, scenario.headline,
-                  scenario.note, concrete.steps, project, mock.base_url)
+                  scenario.note, concrete.steps, project, mock.base_url,
+                  plugin_dir)
 
     try:
         signal.pause()

@@ -8,6 +8,7 @@
 .PHONY: setup \
         claude-code-guard-demo claude-code-guard-demo-step \
         claude-code-guard-scenario claude-code-guard-serve \
+        claude-code-guard-mod-demo \
         docs docs-build docs-install
 
 # ── Setup ──────────────────────────────────────────
@@ -47,6 +48,18 @@ claude-code-guard-scenario:
 claude-code-guard-serve:
 	$(UV_RUN_SDK) python -m demo.cc_guard.serve_mock \
 	  --scenario $(or $(GROUP),toxic_flow) $(if $(PROJECT),--project $(PROJECT))
+
+# Mod view: the same scripted mock, with `claude` loading the plugin (hooks + mod)
+# from this checkout so the in-session status entry, decision band and /guard
+# show. Runs in a throwaway project under output/ unless PROJECT is given:
+#   make claude-code-guard-mod-demo GROUP=agent_redirect
+MOD_DEMO_PROJECT := $(or $(PROJECT),$(CURDIR)/output/mod-demo)
+
+claude-code-guard-mod-demo:
+	mkdir -p $(MOD_DEMO_PROJECT)
+	$(UV_RUN_SDK) python -m demo.cc_guard.serve_mock \
+	  --scenario $(or $(GROUP),toxic_flow) --setup-fixtures \
+	  --project $(MOD_DEMO_PROJECT) --plugin-dir $(CURDIR)/plugins/sasy-guard
 
 # ── Documentation ──────────────────────────────────
 

@@ -2,8 +2,10 @@
 
 Claude Code plugin enforcing SASY Datalog policies on tool calls.
 
-Four hooks, nothing else: `SessionStart` (ensure the `sasy-watch` daemon,
-register the session, pin the policy profile), `SessionEnd` (deregister),
+Four settings hooks enforce the policy, plus an observe-only mod that shows
+their decisions ([In-session view](#in-session-view-mod)). The hooks are
+`SessionStart` (ensure the `sasy-watch` daemon, register the session, pin the
+policy profile), `SessionEnd` (deregister),
 `PreToolUse` (check every tool call via the daemon → `RMProxy.CheckToolCall`;
 denied calls block with a `[SASY]` reason, even in bypassPermissions mode), and
 `PostToolUse` (signal that an `@ask`'d tool ran — a marker-independent approval
@@ -54,7 +56,8 @@ shows a status entry with the session's checked / denied / asked totals, a band
 above the prompt that explains the latest `[SASY]` denial or ask (with a
 Dismiss button), and an instant `/guard` command that reports the daemon's
 `/healthz` and recent decisions. Enforcement stays entirely in the settings
-hooks, so a session where mods are off is enforced the same way.
+hooks, so a session where only mods are blocked (`allowManagedModsOnly`) is
+enforced the same way. `disableAllHooks` turns off both, so nothing is enforced.
 
 ```sh
 claude plugin validate plugins/sasy-guard   # what the mod hooks and calls
@@ -63,6 +66,9 @@ claude plugin test plugins/sasy-guard       # tests/guard.test.ts
 
 Requires Claude Code v2.1.287 or later; drawing appears in the terminal and the
 Desktop Code tab only.
+
+Demo (scripted mock, plugin loaded from this checkout): from the repo root,
+`make claude-code-guard-mod-demo` and follow the printed commands.
 
 ## Profiles (`profiles/`)
 

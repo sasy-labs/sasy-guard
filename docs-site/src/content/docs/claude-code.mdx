@@ -53,7 +53,10 @@ them).
    ```
 
    Every tool call **Claude** makes is now checked. See [Test it](#test-it)
-   below for the exact prompts to try.
+   below for the exact prompts to try. On Claude Code v2.1.287 or later, the
+   line `sasy-guard: 0 checked · 0 denied · 0 asked` under the prompt shows the
+   plugin loaded, and `/guard` reports whether the daemon is up (see
+   [See decisions in the session](#see-decisions-in-the-session)).
 
 </Steps>
 
@@ -69,6 +72,13 @@ sasy-guard install
 First time it's `uv tool install`; after that, `uv tool upgrade`. Either way,
 **always run `sasy-guard install` afterward**, or you keep running the old
 binaries.
+
+The plugin (hooks and mod) updates separately, from the marketplace:
+
+```bash
+claude plugin marketplace update sasy-plugins
+claude plugin update sasy-guard
+```
 </Aside>
 
 <Aside type="tip" title="Enable it for one project only">
@@ -76,7 +86,8 @@ Step 2 turns sasy-guard on **globally**. To enforce it in a **single project**
 instead, run `sasy-guard enable [project]` (it defaults to the current
 directory). That writes the four hooks straight into
 `<project>/.claude/settings.json`: same enforcement, scoped to that one project,
-no global plugin.
+no global plugin. A settings file holds hooks only, so this route enforces the
+policy without the in-session view described below.
 </Aside>
 
 ## What it enforces
@@ -183,19 +194,20 @@ The mod adds three things to a session:
   the tool and what the call acted on (the command, path or URL), followed by the
   policy's reason and suggested fix. **Dismiss** hides the band until the next
   decision. To reach the button from the keyboard, press `ctrl+x` then `Tab`.
-- **A `/guard` command** that answers immediately, without a turn of the model,
-  even while Claude is working. It reports whether the `sasy-watch` daemon (the
-  local process that runs the checks) answers on its health route, which policy
-  engine endpoint it uses and its fail mode, followed by this session's totals and
-  the five most recent decisions. The newest decision is printed in full.
+- **A `/guard` command** that answers directly, without a turn of the model.
+  It reports whether the `sasy-watch` daemon (the local process that runs the
+  checks) answers on its health route, which policy engine endpoint it uses and
+  its fail mode, followed by this session's totals and the five most recent
+  decisions. The newest decision is printed in full.
 
 <Aside>
 Mods need Claude Code v2.1.287 or later. The band and status entry are drawn
 only in the terminal and in the Code tab of the Desktop app; the VS Code chat
-panel and `claude -p` draw nothing, and there `/guard` still answers. Where mods
-are turned off (for example by `disableAllHooks` or an organization's
-`allowManagedModsOnly` setting), the hooks still enforce the policy and only the
-in-session view is missing.
+panel and `claude -p` draw nothing, and there `/guard` still answers. Where only
+mods are blocked, as under an organization's `allowManagedModsOnly` setting, the
+hooks still enforce the policy and only the in-session view is missing. The
+`disableAllHooks` setting is different: it turns off the mod **and** the
+enforcement hooks, so no tool call is checked.
 </Aside>
 
 The totals reflect the decision Claude Code receives. When the daemon turns an
@@ -204,7 +216,7 @@ denied.
 
 ## Run the bundled demo
 
-If you've cloned this repo, two `make` targets drive a **real headless `claude`**
+If you've cloned this repo, these `make` targets drive a **real `claude`**
 through the guard against a deterministic mock Anthropic endpoint (a real model
 refuses the dangerous calls, so the mock scripts them):
 
@@ -225,6 +237,23 @@ refuses the dangerous calls, so the mock scripts them):
   (the banner shows the exact commands) and watch each scripted tool call hit the
   live hook → daemon → engine.
 
+- **In-session view** — the interactive demo with the plugin's mod. It creates
+  a throwaway project under `output/mod-demo` with the files the scenarios need
+  (including a fake `.env`), and its banner prints a `claude` command that loads
+  the plugin from this checkout with `--plugin-dir`, so no plugin install or
+  `sasy-guard enable` is needed (the runtime from `sasy-guard install` is):
+
+  ```bash
+  make claude-code-guard-mod-demo                     # toxic_flow
+  make claude-code-guard-mod-demo GROUP=agent_redirect
+  ```
+
+  Run the printed commands in a second terminal, answer **Yes** to the mock API
+  key, and type any prompt. When the scripted call is denied, the band above the
+  prompt names the call and the policy's reason, the status entry counts it, and
+  `/guard` lists it. If the sasy-guard plugin is also installed, disable it for
+  the demo (`claude plugin disable sasy-guard`), or its hooks run twice.
+
 ## How it works
 
 ```text
@@ -236,6 +265,8 @@ The pieces:
 
 - The **plugin** registers the hooks; `PreToolUse` is the enforcement point (a
   native, fail-closed binary).
+- The **mod** inside the plugin reads each answer the `PreToolUse` hook gives
+  and draws it in the session. It takes no part in the decision.
 - The **daemon** owns one SASY session per conversation, tails the transcript
   (including subagent/workflow threads), reconstructs the message-dependency
   graph, and runs the check — so the **same policies** the SASY SDKs use run

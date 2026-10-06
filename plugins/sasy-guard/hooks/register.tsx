@@ -79,7 +79,12 @@ async function daemonHealth($: EngineInterface): Promise<string> {
     const response = await Promise.race([$.http.fetch(url), timeout])
     if (response === null) return `daemon: no answer from ${url} within ${HEALTH_TIMEOUT_MS} ms`
     if (!response.ok) return `daemon: ${url} answered HTTP ${response.status}`
-    const h = JSON.parse(response.text) as Record<string, unknown>
+    let h: Record<string, unknown>
+    try {
+      h = JSON.parse(response.text) as Record<string, unknown>
+    } catch {
+      return `daemon: ${url} answered HTTP ${response.status} with a body that is not JSON`
+    }
     const state = h.ready === true ? 'up, policy engine ready' : 'up, policy engine not ready'
     return (
       `daemon: ${state} · endpoint ${String(h.endpoint)} · ` +
@@ -104,10 +109,17 @@ export const register: Register = on => {
     await $.command.register({
       name: COMMAND,
       description: 'Show sasy-guard daemon health and recent policy decisions',
+      immediate: true,
     })
     $.ui.status(statusText(await read($, counts)))
     return next(e)
   })
+
+  // /clear, /resume and /branch reset $.state without a new session.start.
+  on('classic.SessionStart', { source: ['clear', 'resume', 'fork'] }, async ($, e, next) => {
+    $.ui.status(statusText(await read($, counts)))
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('classic.PreToolUse', async ($, e, next) => {
     const result = await next(e)
@@ -167,6 +179,8 @@ export const register: Register = on => {
     const shown = reason.slice(0, room)
     if (reason.length > room) shown.push('… full text: /guard')
 
+    // Later mods share the band: keep what they draw below ours.
+    const theirs = await next(e)
     return (
       <Box flexDirection="column">
         <Text color={color} bold>
@@ -183,6 +197,7 @@ export const register: Register = on => {
             onPress={() => update($, dismissedSeq, () => latest.seq)}
           />
         </Box>
+        {theirs}
       </Box>
     )
   })

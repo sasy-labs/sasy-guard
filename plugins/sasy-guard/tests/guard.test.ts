@@ -93,6 +93,7 @@ test('the band explains the latest decision until dismissed', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /delete the specific files/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /EITHER/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: '… full text: /guard' })).toBeDefined()
+    expect(await ui.find({ key: 'engine' })).toBeDefined()
     await ui.unmount()
   }
 
@@ -141,4 +142,29 @@ test('/guard says so when the daemon is unreachable', async ($, on) => {
 
   expect(out.text).toContain('daemon: unreachable at http://127.0.0.1:51711/healthz')
   expect(out.text).toContain('no denials or approval requests yet')
+})
+
+test('/guard tells a malformed health answer from an unreachable daemon', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  mock.env(on, {})
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '<html>' } }))
+  statusLines(on)
+
+  await $.session.start(START)
+  const out = await $.command.run(GUARD)
+
+  expect(out.text).toContain('answered HTTP 200 with a body that is not JSON')
+})
+
+test('the status entry is pinned again after /clear', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  settingsHook(on)
+  const lines = statusLines(on)
+  on('classic.SessionStart', () => ({}))
+
+  await $.tool.call({ tool: 'Bash', command: 'rm -rf build' })
+  const before = lines.length
+  await $.classic.SessionStart({ source: 'clear' })
+
+  expect(lines.length).toBe(before + 1)
 })
