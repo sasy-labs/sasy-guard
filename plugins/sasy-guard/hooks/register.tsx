@@ -86,7 +86,11 @@ async function daemonHealth($: EngineInterface): Promise<string> {
   const port = (await $.env.get('SASY_WATCH_PORT')) || DEFAULT_PORT
   if (!/^[0-9]{1,5}$/.test(port)) return `daemon: SASY_WATCH_PORT is not a port number`
   const url = `http://127.0.0.1:${port}/healthz`
-  const argv = ['curl', '-sS', '--max-time', '2', '--max-filesize', '65536', url]
+  // --fail: the daemon answers 200; --noproxy: loopback never goes via a proxy.
+  const argv = [
+    'curl', '-sS', '--fail', '--noproxy', '*',
+    '--max-time', '2', '--max-filesize', '65536', url,
+  ]
   let ran: { exitCode: number; stdout: string }
   try {
     ran = await $.process.run(argv, { timeoutMs: HEALTH_TIMEOUT_MS })

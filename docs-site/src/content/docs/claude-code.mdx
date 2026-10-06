@@ -239,7 +239,8 @@ refuses the dangerous calls, so the mock scripts them):
 
 - **In-session view** — the interactive demo with the plugin's mod. It creates
   a throwaway project under `output/mod-demo` with the files the scenarios need
-  (including a fake `.env`), and its banner prints a `claude` command that loads
+  (including a fake `.env`; with `PROJECT=` set it uses that directory and writes
+  no files), and its banner prints a `claude` command that loads
   the plugin from this checkout with `--plugin-dir`, so no plugin install or
   `sasy-guard enable` is needed (the runtime from `sasy-guard install` is):
 

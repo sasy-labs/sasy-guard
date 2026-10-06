@@ -51,14 +51,15 @@ claude-code-guard-serve:
 
 # Mod view: the same scripted mock, with `claude` loading the plugin (hooks + mod)
 # from this checkout so the in-session status entry, decision band and /guard
-# show. Runs in a throwaway project under output/ unless PROJECT is given:
+# show. Runs in a throwaway project under output/, with the scenario fixtures,
+# unless PROJECT names your own project (then no fixture files are written):
 #   make claude-code-guard-mod-demo GROUP=agent_redirect
 MOD_DEMO_PROJECT := $(or $(PROJECT),$(CURDIR)/output/mod-demo)
 
 claude-code-guard-mod-demo:
 	mkdir -p "$(MOD_DEMO_PROJECT)"
 	$(UV_RUN_SDK) python -m demo.cc_guard.serve_mock \
-	  --scenario $(or $(GROUP),toxic_flow) --setup-fixtures \
+	  --scenario $(or $(GROUP),toxic_flow) $(if $(PROJECT),,--setup-fixtures) \
 	  --project "$(MOD_DEMO_PROJECT)" --plugin-dir "$(CURDIR)/plugins/sasy-guard"
 
 # ── Documentation ──────────────────────────────────

@@ -147,6 +147,8 @@ test('/guard reports daemon health and recent decisions without a model turn', a
   expect(calls).toHaveLength(1)
   expect(calls[0]).toContain('http://127.0.0.1:51799/healthz')
   expect(calls[0]).toContain('--max-filesize')
+  expect(calls[0]).toContain('--fail')
+  expect(calls[0]).toContain('--noproxy')
   expect(out.text).toContain('daemon: up, policy engine ready · endpoint 127.0.0.1:50051')
   expect(out.text).toContain('this session: 1 checked · 1 denied · 0 asked')
   expect(out.text).toContain('deny  Bash  rm -rf build')
