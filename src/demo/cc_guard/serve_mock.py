@@ -142,7 +142,7 @@ def _print_banner(scenario_group: str, expected: str, headline: str,
     print("\n  Then type any prompt (e.g. 'do the task'). The mock replays the")
     print("  steps above; SASY gates each one. Ctrl-C here when done.")
     if plugin_dir is not None:
-        print("\n  The plugin's mod shows each decision in the session:")
+        print("\n  The plugin's mod checks each call and shows each decision:")
         print("    · a status entry under the prompt: checked / denied / asked")
         print("    · a band above the prompt explaining the latest denial or ask")
         print("    · /guard: daemon health and recent decisions, no model turn")

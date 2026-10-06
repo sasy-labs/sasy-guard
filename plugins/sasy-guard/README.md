@@ -2,8 +2,9 @@
 
 Claude Code plugin enforcing SASY Datalog policies on tool calls.
 
-Four settings hooks enforce the policy, plus an observe-only mod that shows
-their decisions ([In-session view](#in-session-view-mod)). The hooks are
+A mod checks each tool call against the policy from inside Claude Code and
+shows the decisions ([The mod](#the-mod)); four settings hooks back it up and
+check every call where the mod does not load. The hooks are
 `SessionStart` (ensure the `sasy-watch` daemon, register the session, pin the
 policy profile), `SessionEnd` (deregister),
 `PreToolUse` (check every tool call via the daemon → `RMProxy.CheckToolCall`;
@@ -46,19 +47,22 @@ claude --plugin-dir plugins/sasy-guard
 # Inside the session: `rm -rf` and force pushes are denied with a [SASY] reason.
 ```
 
-## In-session view (mod)
+## The mod
 
-The plugin also ships a Claude Code
-[mod](https://code.claude.com/docs/en/plugins/mods/overview):
-`hooks/register.tsx`, listed under `modules` in `hooks/hooks.json`. It only
-observes: it reads each `PreToolUse` decision through `classic.PreToolUse` and
-shows a status entry with the session's checked / denied / asked totals, a band
-above the prompt that explains the latest `[SASY]` denial or ask (with a Dismiss
-button), and a `/guard` command that answers without a model turn, reporting the
-daemon's `/healthz` and recent decisions. Enforcement stays entirely in the
-settings hooks, so a session where only mods are blocked
-(`allowManagedModsOnly`) is enforced the same way. `disableAllHooks` turns off
-both, so nothing is enforced.
+`hooks/register.tsx`, listed under `modules` in `hooks/hooks.json`, is a Claude
+Code [mod](https://code.claude.com/docs/en/plugins/mods/overview). At
+`classic.PreToolUse` it posts each call to the daemon's `/v1/pretooluse` (the
+same payload the hook sends, with the daemon's hook-auth header when one
+exists) and refuses the call, asks the user, or passes it on. It fails closed
+like the hook (`SASY_FAIL_OPEN=true` to override). The calls it checked are
+listed in `SASY_GUARD_MOD_CHECKED`, and `scripts/pretooluse.sh` stands aside
+for exactly those, so each call is checked once; where the mod does not load,
+the script checks every call as before. `disableAllHooks` turns off both.
+
+The mod also shows a status entry with the session's checked / denied / asked
+totals, a band above the prompt explaining the latest `[SASY]` denial or ask
+(with a Dismiss button), and a `/guard` command that answers without a model
+turn, reporting the daemon's `/healthz` and recent decisions.
 
 ```sh
 claude plugin validate plugins/sasy-guard   # what the mod hooks and calls

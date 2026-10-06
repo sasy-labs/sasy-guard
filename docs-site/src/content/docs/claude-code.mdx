@@ -56,7 +56,7 @@ them).
    below for the exact prompts to try. On Claude Code v2.1.287 or later, the
    line `sasy-guard: 0 checked · 0 denied · 0 asked` under the prompt shows the
    plugin loaded, and `/guard` reports whether the daemon is up (see
-   [See decisions in the session](#see-decisions-in-the-session)).
+   [The mod](#the-mod-checks-and-decisions-in-the-session)).
 
 </Steps>
 
@@ -87,7 +87,8 @@ instead, run `sasy-guard enable [project]` (it defaults to the current
 directory). That writes the four hooks straight into
 `<project>/.claude/settings.json`: same enforcement, scoped to that one project,
 no global plugin. A settings file holds hooks only, so this route enforces the
-policy without the in-session view described below.
+policy through the hook, without the mod. Use one route or the other: with both,
+each call is checked twice.
 </Aside>
 
 ## What it enforces
@@ -174,22 +175,29 @@ flow; the **outbound** call afterward is what's denied.
 - `supply_chain` / `public_push` — need live network facts (OSV verdicts, GitHub
   repo visibility), so they don't fire in an offline dummy repo.
 
-## See decisions in the session
+## The mod: checks and decisions in the session
 
 The plugin also contains a **mod**. A mod is Claude Code plugin code that runs
 inside Claude Code itself and can draw in its interface; the plugin's hooks, by
-contrast, are separate programs that Claude Code runs for each event. The mod
-only observes. It reads each decision the `PreToolUse` hook returns and shows it,
-while the hook remains the only thing that allows, asks or denies. See the
+contrast, are separate programs that Claude Code starts for each event. See the
 [Claude Code mods documentation](https://code.claude.com/docs/en/plugins/mods/overview)
 for how mods work in general.
 
-The mod adds three things to a session:
+Where the mod loads, **it does the policy check**. Before each tool call it
+sends the `sasy-watch` daemon the same question the `PreToolUse` hook would,
+and it refuses the call, asks you, or lets it go on to your other hooks. It
+fails closed the same way: when the daemon cannot be reached after one attempt
+to start it, the call is refused (unless `SASY_FAIL_OPEN=true`). The plugin's
+`PreToolUse` hook stays installed and stands aside for exactly the calls the
+mod checked, so each call is checked once. Where the mod does not load, the
+hook checks every call as before, so nothing needs to be turned off by hand.
+
+The mod also shows the decisions:
 
 - **A status entry** under the prompt with this session's totals:
   `sasy-guard: 4 checked · 2 denied · 0 asked`. A call counts as *checked* when
-  it passes through the `PreToolUse` hook, and as *denied* or *asked* when the
-  hook's answer carries a `[SASY]` reason.
+  the mod checked it, and as *denied* or *asked* when the answer carries a
+  `[SASY]` reason (a refusal by some other hook is not counted).
 - **A band above the prompt** after a denial or an approval request. It names
   the tool and what the call acted on (the command, path or URL), followed by the
   policy's reason and suggested fix. **Dismiss** hides the band until the next
@@ -203,11 +211,11 @@ The mod adds three things to a session:
 <Aside>
 Mods need Claude Code v2.1.287 or later. The band and status entry are drawn
 only in the terminal and in the Code tab of the Desktop app; the VS Code chat
-panel and `claude -p` draw nothing, and there `/guard` still answers. Where only
-mods are blocked, as under an organization's `allowManagedModsOnly` setting, the
-hooks still enforce the policy and only the in-session view is missing. The
-`disableAllHooks` setting is different: it turns off the mod **and** the
-enforcement hooks, so no tool call is checked.
+panel and `claude -p` draw nothing; the mod still checks every call there, and
+`/guard` still answers. Where only mods are blocked, as under an organization's
+`allowManagedModsOnly` setting, the `PreToolUse` hook checks every call and only
+the in-session view is missing. The `disableAllHooks` setting is different: it
+turns off the mod **and** the hooks, so no tool call is checked.
 </Aside>
 
 The totals reflect the decision Claude Code receives. When the daemon turns an
@@ -264,10 +272,9 @@ Claude Code ──hooks──▶ sasy-watch daemon ──gRPC──▶ sasy engi
 
 The pieces:
 
-- The **plugin** registers the hooks; `PreToolUse` is the enforcement point (a
-  native, fail-closed binary).
-- The **mod** inside the plugin reads each answer the `PreToolUse` hook gives
-  and draws it in the session. It takes no part in the decision.
+- The **plugin** contains a mod and the hooks. The mod checks each tool call
+  from inside Claude Code; the `PreToolUse` hook (a native, fail-closed binary)
+  checks the calls the mod did not, such as every call where mods are blocked.
 - The **daemon** owns one SASY session per conversation, tails the transcript
   (including subagent/workflow threads), reconstructs the message-dependency
   graph, and runs the check — so the **same policies** the SASY SDKs use run
