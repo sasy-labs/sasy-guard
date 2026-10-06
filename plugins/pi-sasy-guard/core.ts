@@ -37,7 +37,8 @@ export function parseDecision(body: unknown): Decision | undefined {
   // An error body is no decision, even with HTTP 200.
   if ("error" in body) return undefined;
   const hs = (body as { hookSpecificOutput?: unknown }).hookSpecificOutput;
-  if (hs === undefined) return { kind: "allow" };
+  // `{}` is the daemon's "no objection"; any other shape is unknown.
+  if (hs === undefined) return Object.keys(body).length === 0 ? { kind: "allow" } : undefined;
   if (typeof hs !== "object" || hs === null || Array.isArray(hs)) return undefined;
   const { permissionDecision: d, permissionDecisionReason: r } = hs as Record<string, unknown>;
   const reason = typeof r === "string" && r.trim() !== "" ? r : `${MARKER} blocked by policy`;

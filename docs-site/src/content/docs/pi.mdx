@@ -148,6 +148,7 @@ pi ──extension──▶ sasy-watch daemon ──gRPC──▶ sasy engine
   resumed session knows too.
 - The **daemon** translates pi's tools into the tool names the policy uses
   (`bash` becomes `Bash`, `read` becomes `Read` with an absolute `file_path`,
+  resolved as pi resolves it, `~` and all,
   `edit` becomes `Edit`, `write` becomes `Write`, `grep` becomes `Grep`, `find`
   becomes `Glob`) and builds the session's **dependency graph**: which messages
   and tool results each action came from. When a session resumes, or the daemon
@@ -169,8 +170,13 @@ through instead.
   extensions you trust.
 - **No approval without a terminal.** In pi's print (`-p`) and JSON modes there
   is nobody to ask, so an "ask" blocks the call.
-- **Shell rules cover `bash`.** pi's `powershell` tool is checked, but the
-  policy's shell rules are written for `bash` commands.
+- **Shell rules are written for `bash`.** pi's `powershell` tool is checked
+  with the same rules, so checks on a command's text (paths, `curl`) apply, but
+  PowerShell's own commands (`Invoke-WebRequest`, `Remove-Item`) are not
+  recognized.
+- **Calls made by other tools.** A tool call that another tool makes (pi's
+  code-mode scripts) is checked, but pi does not record its result in the
+  session, so the daemon cannot trace data that came from that result.
 - **Credential injection is not applied.** Policies that rewrite a call's
   arguments (credential transforms) take effect on Claude Code only; on pi the
   call runs with its original arguments.

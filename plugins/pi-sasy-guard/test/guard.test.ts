@@ -250,6 +250,7 @@ test("decisions parse from the daemon's hook output", () => {
   assert.equal(parseDecision([]), undefined);
   assert.equal(parseDecision({ hookSpecificOutput: { permissionDecision: "block" } }), undefined);
   assert.equal(parseDecision({ hookSpecificOutput: [] }), undefined);
+  assert.equal(parseDecision({ message: "policy engine unavailable" }), undefined);
   assert.deepEqual(parseDecision({ hookSpecificOutput: { updatedInput: {} } }), { kind: "allow" });
   assert.equal(parseDecision({ hookSpecificOutput: 3 }), undefined);
 });
