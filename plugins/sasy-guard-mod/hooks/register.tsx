@@ -21,8 +21,11 @@ import type { AgentTable } from './agents'
 import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
 import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
-import type { FeedBuffer, FeedRow } from './feed'
+import type { FeedBuffer, FeedOutcome, FeedRow } from './feed'
 import {
+  MAX_PUSH_ROUNDS,
+  PUSH_DEADLINE_MS,
+  RESULT_WAIT_MS,
   ResultTable,
   afterPush,
   agentsOf,
@@ -50,6 +53,7 @@ import {
   targetOf,
   verdictOf,
 } from './text'
+import type { DialogOutcome, DialogRecord } from './text'
 import {
   CHECK_TIMEOUT_MS,
   DEFAULT_PORT,
@@ -58,6 +62,7 @@ import {
   combine,
   denyWith,
   parseAnswer,
+  SPAWN_FAILURE_MS,
   UNREACHABLE_CURL_EXITS,
   postArgv,
   replyOf,
@@ -69,12 +74,6 @@ const COMMAND = 'guard'
 /** The most worktree ids seen before their spawn that the mod remembers. */
 const MAX_EARLY = 200
 const HEALTH_TIMEOUT_MS = 3000
-/** How long a history push waits for a reported tool call to finish. */
-const RESULT_WAIT_MS = 5000
-/** A command whose run fails sooner than this never started. */
-const SPAWN_FAILURE_MS = 2000
-/** Pushes before a check: the first, then rounds for rows kept meanwhile. */
-const MAX_PUSH_ROUNDS = 3
 
 const counts = atom({ plugin: 'sasy-guard-mod', key: 'counts' } as const, {
   checked: 0,
@@ -111,7 +110,6 @@ async function authHeaderFile($: EngineInterface, port: string): Promise<string 
 }
 
 
-/** One POST to /v1/pretooluse; the answer's body, or why there is none. */
 /** Claude Code's entrypoint and terminal program, for the daemon's headers. */
 async function hostHeaders($: EngineInterface): Promise<HostHeaders> {
   return {
@@ -227,9 +225,6 @@ async function canAsk($: EngineInterface): Promise<boolean> {
   return (await $.session.surfaces()).length > 0
 }
 
-/** What became of one approval dialog: the call's result and what to record. */
-/** `record` is absent when the outcome is an ordinary SASY denial. */
-type DialogOutcome = { result: PreToolUseResult; record?: DialogRecord }
 
 /**
  * The mod's own approval dialog for a one-time bypass the daemon offered. It
@@ -407,9 +402,6 @@ async function daemonHealth($: EngineInterface): Promise<string> {
   return healthLine(url, ran.stdout)
 }
 
-/** What the mod's own dialog came to, for the record: the offer the user
- *  answered (its reason) and whether they approved. */
-type DialogRecord = { verdict: GuardVerdict; reason: string }
 
 /** Counts one checked call and keeps it when it carries a [SASY] verdict, or
  *  when the mod's own dialog asked the user about it. */
@@ -452,8 +444,6 @@ async function recordSafely(
   }
 }
 
-/** What became of sending the session-history feed. */
-type FeedOutcome = 'sent' | 'unsupported' | 'unreachable' | 'failed'
 
 /**
  * Sends buffered history rows to the daemon (/v1/session/append), in pushes it
@@ -467,6 +457,7 @@ async function sendFeed(
   rows: FeedRow[],
   agents: Record<string, { toolUseId: string; agentType: string }>,
   gap: boolean,
+  deadline: number,
 ): Promise<{ outcome: FeedOutcome; sent: number }> {
   const port = await daemonPort($)
   if (port === undefined) return { outcome: 'failed', sent: 0 }
@@ -474,6 +465,9 @@ async function sendFeed(
   const host = await hostHeaders($)
   let sent = 0
   for (const batch of batches(rows).concat(rows.length === 0 && gap ? [[]] : [])) {
+    // One deadline for all of a check's pushing: a slow port holder cannot
+    // hold the call for longer.
+    if ((await $.clock.now()) > deadline) return { outcome: 'failed', sent }
     const ran = await $.process.run(postArgv(port, auth, '/v1/session/append', 10, 0, host), {
       stdin: JSON.stringify({ ...base, rows: batch, agents: agentsOf(batch, agents), gap: gap && sent === 0 }),
       timeoutMs: 13_000,
@@ -581,6 +575,8 @@ export const register: Register = on => {
   // leaves the new buffer alone.
   let feedGeneration = 0
   let feed: FeedBuffer = emptyBuffer()
+  // The session's folder as last read (at session start and each check).
+  let knownCwd: string | undefined
   let feedSupported = true
   const toolResults = new ResultTable()
   // Tool calls started and not yet finished, by tool_use_id, each with what
@@ -638,6 +634,7 @@ export const register: Register = on => {
       feedGeneration++
     }
     feedSession = e.session_id
+    if (typeof e.cwd === 'string' && e.cwd !== '') knownCwd = e.cwd
     const kept = carried
     carried = undefined
     if (kept !== undefined && e.source === 'compact') {
@@ -753,7 +750,9 @@ export const register: Register = on => {
   on('session.append', async ($, e, next) => {
     const stored = await next(e)
     if (!feedSupported) return stored
-    const cwd = e.agentId === undefined ? await $.session.cwd() : agentTable[e.agentId]?.cwd
+    // Queued at once (no await between storing and queueing), with the folder
+    // last seen for the session or the subagent's recorded one.
+    const cwd = e.agentId === undefined ? knownCwd : agentTable[e.agentId]?.cwd
     feed = enqueue(feed, rowOf({ ...e, message: stored.message ?? e.message }, cwd))
     return stored
   })
@@ -840,6 +839,7 @@ export const register: Register = on => {
       }
     } else {
       const sessionCwd = await $.session.cwd()
+      knownCwd = sessionCwd
       const cwd = caller.kind === 'agent' ? caller.cwd ?? sessionCwd : sessionCwd
       const agentType = caller.kind === 'agent' ? caller.type : info.agentType
       // A subagent's own definition may set another mode than the session's,
@@ -870,6 +870,7 @@ export const register: Register = on => {
           // Rows kept while a push ran go out before the check too (a few
           // rounds at most); a session change while a push ran ends it.
           const generation = feedGeneration
+          const deadline = (await $.clock.now()) + PUSH_DEADLINE_MS
           for (let round = 0; round < MAX_PUSH_ROUNDS && feedSupported; round++) {
             if (round > 0 && (pushed !== 'sent' || feed.rows.length === 0)) break
             // A row reporting a tool call still running waits, briefly, for
@@ -891,12 +892,12 @@ export const register: Register = on => {
             // reads it from the transcript first.
             const isMissing = reportedCalls(sending).some(id => running.has(id))
             const gap = pending.gap > 0 || enriched.gap || isMissing
-            let { outcome, sent } = await sendFeed($, base, sending, spawns, gap)
+            let { outcome, sent } = await sendFeed($, base, sending, spawns, gap, deadline)
             if (outcome === 'unreachable') {
               // As for a check: start the daemon once and send everything again
               // (a new daemon may hold none of it; it skips rows it has).
               await ensureDaemon($)
-              ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap))
+              ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap, deadline))
             }
             pushed = outcome
             if (generation !== feedGeneration) break // another session's buffer now

@@ -60,6 +60,23 @@ export function utf8Length(text: string): number {
 /** A result's serialized size. */
 export const resultSize = (value: unknown): number => utf8Length(JSON.stringify(value) ?? '')
 
+/** How deeply the daemon may find a row nested in a push body (its JSON
+ *  depth limit is 32; the body and row wrap each row in a few levels). */
+export const MAX_DEPTH = 24
+
+/** The nesting depth of a JSON value (a scalar is 0). */
+export function depthOf(value: unknown): number {
+  let deepest = 0
+  const stack: [unknown, number][] = [[value, 0]]
+  while (stack.length > 0) {
+    const [v, d] = stack.pop()!
+    if (v === null || typeof v !== 'object') continue
+    deepest = Math.max(deepest, d + 1)
+    for (const child of Object.values(v as Record<string, unknown>)) stack.push([child, d + 1])
+  }
+  return deepest
+}
+
 /** A row's size in a push. */
 const sizeOf = (row: FeedRow): number => utf8Length(JSON.stringify(row))
 
@@ -89,7 +106,8 @@ export function rowOf(
  *  marked lost instead, so the daemon reads it from the transcript. */
 export function enqueue(buffer: FeedBuffer, row: FeedRow): FeedBuffer {
   const size = sizeOf(row)
-  if (size > MAX_BATCH_BYTES) return { ...buffer, gap: buffer.gap + 1 }
+  // Too large, or nested deeper than the daemon parses: left to the transcript.
+  if (size > MAX_BATCH_BYTES || depthOf(row) > MAX_DEPTH) return { ...buffer, gap: buffer.gap + 1 }
   const bytes = buffer.bytes + size
   if (buffer.rows.length >= MAX_BUFFER_ROWS || bytes > MAX_BUFFER_BYTES) {
     return { rows: [], bytes: 0, gap: buffer.gap + 1 }
@@ -228,7 +246,8 @@ export class ResultTable {
    *  many lost ids it had to forget (each then a gap for the daemon). */
   note(id: string, value: unknown): number {
     const size = resultSize(value)
-    if (size > MAX_BATCH_BYTES) return this.markLost(id)
+    // Too large, or (inside its row) nested deeper than the daemon parses.
+    if (size > MAX_BATCH_BYTES || depthOf(value) > MAX_DEPTH - 1) return this.markLost(id)
     this.values.set(id, value)
     this.bytes += size
     let forgotten = 0
@@ -265,3 +284,12 @@ export class ResultTable {
     }
   }
 }
+
+/** What became of sending the session-history feed. */
+export type FeedOutcome = 'sent' | 'unsupported' | 'unreachable' | 'failed'
+/** How long a history push waits for a reported tool call to finish. */
+export const RESULT_WAIT_MS = 5000
+/** Pushes before a check: the first, then rounds for rows kept meanwhile. */
+export const MAX_PUSH_ROUNDS = 3
+/** The most time a check spends sending history, all rounds included. */
+export const PUSH_DEADLINE_MS = 20_000

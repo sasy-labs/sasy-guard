@@ -255,3 +255,6 @@ export function replyOf(ran: { exitCode: number; stdout: string }, port: string)
   const kind = status === '401' || status === '403' ? 'auth' : 'answer'
   return { error: `sasy-watch answered HTTP ${status}`, kind }
 }
+
+/** A command whose run fails sooner than this never started. */
+export const SPAWN_FAILURE_MS = 2000

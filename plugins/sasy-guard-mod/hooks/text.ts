@@ -203,3 +203,10 @@ export function guardText(health: string, c: GuardCounts, decisions: GuardDecisi
   else lines.push('recent decisions (newest first):', ...recent.flatMap((d, i) => decisionLines(d, i === 0)))
   return lines.join('\n')
 }
+
+/** What the mod's own dialog came to, for the record: the offer the user
+ *  answered (its reason) and whether they approved. */
+export type DialogRecord = { verdict: GuardVerdict; reason: string }
+/** What became of one approval dialog: the call's result and what to record
+ *  (absent when the outcome is an ordinary SASY denial). */
+export type DialogOutcome = { result: PreToolUseResult; record?: DialogRecord }
