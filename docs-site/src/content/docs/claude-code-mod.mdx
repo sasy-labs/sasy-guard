@@ -72,6 +72,8 @@ claude
 
 Then type these prompts. Each denial shows in the band and the status entry,
 and `/guard` lists it. For `curl_sh`, the denial carries a one-time bypass:
+with a daemon that sends the offer to the mod, the mod's own dialog asks you
+(see [One-time approvals](#one-time-approvals)); with the released daemon,
 Claude either follows the suggested fix or asks you whether to approve it
 once.
 
@@ -141,11 +143,12 @@ to you through its own question tool. The mod asks you directly:
 4. If you deny or close the dialog, the call stays blocked and Claude is told
    the policy's reason and suggested fix to follow instead.
 
-This needs a `sasy-watch` daemon that sends the offer to the mod; with an older
-daemon the call is refused and Claude asks you through its question tool, as
-with the hook plugin. Where nobody can be asked (such as `claude -p`), the call
-stays refused. The status entry and `/guard` count the call as an ask, with what
-you chose.
+This needs a `sasy-watch` daemon that sends the offer to the mod. The status
+entry and `/guard` then count the call as an ask, with what you chose. With an
+older daemon (including the released one), the call is refused and Claude may
+ask you through its question tool, as with the hook plugin; the mod then records
+the call as a denial, and the band keeps saying denied even if you approve the
+retry. Where nobody can be asked (such as `claude -p`), the call stays refused.
 
 The dialog covers the one-time bypass offer only. When a call is held because
 an earlier source hid text in invisible Unicode characters, the policy asks
