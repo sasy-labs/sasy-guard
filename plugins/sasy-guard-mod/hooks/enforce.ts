@@ -1,0 +1,144 @@
+// The daemon requests' pure parts: the curl arguments for the sasy-watch
+// daemon's routes (the settings hooks' own payloads), and how the daemon's
+// answer to a policy check becomes a `classic.PreToolUse` result. register.tsx
+// makes the calls, since only it may hold the engine interface.
+import type { PreToolUseResult } from 'claude-code'
+
+export const DEFAULT_PORT = '51711'
+export const CHECK_TIMEOUT_MS = 12_000
+export const ENSURE_TIMEOUT_MS = 10_000
+
+/** What the daemon is asked about one tool call: the settings hook's stdin. */
+export type CheckInput = {
+  session_id: string
+  tool_name: string
+  tool_input: Record<string, unknown>
+  tool_use_id: string
+  cwd: string
+  transcript_path?: string
+  /** A subagent's id, as the hook receives it for a subagent's call. */
+  agent_id?: string
+  /** The caller's agent type: a subagent's, or a session started with --agent. */
+  agent_type?: string
+}
+
+/**
+ * curl's arguments for one POST to the daemon: bounded in time and size, never
+ * via a proxy, the body on stdin, the HTTP status appended on a line of its
+ * own. A daemon that authenticates hooks is sent its header file with
+ * `-H @file`, so the secret never appears in a process's arguments.
+ */
+export function postArgv(
+  port: string,
+  authFile: string | undefined,
+  route: string,
+  maxSeconds: number,
+  retrySeconds = 0,
+): string[] {
+  // Retries, when asked for, also cover HTTP errors (a daemon whose policy
+  // engine is still starting answers 400), one a second, for at most
+  // retrySeconds in all (curl restarts --max-time for each attempt).
+  const retry =
+    retrySeconds === 0
+      ? []
+      : [
+          '--fail', '--retry', String(retrySeconds), '--retry-delay', '1',
+          '--retry-max-time', String(retrySeconds), '--retry-all-errors',
+        ]
+  return [
+    'curl', '-sS', '--noproxy', '*', '--max-time', String(maxSeconds), ...retry,
+    '--max-filesize', '1048576', '-X', 'POST', '-H', 'content-type: application/json',
+    '-H', 'x-claude-code-entrypoint: sasy-guard-mod',
+    ...(authFile === undefined ? [] : ['-H', `@${authFile}`]),
+    '--data-binary', '@-', '--write-out', '\n%{http_code}',
+    `http://127.0.0.1:${port}${route}`,
+  ]
+}
+
+/** curl's arguments for one policy check (/v1/pretooluse). */
+export function checkArgv(port: string, authFile: string | undefined): string[] {
+  return postArgv(port, authFile, '/v1/pretooluse', 10)
+}
+
+/** Splits curl's output into the body and the HTTP status it appended. */
+export function splitStatus(stdout: string): { body: string; status: string } {
+  const cut = stdout.lastIndexOf('\n')
+  return { body: stdout.slice(0, Math.max(cut, 0)), status: stdout.slice(cut + 1) }
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/**
+ * The daemon's hook output as a `classic.PreToolUse` result, or undefined when
+ * it is not one. The accepted shapes are exactly the daemon's: `{}` (no
+ * objection), or `{ hookSpecificOutput }` with `hookEventName: "PreToolUse"`,
+ * an optional decision with its reason, and an optional input rewrite and
+ * context note, each of its own type, with at least one of decision, rewrite
+ * or note. Anything else fails closed rather than passing a call the backup
+ * hook would then skip.
+ */
+export function toResult(body: string): PreToolUseResult | undefined {
+  let out: unknown
+  try {
+    out = JSON.parse(body)
+  } catch {
+    return undefined
+  }
+  if (!isRecord(out)) return undefined
+  const keys = Object.keys(out)
+  if (keys.length === 0) return {}
+  if (keys.length !== 1 || !isRecord(out.hookSpecificOutput)) return undefined
+  const {
+    hookEventName,
+    permissionDecision: decision,
+    permissionDecisionReason: reason,
+    updatedInput,
+    additionalContext: note,
+    ...unknown
+  } = out.hookSpecificOutput
+  const isValid =
+    Object.keys(unknown).length === 0 &&
+    hookEventName === 'PreToolUse' &&
+    (decision === undefined || decision === 'allow' || decision === 'ask' || decision === 'deny') &&
+    (reason === undefined || typeof reason === 'string') &&
+    (updatedInput === undefined || isRecord(updatedInput)) &&
+    (note === undefined || typeof note === 'string') &&
+    (decision !== undefined || updatedInput !== undefined || note !== undefined)
+  if (!isValid) return undefined
+  const why = typeof reason === 'string' ? reason : ''
+  const decided: PreToolUseResult =
+    decision === 'deny'
+      ? { deny: why || '[SASY] denied by policy' }
+      : decision === 'ask'
+        ? { ask: why || '[SASY] approval needed' }
+        : {} // an `allow` too: SASY never skips Claude Code's own permission prompt
+  return {
+    ...decided,
+    ...(isRecord(updatedInput) ? { updatedInput } : {}),
+    ...(typeof note === 'string' && note !== '' ? { additionalContext: [note] } : {}),
+  }
+}
+
+/** SASY's denial, keeping the context notes other hooks added to the call. */
+export function denyWith(ours: PreToolUseResult & { deny: string }, theirs: PreToolUseResult): PreToolUseResult {
+  const context = [...(ours.additionalContext ?? []), ...(theirs.additionalContext ?? [])]
+  return { deny: ours.deny, ...(context.length === 0 ? {} : { additionalContext: context }) }
+}
+
+/** One answer from several PreToolUse deciders: deny over ask over allow. */
+export function combine(ours: PreToolUseResult, theirs: PreToolUseResult): PreToolUseResult {
+  const context = [...(ours.additionalContext ?? []), ...(theirs.additionalContext ?? [])]
+  // SASY's rewrite is part of what it authorised, so it wins over another
+  // hook's rewrite of the same call.
+  const updatedInput = ours.updatedInput ?? theirs.updatedInput
+  if (theirs.deny !== undefined) return denyWith({ ...theirs, deny: theirs.deny }, ours)
+  const extra = {
+    ...(updatedInput === undefined ? {} : { updatedInput }),
+    ...(context.length === 0 ? {} : { additionalContext: context }),
+  }
+  if (ours.ask !== undefined) return { ask: ours.ask, ...extra }
+  if (theirs.ask !== undefined) return { ask: theirs.ask, ...extra }
+  if (theirs.allow === true) return { allow: true, ...extra }
+  return extra
+}
