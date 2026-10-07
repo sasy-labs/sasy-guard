@@ -81,6 +81,27 @@ It also shows its decisions in the session:
   whether the daemon is running, which policy engine it uses and its fail mode,
   this session's totals, and the five most recent decisions, the newest in full.
 
+## One-time approvals
+
+Some rules ask before a call runs rather than refusing it outright, for example
+piping a downloaded script into a shell. The daemon then refuses the call but
+offers a **one-time bypass**. With the hook plugin, Claude passes that offer on
+to you through its own question tool. The mod asks you directly:
+
+1. It holds the tool call and shows the policy's question with **Approve once**
+   and **Deny** (and, when the policy names a host, **Trust *host* for this
+   session**).
+2. Your answer goes to the daemon, bound to this one call.
+3. If you approve, the mod checks the call again and the daemon lets it run
+   once, as long as nothing the decision rested on has changed. Claude is told
+   you approved it.
+4. If you deny or close the dialog, the call stays blocked and Claude is told to
+   follow the suggested fix instead.
+
+This needs a `sasy-watch` daemon that sends the offer to the mod; with an older
+daemon, or where nothing can be asked (such as `claude -p`), the call is refused
+and Claude asks you through its question tool, as with the hook plugin.
+
 ## When it refuses a call
 
 The mod **fails closed**: when it cannot get a decision, the call does not run.

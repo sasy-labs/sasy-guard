@@ -28,6 +28,17 @@ Both talk to the same local `sasy-watch` daemon and policy engine, installed by
   Dismiss button), and `/guard`, which reports the daemon's `/healthz` and recent
   decisions without a model turn.
 
+**One-time approvals.** When the policy offers a one-time bypass (an `ask`
+rule, such as piping a download into a shell), a daemon that supports it sends
+the offer with its denial, and the mod asks you itself: it holds the tool call
+and shows the policy's question with **Approve once** and **Deny** (and, when
+the policy names a host, **Trust *host* for this session**). Your answer goes
+to the daemon (`/v1/approval`, bound to this call); on approval the mod checks
+the call again and the daemon lets it run once. Claude only learns the outcome.
+Where nothing can be asked (`claude -p`), or with a daemon that does not send
+the offer, the denial stands and Claude asks you through its own question tool,
+as with the hook plugin.
+
 It fails closed. A call is denied when the daemon cannot be reached after one
 `sasy-watch ensure` (unless `SASY_FAIL_OPEN=true` and the daemon's hook-auth file
 is in place), when the daemon's answer is not one of its exact answer shapes or

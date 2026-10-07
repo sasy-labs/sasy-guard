@@ -20,6 +20,48 @@ export type CheckInput = {
   agent_id?: string
   /** The caller's agent type: a subagent's, or a session started with --agent. */
   agent_type?: string
+  /** Marks the mod, so a daemon that supports it adds the bypass offer for the
+   *  mod's own dialog (`sasyApproval`); an older daemon ignores it. */
+  sasy_mod: true
+}
+
+/** A one-time bypass the daemon offers on a denial, for the mod's own dialog. */
+export type BypassOffer = {
+  /** The daemon-authored question, ending in its `[SASY-ALLOW:…]` routing tag. */
+  question: string
+  /** The canonical choices: approve, decline, and trust-domain when offered. */
+  labels: string[]
+  /** The policy's reason as the user should read it. */
+  reason: string
+  /** The domain trust-domain would trust for the session, when offered. */
+  domain?: string
+}
+
+/** A check's answer: the decision, and the bypass the daemon offers with it. */
+export type CheckAnswer = { result: PreToolUseResult; offer?: BypassOffer }
+
+const OFFER_LABELS = ['approve', 'decline', 'trust-domain']
+
+/** The `sasyApproval` field of a daemon answer, or undefined when it is not one. */
+function offerOf(value: unknown): BypassOffer | undefined {
+  if (!isRecord(value)) return undefined
+  const { question, labels, reason, domain, ...unknown } = value
+  const isValid =
+    Object.keys(unknown).length === 0 &&
+    typeof question === 'string' && question !== '' &&
+    typeof reason === 'string' &&
+    Array.isArray(labels) &&
+    labels.includes('approve') && labels.includes('decline') &&
+    labels.every(label => OFFER_LABELS.includes(label as string)) &&
+    (domain === undefined || (typeof domain === 'string' && domain !== '')) &&
+    (labels.includes('trust-domain') === (domain !== undefined))
+  if (!isValid) return undefined
+  return {
+    question: question as string,
+    labels: labels as string[],
+    reason: reason as string,
+    ...(domain === undefined ? {} : { domain: domain as string }),
+  }
 }
 
 /**
@@ -79,6 +121,15 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
  * hook would then skip.
  */
 export function toResult(body: string): PreToolUseResult | undefined {
+  return parseAnswer(body)?.result
+}
+
+/**
+ * A daemon answer as the decision and, beside a denial, the one-time bypass it
+ * offers (`sasyApproval`, sent only to a client that set `sasy_mod`). Undefined
+ * when the answer is not one of the daemon's exact shapes: that fails closed.
+ */
+export function parseAnswer(body: string): CheckAnswer | undefined {
   let out: unknown
   try {
     out = JSON.parse(body)
@@ -86,9 +137,21 @@ export function toResult(body: string): PreToolUseResult | undefined {
     return undefined
   }
   if (!isRecord(out)) return undefined
-  const keys = Object.keys(out)
-  if (keys.length === 0) return {}
-  if (keys.length !== 1 || !isRecord(out.hookSpecificOutput)) return undefined
+  const { sasyApproval, ...rest } = out
+  const keys = Object.keys(rest)
+  const offer = sasyApproval === undefined ? undefined : offerOf(sasyApproval)
+  if (sasyApproval !== undefined && offer === undefined) return undefined
+  if (keys.length === 0) return offer === undefined ? { result: {} } : undefined
+  if (keys.length !== 1 || !isRecord(rest.hookSpecificOutput)) return undefined
+  const result = decisionOf(rest.hookSpecificOutput)
+  if (result === undefined) return undefined
+  // An offer rides only on a denial.
+  if (offer !== undefined && result.deny === undefined) return undefined
+  return offer === undefined ? { result } : { result, offer }
+}
+
+/** A `hookSpecificOutput` block as a `classic.PreToolUse` result, or undefined. */
+function decisionOf(block: Record<string, unknown>): PreToolUseResult | undefined {
   const {
     hookEventName,
     permissionDecision: decision,
@@ -96,7 +159,7 @@ export function toResult(body: string): PreToolUseResult | undefined {
     updatedInput,
     additionalContext: note,
     ...unknown
-  } = out.hookSpecificOutput
+  } = block
   const isValid =
     Object.keys(unknown).length === 0 &&
     hookEventName === 'PreToolUse' &&

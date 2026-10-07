@@ -19,7 +19,7 @@ import type { EngineInterface, PreToolUseResult, Register } from 'claude-code'
 import type { GuardCounts, GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
 import type { AgentTable } from './agents'
 import { addSpawn, attribute, markUnattributable, worktreeAgentId } from './agents'
-import type { CheckInput } from './enforce'
+import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
 import {
   CHECK_TIMEOUT_MS,
   DEFAULT_PORT,
@@ -27,9 +27,9 @@ import {
   checkArgv,
   combine,
   denyWith,
+  parseAnswer,
   postArgv,
   splitStatus,
-  toResult,
 } from './enforce'
 
 const PLUGIN = 'sasy-guard'
@@ -190,7 +190,7 @@ async function ensureDaemon($: EngineInterface): Promise<void> {
  * reached after one attempt to start it, the call is denied, unless
  * SASY_FAIL_OPEN=true, as for the settings hook.
  */
-async function checkCall($: EngineInterface, input: CheckInput): Promise<PreToolUseResult> {
+async function checkCall($: EngineInterface, input: CheckInput): Promise<CheckAnswer> {
   // Mirrors the hook plugin's pretooluse.sh, which this mod replaces.
   const port = await daemonPort($)
   let answer: CheckReply =
@@ -201,8 +201,8 @@ async function checkCall($: EngineInterface, input: CheckInput): Promise<PreTool
     await ensureDaemon($)
     answer = await postCheck($, port, input)
   }
-  const result = 'body' in answer ? toResult(answer.body) : undefined
-  if (result !== undefined) return result
+  const parsed = 'body' in answer ? parseAnswer(answer.body) : undefined
+  if (parsed !== undefined) return parsed
   // SASY_FAIL_OPEN covers an unreachable daemon only, and, as in the hook,
   // only with the daemon's hook-auth file in place: never a refused or missing
   // authentication, nor an answer that is no decision.
@@ -213,10 +213,83 @@ async function checkCall($: EngineInterface, input: CheckInput): Promise<PreTool
     (await $.env.get('SASY_FAIL_OPEN')) === 'true' &&
     (await authHeaderFile($, port)) !== undefined
   ) {
-    return {}
+    return { result: {} }
   }
   const why = 'error' in answer ? answer.error : 'sasy-watch gave an answer that is not a decision'
-  return { deny: `[SASY] security check unavailable (${why})` }
+  return { result: { deny: `[SASY] security check unavailable (${why})` } }
+}
+
+/** What the dialog's buttons say, by the daemon's canonical choice. */
+function choiceLabels(offer: BypassOffer): Record<string, string> {
+  return {
+    approve: 'Approve once',
+    decline: 'Deny',
+    ...(offer.domain === undefined ? {} : { 'trust-domain': `Trust ${offer.domain} for this session` }),
+  }
+}
+
+/** Whether a person can be asked: some surface draws the session. */
+async function canAsk($: EngineInterface): Promise<boolean> {
+  return (await $.session.surfaces()).length > 0
+}
+
+/**
+ * The mod's own approval dialog for a one-time bypass the daemon offered. It
+ * holds the call while it asks, records the answer with the daemon
+ * (/v1/approval, routed by this call's tool_use_id), and on approval checks the
+ * call again: the daemon then allows it once, unless what the decision rested
+ * on changed. A dismissed dialog declines. Replaces the model-driven
+ * AskUserQuestion round trip; the model reads only the outcome.
+ */
+async function askForBypass(
+  $: EngineInterface,
+  input: CheckInput,
+  offer: BypassOffer,
+): Promise<PreToolUseResult> {
+  const labels = choiceLabels(offer)
+  const question = offer.question.replace(/\s*\[SASY-ALLOW:[0-9a-f]+\]\s*$/, '')
+  let answer = labels.decline ?? 'Deny'
+  try {
+    answer = await $.ui.ask(question, {
+      header: 'SASY',
+      options: offer.labels.map(label => labels[label] ?? label),
+    })
+  } catch {
+    // Dismissed: the call stays blocked.
+  }
+  const choice =
+    Object.entries(labels).find(([, label]) => label === answer)?.[0] ?? 'decline'
+  const recorded = await postBestEffort(
+    $,
+    '/v1/approval',
+    { session_id: input.session_id, tool_use_id: input.tool_use_id, choice },
+    5,
+  )
+  let isRecorded = false
+  try {
+    isRecorded = recorded !== undefined && (JSON.parse(recorded) as { ok?: unknown }).ok === true
+  } catch {
+    // Not the daemon's answer: nothing was recorded.
+  }
+  if (choice === 'decline') {
+    return {
+      deny:
+        `[SASY] The user declined a one-time bypass: ${offer.reason}. ` +
+        'Follow the suggested fix instead of retrying the same action.',
+    }
+  }
+  if (!isRecorded) {
+    return { deny: `[SASY] The approval could not be recorded, so the action stays blocked: ${offer.reason}.` }
+  }
+  const again = await checkCall($, input)
+  if (again.result.deny !== undefined) return again.result
+  return {
+    ...again.result,
+    additionalContext: [
+      ...(again.result.additionalContext ?? []),
+      'The user approved a one-time bypass of a SASY check for this action in the SASY dialog.',
+    ],
+  }
 }
 
 /** The /healthz fields /guard prints, each held to the shape the daemon sends. */
@@ -523,7 +596,7 @@ export const register: Register = on => {
       const sessionCwd = await $.session.cwd()
       const cwd = caller.kind === 'agent' ? caller.cwd ?? sessionCwd : sessionCwd
       const agentType = caller.kind === 'agent' ? caller.type : info.agentType
-      ours = await checkCall($, {
+      const input: CheckInput = {
         session_id: await $.session.id(),
         tool_name: String(tool),
         tool_input: args,
@@ -532,7 +605,16 @@ export const register: Register = on => {
         ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
         ...(caller.kind === 'agent' ? { agent_id: caller.agentId } : {}),
         ...(agentType === null ? {} : { agent_type: agentType }),
-      })
+        sasy_mod: true,
+      }
+      const answer = await checkCall($, input)
+      // A one-time bypass on offer: ask the user here, holding the call, where
+      // someone can be asked; elsewhere the denial (with its model-driven
+      // AskUserQuestion instructions) stands, as with the hook plugin.
+      ours =
+        answer.offer !== undefined && (await canAsk($))
+          ? await askForBypass($, input, answer.offer)
+          : answer.result
     }
     // Any other settings hooks run whatever SASY answered.
     const theirs = await next(e)
