@@ -17,6 +17,9 @@ Full documentation: [guard.sasy.ai/pi](https://guard.sasy.ai/pi/).
 
 ## Install
 
+pi support needs a `sasy-guard` runtime release newer than 0.2.0 (0.2.0 does not
+accept pi's sessions, so every call would be blocked).
+
 ```sh
 uv tool install sasy-guard && sasy-guard install   # the policy engine + daemon
 pi install git:github.com/sasy-labs/sasy-guard      # this extension, every session
