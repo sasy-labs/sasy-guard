@@ -19,7 +19,7 @@ import type { EngineInterface, PreToolUseResult, Register } from 'claude-code'
 import type { GuardCounts, GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
 import type { AgentTable } from './agents'
 import type { Carried } from './carry'
-import { WORKTREE_WHY, addSpawn, attribute, markUnattributable, worktreeOwner } from './agents'
+import { WORKTREE_WHY, addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
 import { MAX_EARLY, carryOver } from './carry'
 import type { CheckInput } from './enforce'
 import {
@@ -229,7 +229,7 @@ async function checkCall($: EngineInterface, input: CheckInput): Promise<PreTool
 /** An endpoint /guard may print: a DNS host name, an IPv4 address or a
  *  bracketed IPv6 address, and a port. Anything else is not printed. */
 const ENDPOINT =
-  /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,62}\.){0,8}[A-Za-z0-9-]{1,63}|\[[0-9a-fA-F:]{2,39}\]):\d{1,5}$/
+  /^(?=.{1,259}$)([A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})*|\[[0-9a-fA-F:]{2,39}\]):\d{1,5}$/
 const FAIL_MODES = ['open', 'closed']
 
 /**
@@ -403,8 +403,8 @@ export const register: Register = on => {
   // worktree of their own, by tool_use_id, until their spawn is recorded.
   const callerOf = new Map<string, string>()
   const isolatedCalls = new Set<string>()
-  // Subagents seen at WorktreeCreate, held here too so a failed state write
-  // cannot leave one attributed to its old folder.
+  // Subagents now in a worktree, held here too so a failed state write cannot
+  // leave one attributed to its old folder.
   const inWorktree = new Set<string>()
   // $.state as it stood before the last compaction or session end, put back
   // by classic.SessionStart.
@@ -522,10 +522,10 @@ export const register: Register = on => {
   })
 
   on('classic.WorktreeCreate', async ($, e, next) => {
-    // A worktree created for an isolated subagent is named `agent-<id>`; one a
-    // subagent enters itself (EnterWorktree) carries that subagent's agent_id.
-    // Either way that subagent now runs in a folder no mod event gives.
-    const agentId = worktreeOwner(e)
+    // A worktree created for an isolated subagent is named `agent-<id>`: that
+    // subagent will run in a folder no mod event gives. If the creation fails,
+    // the subagent does not start.
+    const agentId = isolatedWorktreeAgent(e)
     if (agentId !== undefined) {
       inWorktree.add(agentId)
       const known = (await read($, agents))[agentId] !== undefined
@@ -542,7 +542,21 @@ export const register: Register = on => {
     if (isIsolatedAgent) isolatedCalls.add(e.tool_use_id)
     if (e.agentId !== undefined) callerOf.set(e.tool_use_id, e.agentId)
     try {
-      return await next(e)
+      const result = await next(e)
+      // A subagent that entered a worktree (created, or an existing one by its
+      // path) runs from now on in a folder no mod event gives.
+      const agentId = e.agentId
+      const hasEntered =
+        e.tool === 'EnterWorktree' && result.deny === undefined && result.isError !== true
+      if (agentId !== undefined && hasEntered) {
+        inWorktree.add(agentId)
+        try {
+          await update($, agents, table => markUnattributable(table, agentId))
+        } catch {
+          // inWorktree still denies its calls.
+        }
+      }
+      return result
     } finally {
       // The call is over: its spawn, if any, has been recorded.
       isolatedCalls.delete(e.tool_use_id)
@@ -602,7 +616,8 @@ export const register: Register = on => {
     // Any other settings hooks run whatever SASY answered.
     const theirs = await next(e)
     const result = ours.deny !== undefined ? denyWith(ours, theirs) : combine(ours, theirs)
-    await recordSafely($, e, result)
+    // What SASY decided, not what another hook made of the call.
+    await recordSafely($, e, ours)
     return result
   }).catch(($, e, next) =>
     next.called ? next(e) : { deny: '[SASY] security check failed inside sasy-guard-mod' },
