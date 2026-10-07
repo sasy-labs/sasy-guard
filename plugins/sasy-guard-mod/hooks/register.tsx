@@ -60,6 +60,8 @@ const BAND_REASON_LINES = 3
 const HEALTH_TIMEOUT_MS = 3000
 /** How long a history push waits for a reported tool call to finish. */
 const RESULT_WAIT_MS = 5000
+/** Pushes before a check: the first, then rounds for rows kept meanwhile. */
+const MAX_PUSH_ROUNDS = 3
 
 const counts = atom({ plugin: 'sasy-guard-mod', key: 'counts' } as const, {
   checked: 0,
@@ -571,6 +573,9 @@ export const register: Register = on => {
   // The session the buffered rows belong to: /clear, /resume and /branch move
   // to another, whose history starts afresh.
   let feedSession: string | undefined
+  // Bumped with each new session, so a push in flight across the change
+  // leaves the new buffer alone.
+  let feedGeneration = 0
   let feed: FeedBuffer = emptyBuffer()
   let feedSupported = true
   const toolResults = new ResultTable()
@@ -621,6 +626,7 @@ export const register: Register = on => {
       feed = emptyBuffer()
       feedSupported = true
       toolResults.clear()
+      feedGeneration++
     }
     feedSession = e.session_id
     const kept = carried
@@ -832,7 +838,11 @@ export const register: Register = on => {
         let release = (): void => {}
         pushInFlight = new Promise<void>(resolve => (release = resolve))
         try {
-          if (feedSupported) {
+          // Rows kept while a push ran go out before the check too (a few
+          // rounds at most); a session change while a push ran ends it.
+          const generation = feedGeneration
+          for (let round = 0; round < MAX_PUSH_ROUNDS && feedSupported; round++) {
+            if (round > 0 && (pushed !== 'sent' || feed.rows.length === 0)) break
             // A row reporting a tool call still running waits, briefly, for
             // the call to finish and its structured result to be known.
             const waits = reportedCalls(feed.rows).flatMap(id => {
@@ -860,9 +870,11 @@ export const register: Register = on => {
               ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap))
             }
             pushed = outcome
+            if (generation !== feedGeneration) break // another session's buffer now
             if (outcome === 'unsupported') {
               feedSupported = false
               feed = emptyBuffer()
+              toolResults.clear()
             } else {
               feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
               // The results those rows carried are delivered: no longer needed.
