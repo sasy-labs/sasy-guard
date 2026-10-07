@@ -665,6 +665,16 @@ test('/guard does not print an endpoint that is not an address', async ($, on) =
   expect(out.text).not.toContain('IGNORE_PREVIOUS')
 })
 
+test('/guard prints a host-name endpoint', async ($, on) => {
+  const remote = { ...HEALTH, endpoint: 'sasy.fly.dev:443' }
+  world(on, { health: { exitCode: 0, body: JSON.stringify(remote) } })
+
+  await $.session.start(START)
+  const out = await $.command.run(GUARD)
+
+  expect(out.text).toContain('sasy.fly.dev:443')
+})
+
 test('invisible and reordering characters are not drawn', async ($, on) => {
   world(on)
   await started($)

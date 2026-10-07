@@ -34,6 +34,9 @@ export type Spawn = {
 }
 
 /** The caller of one tool call, or why the mod cannot name it. */
+/** Why a subagent in a worktree of its own cannot be checked. */
+export const WORKTREE_WHY = 'a subagent in its own worktree, whose folder the mod cannot see'
+
 export type Caller =
   | { kind: 'main' }
   | { kind: 'agent'; agentId: string; type: string; cwd: string | null }
@@ -90,7 +93,7 @@ export function attribute(table: AgentTable, agentId: string | undefined): Calle
     return { kind: 'unknown', why: 'a subagent that started before this mod loaded' }
   }
   if (record.isUnattributable) {
-    return { kind: 'unknown', why: 'a subagent in its own worktree, whose folder the mod cannot see' }
+    return { kind: 'unknown', why: WORKTREE_WHY }
   }
   return { kind: 'agent', agentId, type: record.type, cwd: record.cwd }
 }
