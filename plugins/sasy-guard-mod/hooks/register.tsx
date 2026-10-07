@@ -749,22 +749,26 @@ export const register: Register = on => {
     return stored
   })
 
+  // The tool's structured result, for the history row that reports it.
+  const noteResult = (id: string, result: { result?: unknown }): void => {
+    if (!feedSupported || result.result === null || typeof result.result !== 'object') return
+    toolResults.set(id, result.result as Record<string, unknown>)
+    if (toolResults.size > MAX_RESULTS) toolResults.delete(toolResults.keys().next().value!)
+  }
+
   on('tool.call', async ($, e, next) => {
     const isIsolatedAgent =
       e.tool === 'Agent' && (e as { isolation?: unknown }).isolation === 'worktree'
     if (!isIsolatedAgent && e.agentId === undefined) {
       const result = await next(e)
-      // The tool's structured result, for the history row that reports it.
-      if (feedSupported && result.result !== null && typeof result.result === 'object') {
-        toolResults.set(e.tool_use_id, result.result as Record<string, unknown>)
-        if (toolResults.size > MAX_RESULTS) toolResults.delete(toolResults.keys().next().value!)
-      }
+      noteResult(e.tool_use_id, result)
       return result
     }
     if (isIsolatedAgent) isolatedCalls.add(e.tool_use_id)
     if (e.agentId !== undefined) callerOf.set(e.tool_use_id, e.agentId)
     try {
       const result = await next(e)
+      noteResult(e.tool_use_id, result)
       // A subagent that entered a worktree (created, or an existing one by its
       // path) runs from now on in a folder no mod event gives.
       const agentId = e.agentId
@@ -830,7 +834,7 @@ export const register: Register = on => {
       // check sees the whole history before it.
       let pushed: FeedOutcome = 'unsupported'
       if (feedSupported) {
-        const pending = feed
+        const pending = { ...feed, rows: [...feed.rows] }
         const base = {
           session_id: input.session_id,
           cwd: sessionCwd,

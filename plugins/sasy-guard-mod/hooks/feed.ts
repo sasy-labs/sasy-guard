@@ -50,12 +50,13 @@ export function rowOf(
   }
 }
 
-/** The buffer with one more row; past its bounds, empty and marked lost. */
+/** The buffer with one more row (appended in place); past its bounds, empty
+ *  and marked lost. */
 export function enqueue(buffer: FeedBuffer, row: FeedRow): FeedBuffer {
   const bytes = buffer.bytes + JSON.stringify(row).length
-  const rows = [...buffer.rows, row]
-  if (rows.length > MAX_BUFFER_ROWS || bytes > MAX_BUFFER_BYTES) return { rows: [], bytes: 0, gap: true }
-  return { rows, bytes, gap: buffer.gap }
+  if (buffer.rows.length >= MAX_BUFFER_ROWS || bytes > MAX_BUFFER_BYTES) return { rows: [], bytes: 0, gap: true }
+  buffer.rows.push(row)
+  return { rows: buffer.rows, bytes, gap: buffer.gap }
 }
 
 /** The tool_use ids a row's tool results answer. */
@@ -97,8 +98,8 @@ export function batches(rows: FeedRow[]): FeedRow[][] {
 }
 
 /**
- * The buffer after a push of `pending` (the buffer as it was when the push
- * began) delivered its first `sent` rows. Rows kept while the push ran stay.
+ * The buffer after a push of `pending` (a copy of the buffer taken when the
+ * push began) delivered its first `sent` rows. Rows kept while the push ran stay.
  * `delivered`: the first push went through, so the daemon also learned of any
  * lost rows. A buffer dropped while the push ran (too much history) stays as
  * it is, marked lost.
