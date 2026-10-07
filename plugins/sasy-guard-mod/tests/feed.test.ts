@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { MAX_BUFFER_ROWS, MAX_DEPTH, depthOf, MAX_RESULTS, ResultTable, TOO_LARGE, afterPush, batches, emptyBuffer, enqueue, reportedCalls, utf8Length, withResults } from '../hooks/feed'
+import { MAX_BUFFER_ROWS, MAX_DEPTH, depthOf, MAX_RESULTS, ResultTable, RunningCalls, TOO_LARGE, afterPush, batches, emptyBuffer, enqueue, reportedCalls, utf8Length, withResults } from '../hooks/feed'
 
 test('the feed buffer: bounded, split into pushes, and kept across a push', () => {
   const row = (uuid: string, size = 10) => ({ uuid, message: { type: 'user', content: [{ type: 'text', text: 'x'.repeat(size) }] } })
@@ -103,4 +103,16 @@ test('a tool result the mod never saw comes from the transcript; sizes count esc
   expect(withResults([row], new Map())[0]?.fromTranscript).toBe(true)
   // A lone surrogate is escaped by JSON.stringify, and counted as sent.
   expect(utf8Length(JSON.stringify('\ud800'))).toBe(8)
+})
+
+test('a running call is known until it stops, and its wait then settles', async () => {
+  const running = new RunningCalls()
+  expect(running.done('t1')).toBeUndefined()
+  running.start('t1')
+  expect(running.has('t1')).toBe(true)
+  const done = running.done('t1')
+  running.stop('t1')
+  await done
+  expect(running.has('t1')).toBe(false)
+  expect(running.done('t1')).toBeUndefined()
 })

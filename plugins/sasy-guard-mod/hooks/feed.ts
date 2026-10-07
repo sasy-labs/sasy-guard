@@ -281,3 +281,29 @@ export function isAcknowledged(status: string, body: string): boolean {
     return false
   }
 }
+
+/** Tool calls started and not yet finished, by tool_use_id, each with a
+ *  promise that settles when it finishes. */
+export class RunningCalls {
+  private readonly calls = new Map<string, { done: Promise<void>; finish: () => void }>()
+
+  start(id: string): void {
+    let finish = (): void => {}
+    const done = new Promise<void>(resolve => (finish = resolve))
+    this.calls.set(id, { done, finish })
+  }
+
+  stop(id: string): void {
+    this.calls.get(id)?.finish()
+    this.calls.delete(id)
+  }
+
+  has(id: string): boolean {
+    return this.calls.has(id)
+  }
+
+  /** What settles when the call finishes; undefined when it is not running. */
+  done(id: string): Promise<void> | undefined {
+    return this.calls.get(id)?.done
+  }
+}

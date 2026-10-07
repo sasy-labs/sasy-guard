@@ -24,6 +24,7 @@ import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
 import type { FeedBuffer, FeedRow } from './feed'
 import {
   ResultTable,
+  RunningCalls,
   afterPush,
   agentsOf,
   batches,
@@ -591,18 +592,7 @@ export const register: Register = on => {
   let knownCwd: string | undefined
   let feedSupported = true
   const toolResults = new ResultTable()
-  // Tool calls started and not yet finished, by tool_use_id, each with what
-  // ends its wait.
-  const running = new Map<string, { done: Promise<void>; finish: () => void }>()
-  const start = (id: string): void => {
-    let finish = (): void => {}
-    const done = new Promise<void>(resolve => (finish = resolve))
-    running.set(id, { done, finish })
-  }
-  const stop = (id: string): void => {
-    running.get(id)?.finish()
-    running.delete(id)
-  }
+  const running = new RunningCalls()
   // The history push in flight, which the next check waits for.
   let pushInFlight: Promise<void> | undefined
   const spawns: Record<string, { toolUseId: string; agentType: string }> = {}
@@ -775,7 +765,7 @@ export const register: Register = on => {
     const isIsolatedAgent =
       e.tool === 'Agent' && (e as { isolation?: unknown }).isolation === 'worktree'
     if (!isIsolatedAgent && e.agentId === undefined) {
-      start(e.tool_use_id)
+      running.start(e.tool_use_id)
       try {
         const result = await next(e)
         noteResult(e.tool_use_id, result)
@@ -784,12 +774,12 @@ export const register: Register = on => {
         knownCwd = await $.session.cwd()
         return result
       } finally {
-        stop(e.tool_use_id)
+        running.stop(e.tool_use_id)
       }
     }
     if (isIsolatedAgent) isolatedCalls.add(e.tool_use_id)
     if (e.agentId !== undefined) callerOf.set(e.tool_use_id, e.agentId)
-    start(e.tool_use_id)
+    running.start(e.tool_use_id)
     try {
       const result = await next(e)
       noteResult(e.tool_use_id, result)
@@ -804,7 +794,7 @@ export const register: Register = on => {
       // The call is over: its spawn, if any, has been recorded.
       isolatedCalls.delete(e.tool_use_id)
       callerOf.delete(e.tool_use_id)
-      stop(e.tool_use_id)
+      running.stop(e.tool_use_id)
     }
   })
 
@@ -883,10 +873,7 @@ export const register: Register = on => {
             if (round > 0 && (pushed !== 'sent' || (feed.rows.length === 0 && feed.gap === 0))) break
             // A row reporting a tool call still running waits, briefly, for
             // the call to finish and its structured result to be known.
-            const waits = reportedCalls(feed.rows).flatMap(id => {
-              const call = running.get(id)
-              return call === undefined ? [] : [call.done]
-            })
+            const waits = reportedCalls(feed.rows).flatMap(id => running.done(id) ?? [])
             const waitMs = Math.min(RESULT_WAIT_MS, deadline - (await $.clock.now()))
             if (waits.length > 0 && waitMs > 0) await Promise.race([Promise.all(waits), $.clock.sleep(waitMs)])
             if (generation !== feedGeneration) {
