@@ -20,9 +20,24 @@ export type CheckInput = {
   agent_id?: string
   /** The caller's agent type: a subagent's, or a session started with --agent. */
   agent_type?: string
+  /** The session's permission mode (`default`, `acceptEdits`, `plan`, ...), as
+   *  of the latest prompt or finished tool call; the hook receives it the same
+   *  way. Left out until the mod has seen it. */
+  permission_mode?: string
   /** Marks the mod, so a daemon that supports it adds the bypass offer for the
    *  mod's own dialog (`sasyApproval`); an older daemon ignores it. */
   sasy_mod: true
+}
+
+/** What the daemon is told about the host, as the hook plugin's scripts tell
+ *  it: Claude Code's entrypoint (`cli`, `claude-vscode`, ...) and the terminal
+ *  program. The daemon logs both and uses the entrypoint to detect the host. */
+export type HostHeaders = { entrypoint: string; term: string }
+
+/** A value safe in a header line: no control characters, at most 64
+ *  characters (the scripts' `header_safe`). */
+export function headerSafe(value: string | undefined): string {
+  return (value ?? '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 64)
 }
 
 /** A one-time bypass the daemon offers on a denial, for the mod's own dialog. */
@@ -95,6 +110,7 @@ export function postArgv(
   route: string,
   maxSeconds: number,
   retrySeconds = 0,
+  host: HostHeaders = { entrypoint: '', term: '' },
 ): string[] {
   // Retries, when asked for, also cover HTTP errors (a daemon whose policy
   // engine is still starting answers 400), one a second, for at most
@@ -109,7 +125,8 @@ export function postArgv(
   return [
     'curl', '-sS', '--noproxy', '*', '--max-time', String(maxSeconds), ...retry,
     '--max-filesize', '1048576', '-X', 'POST', '-H', 'content-type: application/json',
-    '-H', 'x-claude-code-entrypoint: sasy-guard-mod',
+    '-H', `x-claude-code-entrypoint: ${headerSafe(host.entrypoint) || 'unknown'}`,
+    '-H', `x-claude-code-term-program: ${headerSafe(host.term)}`,
     ...(authFile === undefined ? [] : ['-H', `@${authFile}`]),
     '--data-binary', '@-', '--write-out', '\n%{http_code}',
     `http://127.0.0.1:${port}${route}`,
@@ -117,8 +134,8 @@ export function postArgv(
 }
 
 /** curl's arguments for one policy check (/v1/pretooluse). */
-export function checkArgv(port: string, authFile: string | undefined): string[] {
-  return postArgv(port, authFile, '/v1/pretooluse', 10)
+export function checkArgv(port: string, authFile: string | undefined, host?: HostHeaders): string[] {
+  return postArgv(port, authFile, '/v1/pretooluse', 10, 0, host)
 }
 
 /** Splits curl's output into the body and the HTTP status it appended. */
@@ -224,3 +241,28 @@ export function combine(ours: PreToolUseResult, theirs: PreToolUseResult): PreTo
   if (theirs.allow === true) return { allow: true, ...extra }
   return extra
 }
+
+/** curl exits that mean the daemon did not answer: could not connect (7),
+ *  partial reply (18), timed out (28), empty reply (52), the connection dropped
+ *  while sending (55) or receiving (56). */
+export const UNREACHABLE_CURL_EXITS = [7, 18, 28, 52, 55, 56]
+
+/** A check's reply: the daemon's body, or why there is none and of what kind. */
+export type CheckReply = { body: string } | { error: string; kind: 'unreachable' | 'auth' | 'answer' }
+
+/** What a check's curl run came to. Only a daemon that is down or not
+ *  answering is "unreachable" (the one failure SASY_FAIL_OPEN covers); curl
+ *  failing otherwise, as on an auth header file it cannot read, is not. */
+export function replyOf(ran: { exitCode: number; stdout: string }, port: string): CheckReply {
+  if (ran.exitCode !== 0) {
+    const kind = UNREACHABLE_CURL_EXITS.includes(ran.exitCode) ? 'unreachable' : 'answer'
+    return { error: `curl exit ${ran.exitCode} on port ${port}`, kind }
+  }
+  const { body, status } = splitStatus(ran.stdout)
+  if (status === '200') return { body }
+  const kind = status === '401' || status === '403' ? 'auth' : 'answer'
+  return { error: `sasy-watch answered HTTP ${status}`, kind }
+}
+
+/** A command whose run fails sooner than this never started. */
+export const SPAWN_FAILURE_MS = 2000

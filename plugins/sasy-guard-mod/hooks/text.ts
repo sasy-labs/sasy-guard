@@ -112,9 +112,9 @@ export function cleanOffer(offer: BypassOffer): BypassOffer {
 /** The /healthz fields /guard prints, each held to the shape the daemon sends. */
 /** An endpoint /guard may print: a DNS host name, an IPv4 address or a
  *  bracketed IPv6 address, and a port. Anything else is not printed. */
-export const ENDPOINT =
+const ENDPOINT =
   /^(?=.{1,259}$)([A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})*|\[[0-9a-fA-F:]{2,39}\]):\d{1,5}$/
-export const FAIL_MODES = ['open', 'closed']
+const FAIL_MODES = ['open', 'closed']
 
 /** One decision for /guard: a heading, then its reason, whole or first line. */
 export function decisionLines(d: GuardDecision, isWhole: boolean): string[] {
@@ -122,6 +122,49 @@ export function decisionLines(d: GuardDecision, isWhole: boolean): string[] {
   const reason = d.reason.split('\n').filter(line => line.trim() !== '')
   const body = isWhole ? reason : reason.slice(0, 1).map(line => shorten(line, 120))
   return [head.trimEnd(), ...body.map(line => `            ${line}`)]
+}
+
+/** The line /guard prints for a /healthz answer (curl's output, the HTTP
+ *  status on its last line): only values in the daemon's own shapes. */
+export function healthLine(url: string, stdout: string): string {
+  const cut = stdout.lastIndexOf('\n')
+  const status = stdout.slice(cut + 1)
+  if (!/^[0-9]{3}$/.test(status)) return `daemon: ${url} gave no HTTP status`
+  if (status !== '200') return `daemon: ${url} answered HTTP ${status}`
+  let h: unknown
+  try {
+    h = JSON.parse(stdout.slice(0, Math.max(cut, 0)))
+  } catch {
+    return `daemon: ${url} answered with a body that is not JSON`
+  }
+  const r = (typeof h === 'object' && h !== null ? h : {}) as Record<string, unknown>
+  const isDaemon =
+    r.ok === true &&
+    typeof r.ready === 'boolean' &&
+    typeof r.endpoint === 'string' &&
+    ENDPOINT.test(r.endpoint) &&
+    typeof r.failMode === 'string' &&
+    FAIL_MODES.includes(r.failMode) &&
+    Number.isInteger(r.sessions) &&
+    (r.sessions as number) >= 0
+  if (!isDaemon) return `daemon: ${url} answered, but not as the sasy-watch daemon`
+  const state = r.ready ? 'up, policy engine ready' : 'up, policy engine not ready'
+  return (
+    `daemon: ${state} · endpoint ${r.endpoint} · ` +
+    `fail mode ${r.failMode} · ${r.sessions} session(s)`
+  )
+}
+
+/** The `additionalContext` a daemon answer carries, if any. */
+export function contextOf(answer: string | undefined): string[] {
+  if (answer === undefined) return []
+  try {
+    const out = JSON.parse(answer) as { hookSpecificOutput?: { additionalContext?: unknown } }
+    const note = out.hookSpecificOutput?.additionalContext
+    return typeof note === 'string' && note !== '' ? [note] : []
+  } catch {
+    return []
+  }
 }
 
 /** The band shows the policy's reason and fix; /guard has the rest. */
@@ -160,3 +203,10 @@ export function guardText(health: string, c: GuardCounts, decisions: GuardDecisi
   else lines.push('recent decisions (newest first):', ...recent.flatMap((d, i) => decisionLines(d, i === 0)))
   return lines.join('\n')
 }
+
+/** What the mod's own dialog came to, for the record: the offer the user
+ *  answered (its reason) and whether they approved. */
+export type DialogRecord = { verdict: GuardVerdict; reason: string }
+/** What became of one approval dialog: the call's result and what to record
+ *  (absent when the outcome is an ordinary SASY denial). */
+export type DialogOutcome = { result: PreToolUseResult; record?: DialogRecord }

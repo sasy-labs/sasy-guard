@@ -200,6 +200,22 @@ export function afterPush(now: FeedBuffer, pending: FeedBuffer, sent: number, de
   }
 }
 
+/** What each subagent's spawn said, for the subagents a push's rows are from. */
+export function agentsOf<A>(rows: FeedRow[], agents: Readonly<Record<string, A>>): Record<string, A> {
+  const ids = [...new Set(rows.flatMap(r => (r.agentId === undefined ? [] : [r.agentId])))]
+  return Object.fromEntries(ids.filter(id => agents[id] !== undefined).map(id => [id, agents[id] as A]))
+}
+
+/** Whether a push's answer is the daemon's acknowledgement (HTTP 200 and
+ *  `{ ok: true }`); only that counts as delivered. */
+export function isAcknowledged(status: string, body: string): boolean {
+  try {
+    return status === '200' && (JSON.parse(body) as { ok?: unknown }).ok === true
+  } catch {
+    return false
+  }
+}
+
 /**
  * The structured results of finished tool calls, kept until the rows that
  * report them are delivered: at most MAX_RESULTS of them and MAX_RESULT_BYTES
@@ -266,21 +282,18 @@ export class ResultTable {
   }
 }
 
-/** What each subagent's spawn said, for the subagents a push's rows are from. */
-export function agentsOf<A>(rows: FeedRow[], agents: Readonly<Record<string, A>>): Record<string, A> {
-  const ids = [...new Set(rows.flatMap(r => (r.agentId === undefined ? [] : [r.agentId])))]
-  return Object.fromEntries(ids.filter(id => agents[id] !== undefined).map(id => [id, agents[id] as A]))
-}
-
-/** Whether a push's answer is the daemon's acknowledgement (HTTP 200 and
- *  `{ ok: true }`); only that counts as delivered. */
-export function isAcknowledged(status: string, body: string): boolean {
-  try {
-    return status === '200' && (JSON.parse(body) as { ok?: unknown }).ok === true
-  } catch {
-    return false
-  }
-}
+/** What became of sending the session-history feed. */
+export type FeedOutcome = 'sent' | 'unsupported' | 'unreachable' | 'failed'
+/** How long a history push waits for a reported tool call to finish. */
+export const RESULT_WAIT_MS = 5000
+/** Pushes before a check: the first, then rounds for rows kept meanwhile. */
+export const MAX_PUSH_ROUNDS = 3
+/** The most time a check spends sending history, all rounds included: room
+ *  for one timed-out request, one daemon start, and a retry. */
+export const PUSH_DEADLINE_MS = 30_000
+/** The denial for a check whose history did not reach the daemon. */
+export const HISTORY_UNSENT =
+  '[SASY] security check unavailable: the session history could not be sent to the sasy-watch daemon'
 
 /** Tool calls started and not yet finished, by tool_use_id, each with a
  *  promise that settles when it finishes. */

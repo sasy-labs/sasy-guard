@@ -108,6 +108,11 @@ type WorldOptions = {
   health?: { exitCode: number; body: string; status?: string }
   /** Whether a hook-auth header file exists. */
   hasAuthFile?: boolean
+  /** Path endings of the sasy-watch binaries and sources that exist (by
+   *  default the installed binary). */
+  watchFiles?: string[]
+  /** Path endings of those that cannot be started (not executable). */
+  notExecutable?: string[]
   /** The HTTP status the daemon answers history pushes with (404 unless
    *  given: a released daemon, which has no such route). */
   feedStatus?: string
@@ -146,11 +151,14 @@ function world(on: On, options: WorldOptions = {}): World {
   on('agent.list', () => ({ value: [] }))
   on('session.surfaces', () => ({ value: (options.surfaces ?? ['terminal']) as never }))
   const approved = new Set<string>()
-  on('fs.stat', () =>
-    options.hasAuthFile === true
-      ? { value: { kind: 'file', size: 64, mtimeMs: 0, isLink: false } }
-      : { deny: 'no such file' },
-  )
+  // The files that exist: the hook-auth file when asked for, and the
+  // sasy-watch binaries named (by default the installed one).
+  const files = options.watchFiles ?? ['/.sasy/bin/sasy-watch']
+  on('fs.stat', ($, e) => {
+    const path = String((e as { path?: unknown }).path ?? '')
+    const exists = path.endsWith('.header') ? options.hasAuthFile === true : files.some(f => path.endsWith(f))
+    return exists ? { value: { kind: 'file', size: 64, mtimeMs: 0, isLink: false } } : { deny: 'no such file' }
+  })
   on('process.run', ($, e) => {
     const argv = [...e.argv]
     w.argvs.push(argv)
@@ -225,12 +233,18 @@ function world(on: On, options: WorldOptions = {}): World {
       const h = options.health ?? { exitCode: 0, body: JSON.stringify(HEALTH) }
       return h.exitCode === 0 ? ran(0, `${h.body}\n${h.status ?? '200'}`) : ran(h.exitCode, '')
     }
-    return ran(1, '') // sasy-watch ensure: not installed in the test
+    // sasy-watch ensure: a binary named as not executable cannot be started
+    // at all; any other runs, and the daemon does not start in the test.
+    if (argv.includes('ensure') && (options.notExecutable ?? []).some(f => (argv[0] ?? '').endsWith(f))) {
+      return { deny: 'permission denied' }
+    }
+    return ran(1, '')
   })
   on('classic.SessionStart', () => ({}))
   on('classic.PostToolUse', () => ({}))
   on('classic.SessionEnd', () => ({}))
   on('classic.PreCompact', () => ({}))
+  on('classic.UserPromptSubmit', () => ({}))
   // The other settings hooks: they deny `curl` without a [SASY] marker.
   on('classic.PreToolUse', ($, e) => {
     const command = e.tool === 'Bash' ? e.command : ''
@@ -863,4 +877,56 @@ test('a new approval requirement on the re-check is an ask, not an approval', as
   expect(await ui.find({ type: 'Text', text: /needs approval for Bash/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /you allowed/ })).toBeUndefined()
   await ui.unmount()
+})
+
+test('the daemon is started from the installed binary, else a development checkout', async ($, on) => {
+  const ensured = (w: { argvs: string[][] }) => w.argvs.filter(a => a.includes('ensure')).map(a => a.slice(0, -3))
+  const installed = world(on, { lifecycleExit: 7 })
+  await $.classic.SessionStart({ source: 'startup' })
+  expect(ensured(installed)).toHaveLength(1)
+  expect(ensured(installed)[0]?.[0]).toMatch(/\/\.sasy\/bin\/sasy-watch$/)
+})
+
+test('without an installed binary the checkout\'s compiled one, then bun on its source', async ($, on) => {
+  const w = world(on, { lifecycleExit: 7, watchFiles: ['/packages/claude-code/src/main.ts'] })
+  await $.classic.SessionStart({ source: 'startup' })
+  const ensure = w.argvs.find(a => a.includes('ensure'))
+  expect(ensure?.[0]).toBe('bun')
+  expect(ensure?.[1]).toMatch(/\/\.\.\/\.\.\/packages\/claude-code\/src\/main\.ts$/)
+})
+
+test('the daemon hears the host entrypoint, the terminal and the permission mode', async ($, on) => {
+  const w = world(on, { env: { CLAUDE_CODE_ENTRYPOINT: 'cli', TERM_PROGRAM: 'iTerm\u001b.app' } })
+  await started($)
+  await $.classic.UserPromptSubmit({ prompt: 'go', permission_mode: 'acceptEdits' } as never)
+
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+
+  const argv = w.argvs.find(a => a.at(-1)?.endsWith('/v1/pretooluse')) ?? []
+  expect(argv).toContain('x-claude-code-entrypoint: cli')
+  expect(argv).toContain('x-claude-code-term-program: iTerm.app')
+  expect(w.checks[0]?.permission_mode).toBe('acceptEdits')
+})
+
+test('the daemon is chosen as lib.sh chooses it, and its failure stands', async ($, on) => {
+  // An executable SASY_WATCH_BIN wins; it is the only one run, even when it fails.
+  const w = world(on, {
+    lifecycleExit: 7,
+    env: { SASY_WATCH_BIN: '/opt/dev/sasy-watch' },
+    watchFiles: ['/opt/dev/sasy-watch', '/.sasy/bin/sasy-watch'],
+  })
+  await $.classic.SessionStart({ source: 'startup' })
+  expect(w.argvs.filter(a => a.includes('ensure')).map(a => a[0])).toEqual(['/opt/dev/sasy-watch'])
+})
+
+test('a SASY_WATCH_BIN that is not executable is passed over', async ($, on) => {
+  const w = world(on, {
+    lifecycleExit: 7,
+    env: { SASY_WATCH_BIN: '/opt/stale/sasy-watch' },
+    watchFiles: ['/opt/stale/sasy-watch', '/.sasy/bin/sasy-watch'],
+    notExecutable: ['/opt/stale/sasy-watch'],
+  })
+  await $.classic.SessionStart({ source: 'startup' })
+  const tried = w.argvs.filter(a => a.includes('ensure')).map(a => a[0])
+  expect(tried).toEqual(['/opt/stale/sasy-watch', expect.stringMatching(/\/\.sasy\/bin\/sasy-watch$/)])
 })

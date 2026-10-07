@@ -12,7 +12,10 @@ Both talk to the same local `sasy-watch` daemon and policy engine, installed by
 
 ## What it does
 
-- **Session start**: starts the daemon if it is down, registers the session
+- **Session start**: starts the daemon if it is down (found as the hook
+  plugin's `lib.sh` finds it: an executable `SASY_WATCH_BIN`, the installed
+  binary, then a development checkout's build or source), registers the
+  session
   (`/v1/session/start`), and tells the model that denials carry a `[SASY]`
   reason to relay.
 - **Each tool call** (`classic.PreToolUse`): sends the daemon the same request
