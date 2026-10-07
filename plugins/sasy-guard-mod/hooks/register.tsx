@@ -622,7 +622,11 @@ export const register: Register = on => {
   // what was carried, re-pin the status line and keep what each check needs
   // to say about the session.
   on('classic.SessionStart', async ($, e, next) => {
-    if (feedSession !== undefined && feedSession !== e.session_id) {
+    // Another session's rows: after /clear, /resume or /branch, also when the
+    // mod first saw this one start there (it was enabled mid-session).
+    const isOther =
+      feedSession === undefined ? e.source !== 'startup' && e.source !== 'compact' : feedSession !== e.session_id
+    if (isOther) {
       feed = emptyBuffer()
       feedSupported = true
       toolResults.clear()
@@ -740,7 +744,10 @@ export const register: Register = on => {
 
   // The tool's structured result, for the history row that reports it.
   const noteResult = (id: string, result: { result?: unknown }): void => {
-    if (!feedSupported || result.result === undefined || result.result === null) return
+    if (!feedSupported) return
+    // A refused or failed call has no structured result here (the transcript
+    // records its error string): its row is read from the transcript.
+    if (result.result === undefined || result.result === null) return toolResults.unknown(id)
     // A result too large or dropped is remembered by id: its row, whenever it
     // comes, is read from the transcript instead.
     toolResults.note(id, result.result)
