@@ -42,7 +42,11 @@ export type BypassOffer = {
 /** A check's answer: the decision, and the bypass the daemon offers with it. */
 export type CheckAnswer = { result: PreToolUseResult; offer?: BypassOffer }
 
-const OFFER_LABELS = ['approve', 'decline', 'trust-domain']
+/** The daemon's two choice lists: without and with a host to trust. */
+const PLAIN_LABELS = 'approve,decline'
+const TRUST_LABELS = 'approve,decline,trust-domain'
+/** A host the daemon names for session trust, as it derives one. */
+const DOMAIN = /^[a-z0-9.-]{3,253}$/
 
 /** The `sasyApproval` field of a daemon answer, or undefined when it is not one. */
 function offerOf(value: unknown): BypassOffer | undefined {
@@ -54,10 +58,9 @@ function offerOf(value: unknown): BypassOffer | undefined {
     typeof reason === 'string' &&
     typeof policyReason === 'string' &&
     Array.isArray(labels) &&
-    labels.includes('approve') && labels.includes('decline') &&
-    labels.every(label => OFFER_LABELS.includes(label as string)) &&
-    (domain === undefined || (typeof domain === 'string' && domain !== '')) &&
-    (labels.includes('trust-domain') === (domain !== undefined))
+    (domain === undefined
+      ? labels.join(',') === PLAIN_LABELS
+      : typeof domain === 'string' && DOMAIN.test(domain) && labels.join(',') === TRUST_LABELS)
   if (!isValid) return undefined
   return {
     question: question as string,

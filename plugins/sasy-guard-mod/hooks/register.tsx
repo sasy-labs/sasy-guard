@@ -268,7 +268,6 @@ function cleanOffer(offer: BypassOffer): BypassOffer {
     question: cleanReason(offer.question),
     reason: cleanReason(offer.reason),
     policyReason: cleanReason(offer.policyReason),
-    ...(offer.domain === undefined ? {} : { domain: shorten(offer.domain, TARGET_CHARS) }),
   }
 }
 
@@ -325,6 +324,19 @@ async function askAbout(
     // The decision's grounds changed since the question: ask about the new one.
     if (again.offer !== undefined && attemptsLeft > 0) {
       return askForBypass($, input, again.offer, attemptsLeft - 1)
+    }
+    if (again.offer !== undefined) {
+      // It changed again: stop asking, keep the call blocked, and say why.
+      const changed = cleanOffer(again.offer)
+      const fix = changed.policyReason.replace(MARKER, '').trim()
+      return {
+        result: {
+          deny:
+            '[SASY] The decision changed again after the user approved it, so the action ' +
+            `stays blocked.\n\n${fix}`,
+        },
+        record: { verdict: 'declined', reason: `${changed.reason} — changed again after your approval` },
+      }
     }
     // A plain denial now (new evidence): recorded as the denial it is.
     return { result: again.result }
