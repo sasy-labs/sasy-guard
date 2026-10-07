@@ -880,7 +880,8 @@ export const register: Register = on => {
               const call = running.get(id)
               return call === undefined ? [] : [call.done]
             })
-            if (waits.length > 0) await Promise.race([Promise.all(waits), $.clock.sleep(RESULT_WAIT_MS)])
+            const waitMs = Math.min(RESULT_WAIT_MS, deadline - (await $.clock.now()))
+            if (waits.length > 0 && waitMs > 0) await Promise.race([Promise.all(waits), $.clock.sleep(waitMs)])
             const pending = { ...feed, rows: [...feed.rows] }
             const base = {
               session_id: checked.session_id,
