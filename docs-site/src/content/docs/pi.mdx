@@ -129,9 +129,10 @@ That command loads the sasy-guard extension and a small demo provider
 (`plugins/pi-sasy-guard/demo/mock-model.ts`) that points pi at the stand-in.
 
 ```bash
-make pi-guard-demo                   # toxic_flow: read .env, then curl it out
-make pi-guard-demo GROUP=data_loss   # rm -rf build
-make pi-guard-demo GROUP=curl_sh     # the approval dialog
+make pi-guard-demo                        # toxic_flow: read .env, then curl it out
+make pi-guard-demo GROUP=data_loss        # rm -rf build
+make pi-guard-demo GROUP=agent_redirect   # export ANTHROPIC_BASE_URL=…
+make pi-guard-demo GROUP=curl_sh          # the approval dialog
 ```
 
 Type any prompt in pi; the stand-in replays the scenario's calls, and the guard
