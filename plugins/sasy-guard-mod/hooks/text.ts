@@ -166,3 +166,27 @@ export function contextOf(answer: string | undefined): string[] {
     return []
   }
 }
+
+/** The band shows the policy's reason and fix; /guard has the rest. */
+const BAND_REASON_LINES = 3
+
+/** How the band draws a decision: its verb and colour, and the reason lines
+ *  that fit (the heading, a possible overflow line and the button take the
+ *  other rows). */
+export function bandLines(
+  d: GuardDecision,
+  maxRows: number,
+): { verb: string; color: string; shown: string[] } {
+  const verb = {
+    deny: 'denied',
+    ask: 'needs approval for',
+    approved: 'asked you, and you allowed',
+    declined: 'asked you, and blocked',
+  }[d.verdict]
+  const color = { deny: 'red', ask: 'yellow', approved: 'green', declined: 'red' }[d.verdict]
+  const room = Math.max(1, Math.min(BAND_REASON_LINES, maxRows - 3))
+  const reason = d.reason.split('\n').filter(line => line.trim() !== '')
+  const shown = reason.slice(0, room)
+  if (reason.length > room) shown.push('… full text: /guard')
+  return { verb, color, shown }
+}

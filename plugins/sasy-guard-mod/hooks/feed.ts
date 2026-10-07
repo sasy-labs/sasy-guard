@@ -89,11 +89,9 @@ export function enqueue(buffer: FeedBuffer, row: FeedRow): FeedBuffer {
   return { rows: buffer.rows, bytes, gap: buffer.gap }
 }
 
-/** How many rows from the front can be sent: those before the first that
- *  reports a tool call still running (its result is not yet known). */
-export function readyRows(rows: FeedRow[], running: ReadonlySet<string>): number {
-  const held = rows.findIndex(row => resultIds(row).some(id => running.has(id)))
-  return held === -1 ? rows.length : held
+/** The tool_use ids the rows' tool results report. */
+export function reportedCalls(rows: FeedRow[]): string[] {
+  return rows.flatMap(resultIds)
 }
 
 /** The tool_use ids a row's tool results answer. */
@@ -164,5 +162,21 @@ export function afterPush(now: FeedBuffer, pending: FeedBuffer, sent: number, de
     rows,
     bytes: rows.reduce((n, row) => n + sizeOf(row), 0),
     gap: delivered ? now.gap - pending.gap : now.gap,
+  }
+}
+
+/** What each subagent's spawn said, for the subagents a push's rows are from. */
+export function agentsOf<A>(rows: FeedRow[], agents: Readonly<Record<string, A>>): Record<string, A> {
+  const ids = [...new Set(rows.flatMap(r => (r.agentId === undefined ? [] : [r.agentId])))]
+  return Object.fromEntries(ids.filter(id => agents[id] !== undefined).map(id => [id, agents[id] as A]))
+}
+
+/** Whether a push's answer is the daemon's acknowledgement (HTTP 200 and
+ *  `{ ok: true }`); only that counts as delivered. */
+export function isAcknowledged(status: string, body: string): boolean {
+  try {
+    return status === '200' && (JSON.parse(body) as { ok?: unknown }).ok === true
+  } catch {
+    return false
   }
 }

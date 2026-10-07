@@ -233,3 +233,25 @@ export function combine(ours: PreToolUseResult, theirs: PreToolUseResult): PreTo
   if (theirs.allow === true) return { allow: true, ...extra }
   return extra
 }
+
+/** curl exits that mean the daemon did not answer: could not connect (7),
+ *  partial reply (18), timed out (28), empty reply (52), the connection dropped
+ *  while sending (55) or receiving (56). */
+export const UNREACHABLE_CURL_EXITS = [7, 18, 28, 52, 55, 56]
+
+/** A check's reply: the daemon's body, or why there is none and of what kind. */
+export type CheckReply = { body: string } | { error: string; kind: 'unreachable' | 'auth' | 'answer' }
+
+/** What a check's curl run came to. Only a daemon that is down or not
+ *  answering is "unreachable" (the one failure SASY_FAIL_OPEN covers); curl
+ *  failing otherwise, as on an auth header file it cannot read, is not. */
+export function replyOf(ran: { exitCode: number; stdout: string }, port: string): CheckReply {
+  if (ran.exitCode !== 0) {
+    const kind = UNREACHABLE_CURL_EXITS.includes(ran.exitCode) ? 'unreachable' : 'answer'
+    return { error: `curl exit ${ran.exitCode} on port ${port}`, kind }
+  }
+  const { body, status } = splitStatus(ran.stdout)
+  if (status === '200') return { body }
+  const kind = status === '401' || status === '403' ? 'auth' : 'answer'
+  return { error: `sasy-watch answered HTTP ${status}`, kind }
+}
