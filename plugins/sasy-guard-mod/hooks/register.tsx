@@ -261,13 +261,25 @@ async function askForBypass(
   return askAbout($, input, cleanOffer(offer), attemptsLeft)
 }
 
+/**
+ * Text that must keep its end: the question ends with what is being approved
+ * (`Attempted: ...`) and the policy reason with its fix. Control characters
+ * are removed as for every reason; past REASON_CHARS the middle goes.
+ */
+function cleanKeepingEnd(text: string): string {
+  const clean = text.replace(CONTROL, '').trim()
+  if (clean.length <= REASON_CHARS) return clean
+  const tail = Math.floor(REASON_CHARS * 0.6)
+  return `${clean.slice(0, REASON_CHARS - tail - 3)} … ${clean.slice(-tail)}`
+}
+
 /** The offer's daemon-authored texts as the mod draws every reason. */
 function cleanOffer(offer: BypassOffer): BypassOffer {
   return {
     ...offer,
-    question: cleanReason(offer.question),
+    question: cleanKeepingEnd(offer.question),
     reason: cleanReason(offer.reason),
-    policyReason: cleanReason(offer.policyReason),
+    policyReason: cleanKeepingEnd(offer.policyReason),
   }
 }
 
