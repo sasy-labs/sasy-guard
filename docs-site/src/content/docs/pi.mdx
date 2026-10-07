@@ -181,11 +181,13 @@ through instead.
 - **Credential injection is not applied.** Policies that rewrite a call's
   arguments (credential transforms) take effect on Claude Code only; on pi the
   call runs with its original arguments.
-- **Large outputs are cut for the graph.** Texts longer than 256 K characters
-  are shortened (and an entry's texts to 1 M characters in all), and images are
-  left out of what the extension sends the daemon; the policy sees the
-  shortened text. An entry still too large to send goes without its content,
+- **Very large entries.** The extension sends each session entry whole, less
+  images; the daemon shortens long text for the graph while keeping any hidden
+  characters it carries. An entry over 24 MiB is sent without its content,
   keeping its place in the session and its tool-call ids.
+- **The system prompt is not traced.** As with Claude Code, the text of pi's
+  system prompt (including project instruction files it loads) is not a node in
+  the dependency graph.
 - **Subagents.** pi has no built-in subagents. An extension that starts more pi
   processes gets the guard in them only if those processes load the extension
   too, and each is then checked as a separate session, without a link to the

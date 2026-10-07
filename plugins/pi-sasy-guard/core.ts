@@ -109,52 +109,36 @@ export function guardReport(health: string, c: Counts, recent: readonly Decision
   return lines.join("\n");
 }
 
-/** The largest text block pushed whole; longer ones are cut (the rest elided). */
-export const MAX_PUSHED_TEXT = 256 * 1024;
-/** The most text pushed for one entry, across all its blocks and arguments. */
-export const MAX_ENTRY_TEXT = 1024 * 1024;
-/** The largest request body the guard sends (the daemon accepts 4 MiB). */
-export const MAX_PUSH_BYTES = 3 * 1024 * 1024;
+/**
+ * The largest request the guard sends (the daemon's session-push route takes
+ * 32 MiB). Entries go whole: the daemon cuts long text itself, in a way that
+ * keeps evidence of hidden characters, so the extension must not cut first.
+ */
+export const MAX_PUSH_BYTES = 24 * 1024 * 1024;
 
-/** Cuts texts to MAX_PUSHED_TEXT each and MAX_ENTRY_TEXT in all, noting what was left out. */
-function textCutter(): (text: string) => string {
-  let left = MAX_ENTRY_TEXT;
-  return (text) => {
-    const keep = Math.max(0, Math.min(MAX_PUSHED_TEXT, left, text.length));
-    left -= keep;
-    if (keep === text.length) return text;
-    return `${text.slice(0, keep)}\n[sasy-guard: ${text.length - keep} characters not sent]`;
-  };
-}
-
-/** Keys whose string values name structure (ids, roles, tool names); never cut. */
-const STRUCTURAL = new Set(["type", "id", "parentId", "role", "customType", "toolCallId", "toolName", "name", "targetId"]);
-
-/** Every string in `value` cut by `cut`, images and `details` dropped. */
-function cutAll(value: unknown, cut: (text: string) => string, key?: string): unknown {
-  if (typeof value === "string") return key !== undefined && STRUCTURAL.has(key) ? value : cut(value);
+/** `value` without images and `details`, which the daemon does not read. */
+function withoutMedia(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value
       .filter((v) => !(v && typeof v === "object" && (v as { type?: unknown }).type === "image"))
-      .map((v) => cutAll(v, cut));
+      .map(withoutMedia);
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
         .filter(([k]) => k !== "details")
-        .map(([k, v]) => [k, cutAll(v, cut, k)]),
+        .map(([k, v]) => [k, withoutMedia(v)]),
     );
   }
   return value;
 }
 
 /**
- * A copy of a session entry sized to fit the daemon's request limit. Every
- * string is cut by `textCutter` (structural ones excepted), images and
- * `details` (which the daemon does not read) are dropped, and so is the data
- * of other extensions' custom entries. An entry still too large is sent as a
- * stub that keeps its place in the tree and its role and tool-call ids, so
- * the push goes through and the tool result keeps its provenance.
+ * A session entry as pushed: whole, less images, `details` and the data of
+ * other extensions' custom entries. An entry still larger than a request can
+ * carry is sent as a stub that keeps its place in the tree and its role and
+ * tool-call ids, so the push goes through and a tool result keeps its
+ * provenance.
  */
 export function shrinkEntry(entry: unknown): unknown {
   if (!entry || typeof entry !== "object") return entry;
@@ -163,8 +147,8 @@ export function shrinkEntry(entry: unknown): unknown {
     const { data: _data, ...rest } = e;
     return rest;
   }
-  const out = cutAll(e, textCutter()) as Record<string, unknown>;
-  if (Buffer.byteLength(JSON.stringify(out)) <= MAX_PUSH_BYTES) return out;
+  const out = withoutMedia(e) as Record<string, unknown>;
+  if (Buffer.byteLength(JSON.stringify(out)) <= MAX_PUSH_BYTES - ENVELOPE_BYTES) return out;
   const m = (e.message ?? {}) as Record<string, unknown>;
   const note = "[sasy-guard: entry too large to send]";
   return {

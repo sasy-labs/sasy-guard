@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 
-import { batches, guardReport, MAX_ENTRY_TEXT, MAX_PUSHED_TEXT, parseDecision, shrinkEntry, widgetLines } from "../core.ts";
+import { batches, guardReport, MAX_PUSH_BYTES, parseDecision, shrinkEntry, widgetLines } from "../core.ts";
 import { DaemonClient } from "../daemon.ts";
 import { createGuard } from "../index.ts";
 
@@ -306,34 +306,23 @@ test("decisions parse from the daemon's hook output", () => {
   assert.equal(parseDecision({ hookSpecificOutput: 3 }), undefined);
 });
 
-test("pushed entries are cut to size and batched under the request limit", () => {
-  const big = { id: "e9", parentId: null, type: "message", message: { role: "toolResult", content: [{ type: "text", text: "x".repeat(MAX_PUSHED_TEXT + 10) }, { type: "image", data: "…" }] } };
-  const small = shrinkEntry(big) as { message: { content: { text: string }[] } };
-  assert.equal(small.message.content.length, 1);
-  const call = { id: "e8", parentId: null, type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "t", name: "write", arguments: { path: "a", content: "z".repeat(MAX_PUSHED_TEXT + 5) } }] } };
-  const cut = shrinkEntry(call) as { message: { content: { arguments: { path: string; content: string } }[] } };
-  assert.equal(cut.message.content[0].arguments.path, "a");
-  assert.ok(cut.message.content[0].arguments.content.endsWith("[sasy-guard: 5 characters not sent]"));
-  // Many large blocks in one entry stay under the per-entry budget.
-  const many = { id: "e7", parentId: null, type: "message", message: { role: "toolResult", details: { big: "x" }, content: Array.from({ length: 20 }, () => ({ type: "text", text: "q".repeat(MAX_PUSHED_TEXT) })) } };
-  const capped = shrinkEntry(many) as { message: { details?: unknown; content: { text: string }[] } };
-  const total = capped.message.content.reduce((n, b) => n + b.text.replace(/\n\[sasy-guard: \d+ characters not sent\]$/, "").length, 0);
-  assert.ok(total <= MAX_ENTRY_TEXT);
-  assert.equal(capped.message.details, undefined);
+test("pushed entries go whole, less media; only an oversized one becomes a stub", () => {
+  // Long text goes whole: the daemon cuts it itself, keeping hidden-character evidence.
+  const long = "x".repeat(300 * 1024) + "\u{E0041}";
+  const big = { id: "e9", parentId: null, type: "message", message: { role: "toolResult", details: { d: 1 }, content: [{ type: "text", text: long }, { type: "image", data: "…" }] } };
+  const sent = shrinkEntry(big) as { message: { details?: unknown; content: { text: string }[] } };
+  assert.equal(sent.message.content.length, 1);
+  assert.equal(sent.message.content[0].text, long);
+  assert.equal(sent.message.details, undefined);
   assert.deepEqual(shrinkEntry({ type: "custom", id: "c", parentId: null, customType: "other", data: { huge: 1 } }), { type: "custom", id: "c", parentId: null, customType: "other" });
-  // Nested strings (a system prompt's sections, structured arguments) are cut too.
-  const nested = { id: "e6", parentId: "e5", type: "message", message: { role: "system", content: "", sections: { a: "s".repeat(MAX_PUSHED_TEXT + 1) } } };
-  const n = shrinkEntry(nested) as { message: { sections: { a: string } } };
-  assert.ok(n.message.sections.a.endsWith("[sasy-guard: 1 characters not sent]"));
-  // An entry that stays too large after cutting is sent as a stub keeping its place.
-  const wide = { id: "e5", parentId: "e4", type: "message", message: { role: "toolResult", toolCallId: "t9", toolName: "read", content: [], extra: Array.from({ length: 2_000_000 }, () => 1) } };
+  // An entry larger than a request can carry is sent as a stub keeping its place.
+  const wide = { id: "e5", parentId: "e4", type: "message", message: { role: "toolResult", toolCallId: "t9", toolName: "read", content: [{ type: "text", text: "z".repeat(MAX_PUSH_BYTES) }] } };
   assert.deepEqual(shrinkEntry(wide), {
     type: "message",
     id: "e5",
     parentId: "e4",
     message: { role: "toolResult", toolCallId: "t9", toolName: "read", content: [{ type: "text", text: "[sasy-guard: entry too large to send]" }] },
   });
-  assert.ok(small.message.content[0].text.endsWith("[sasy-guard: 10 characters not sent]"));
   // Each request leaves room for its envelope: three ~60-byte entries under a
   // limit just above the envelope go one per batch.
   assert.equal(batches([1, 2, 3].map((n) => ({ n, pad: "y".repeat(40) })), 64 * 1024 + 100).length, 3);
