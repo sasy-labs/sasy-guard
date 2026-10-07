@@ -23,7 +23,7 @@ daemon answers in one of three ways:
   and suggested fix as the tool's result.
 - **ask**: pi shows you a dialog with the reason. Its default choice blocks the
   call, so pressing Enter never runs it; you choose "Yes, run it once" to let it
-  through.
+  through. If the dialog cannot be shown or fails, the call is blocked.
 
 The daemon judges a call by what happened earlier in the session as well as by
 the call itself. For example, a `curl` that sends a file to the network is
@@ -146,7 +146,9 @@ pi ──extension──▶ sasy-watch daemon ──gRPC──▶ sasy engine
   those are not treated as having produced output, and records them in the pi
   session as an entry pi keeps for extensions and never shows the model, so a
   resumed session knows too. If the daemon restarts, the extension notices and
-  sends the session's whole current branch again.
+  sends the session's whole current branch again. If you resume the same session
+  in a second pi process, the daemon follows the newer one, and the earlier
+  process's checks are denied.
 - The **daemon** translates pi's tools into the tool names the policy uses
   (`bash` becomes `Bash`, `read` becomes `Read` with an absolute `file_path`,
   resolved as pi resolves it, `~` and all,

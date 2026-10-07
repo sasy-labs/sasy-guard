@@ -238,6 +238,7 @@ export function createGuard(opts: GuardOptions = {}) {
           tool_use_id: toolCallId,
           cwd: ctx.cwd,
           ...sessionFile(ctx),
+          generation,
         });
         const d = parseDecision(out);
         if (d) return d;
@@ -255,10 +256,14 @@ export function createGuard(opts: GuardOptions = {}) {
     async function settleAsk(ctx: ExtensionContext, d: Decision & { kind: "ask" }, tool: string, input: unknown) {
       if (!ctx.hasUI) return { approved: false, outcome: "no-ui" as const };
       const target = targetOf(input, 200);
-      const choice = await ctx.ui.select(
-        `sasy-guard: ${tool} needs your approval\n\n${target ? `${target}\n\n` : ""}${displayReason(d.reason)}`,
-        [BLOCK_CHOICE, RUN_CHOICE],
-      );
+      // A dialog that fails (an RPC client gone) is a refusal: the call is
+      // blocked and recorded as never run.
+      const choice = await ctx.ui
+        .select(
+          `sasy-guard: ${tool} needs your approval\n\n${target ? `${target}\n\n` : ""}${displayReason(d.reason)}`,
+          [BLOCK_CHOICE, RUN_CHOICE],
+        )
+        .catch(() => undefined);
       const approved = choice === RUN_CHOICE;
       return { approved, outcome: approved ? ("approved" as const) : ("declined" as const) };
     }
@@ -318,7 +323,7 @@ export function createGuard(opts: GuardOptions = {}) {
       // Tells the daemon the call ran (approvals, detaint), before pi moves on to
       // the next call; a failure here does not change the call's result.
       await client
-        .post("/v1/posttooluse", { session_id: sessionId(ctx), tool_use_id: event.toolCallId, tool_name: event.toolName }, 3_000)
+        .post("/v1/posttooluse", { session_id: sessionId(ctx), tool_use_id: event.toolCallId, tool_name: event.toolName, generation }, 3_000)
         .catch(() => {});
       return undefined;
     });
@@ -329,7 +334,9 @@ export function createGuard(opts: GuardOptions = {}) {
 
     pi.on("session_shutdown", async (_event, ctx) => {
       await push(ctx).catch(() => {});
-      await client.post("/v1/session/end", { session_id: sessionId(ctx) }, 3_000).catch(() => {});
+      // The generation lets the daemon ignore this if another pi process has
+      // since resumed the session.
+      await client.post("/v1/session/end", { session_id: sessionId(ctx), generation }, 3_000).catch(() => {});
     });
 
     pi.registerCommand("guard", {

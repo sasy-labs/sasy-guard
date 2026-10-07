@@ -63,7 +63,7 @@ const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToo
 const ask = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: reason } });
 
 /** A stand-in for pi: the handlers an extension registers, and a context. */
-function harness(opts: { hasUI?: boolean; confirm?: boolean; daemonPort?: number } = {}) {
+function harness(opts: { hasUI?: boolean; confirm?: boolean; daemonPort?: number; dialogFails?: boolean } = {}) {
   const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
   const ui = { status: [] as (string | undefined)[], widget: undefined as string[] | undefined, notes: [] as string[], confirms: 0, choices: [] as string[] };
@@ -94,6 +94,7 @@ function harness(opts: { hasUI?: boolean; confirm?: boolean; daemonPort?: number
       select: async (_title: string, options: string[]) => {
         ui.confirms++;
         ui.choices = options;
+        if (opts.dialogFails) throw new Error("rpc client gone");
         return opts.confirm ? options[1] : options[0];
       },
     },
@@ -141,6 +142,7 @@ test("a denial blocks the call with the policy's reason and shows it", async () 
     tool_use_id: "c2",
     cwd: "/work/project",
     pi_session_file: file,
+    generation: "gen-1",
   });
   // The session file rides on every push, so a restarted daemon can rebuild from it.
   assert.equal(requests[1].body.pi_session_file, file);
@@ -314,6 +316,23 @@ test("an ask opens a pi dialog whose default blocks; declining or having no UI b
   assert.equal(noUi.block, true);
   assert.match(noUi.reason, /no UI/);
   assert.equal(headless.ui.confirms, 0);
+});
+
+test("a dialog that fails blocks the call and records it as never run", async () => {
+  const h = harness({ dialogFails: true });
+  answer = ask("[SASY] needs review");
+  const out = (await h.fire("tool_call", curl)) as { block?: boolean };
+  assert.equal(out.block, true);
+  assert.deepEqual(h.appended, [{ customType: "sasy-guard", data: { rejected: ["c2"] } }]);
+});
+
+test("checks, results and shutdown name this process's registration", async () => {
+  const h = harness();
+  await h.fire("tool_call", curl);
+  await h.fire("tool_result", { toolCallId: "c2", toolName: "bash" });
+  await h.fire("session_shutdown", {});
+  for (const path of ["/v1/pretooluse", "/v1/posttooluse", "/v1/session/end"])
+    assert.equal(requests.find((r) => r.path === path)?.body.generation, "gen-1", path);
 });
 
 test("no answer from the daemon blocks the call (fail closed)", async () => {
