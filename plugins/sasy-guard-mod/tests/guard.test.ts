@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 
 import { addSpawn, attribute, markUnattributable, worktreeAgentId, isolatedWorktreeAgent } from '../hooks/agents'
-import { addCounts, joinDecisions, wasReset } from '../hooks/carry'
+import { addCounts, joinDecisions } from '../hooks/carry'
 import { combine, denyWith, toResult } from '../hooks/enforce'
 
 const DENY_REASON =
@@ -160,6 +160,7 @@ function world(on: On, options: WorldOptions = {}): World {
   on('classic.SessionStart', () => ({}))
   on('classic.PostToolUse', () => ({}))
   on('classic.SessionEnd', () => ({}))
+  on('classic.PreCompact', () => ({}))
   // The other settings hooks: they deny `curl` without a [SASY] marker.
   on('classic.PreToolUse', ($, e) => {
     const command = e.tool === 'Bash' ? e.command : ''
@@ -690,7 +691,7 @@ test('invisible and reordering characters are not drawn', async ($, on) => {
   world(on)
   await started($)
 
-  await $.tool.call({ tool: 'Bash', command: 'rm -rf build\u202e\u200b\u061c\u00ad\u{e0041}\ufe0fxyz' })
+  await $.tool.call({ tool: 'Bash', command: 'rm -rf build\u202e\u200b\u061c\u00ad\u{e0041}\ufe0f\u034f\u3164\u2800\ufff9xyz' })
 
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   const heading = await ui.find({ type: 'Text', text: /sasy-guard denied Bash/ })
@@ -702,11 +703,6 @@ test('compaction puts back the totals and decisions a reset cleared, merged', ()
   const d = (seq: number, target: string) =>
     ({ seq, at: 0, tool: 'Bash', target, verdict: 'deny', reason: 'r' }) as never
   const kept = { checked: 3, denied: 1, asked: 0 }
-  // Totals only grow: lower totals mean the reset cleared them.
-  expect(wasReset(kept, { checked: 0, denied: 0, asked: 0 })).toBe(true)
-  expect(wasReset(kept, { checked: 1, denied: 0, asked: 1 })).toBe(true)
-  expect(wasReset(kept, kept)).toBe(false)
-  expect(wasReset(kept, { checked: 4, denied: 1, asked: 0 })).toBe(false)
   // What was recorded since the reset is kept, added to what came before.
   expect(addCounts(kept, { checked: 1, denied: 0, asked: 1 })).toEqual({ checked: 4, denied: 1, asked: 1 })
   const joined = joinDecisions([d(7, 'a'), d(8, 'b')], [d(1, 'c')])
@@ -716,4 +712,18 @@ test('compaction puts back the totals and decisions a reset cleared, merged', ()
     [9, 'c'],
   ])
   expect(joinDecisions(Array.from({ length: 50 }, (_, i) => d(i + 1, 'k')), [d(1, 'n')])).toHaveLength(50)
+})
+
+test('compaction that left the values alone changes nothing', async ($, on) => {
+  const w = world(on)
+  await started($)
+  await $.tool.call({ tool: 'Bash', command: 'rm -rf build' })
+
+  await $.classic.PreCompact({ trigger: 'auto', custom_instructions: null } as never)
+  await $.classic.SessionStart({ source: 'compact' })
+
+  expect(w.lines.at(-1)).toBe('1 checked · 1 denied · 0 asked')
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /sasy-guard denied Bash/ })).toBeDefined()
+  await ui.unmount()
 })
