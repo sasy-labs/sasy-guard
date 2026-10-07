@@ -36,8 +36,8 @@ export class DaemonClient {
 
   /**
    * The hook token, read as the daemon's own hooks read it: a regular file
-   * owned by this user and readable by no one else. Undefined when absent (a
-   * daemon that predates hook authentication, or one that is not running).
+   * owned by this user and readable by no one else. Undefined when absent or
+   * not secure (the daemon is not running, or the file cannot be trusted).
    */
   token(): string | undefined {
     const path = join(this.home, `hook-auth-${this.port}.header`);
@@ -57,12 +57,16 @@ export class DaemonClient {
 
   /** One POST; the parsed JSON answer. Throws DaemonUnavailable on any failure. */
   async post(path: string, body: unknown, timeoutMs = CHECK_TIMEOUT_MS): Promise<unknown> {
+    // The daemon writes its token when it starts and requires it on every
+    // request; without one, whatever answers on the port is not trusted, and
+    // the daemon is treated as not running (so postEnsuring starts it).
     const token = this.token();
+    if (!token) throw new DaemonUnavailable(`sasy-watch unreachable on port ${this.port} (no hook token)`);
     let res: Response;
     try {
       res = await fetch(`${this.base}${path}`, {
         method: "POST",
-        headers: { "content-type": "application/json", ...(token ? { [AUTH_HEADER]: token } : {}) },
+        headers: { "content-type": "application/json", [AUTH_HEADER]: token },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
       });

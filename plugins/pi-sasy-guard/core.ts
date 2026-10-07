@@ -122,13 +122,28 @@ function withoutImages(content: unknown): unknown {
   return content.filter((b) => !(b && typeof b === "object" && (b as { type?: unknown }).type === "image"));
 }
 
+/** The tool arguments policies read (paths, commands, patterns, URLs). */
+const POLICY_ARGS = ["command", "path", "file_path", "pattern", "url"];
+const MAX_POLICY_ARG_CHARS = 4096;
+
+/** A stubbed tool call's arguments: the ones policies read, cut short. */
+function policyArgs(args: unknown): Record<string, string> {
+  if (!args || typeof args !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const k of POLICY_ARGS) {
+    const v = (args as Record<string, unknown>)[k];
+    if (typeof v === "string") out[k] = v.slice(0, MAX_POLICY_ARG_CHARS);
+  }
+  return out;
+}
+
 /**
  * A session entry as pushed: whole, less images and pi's own `details`
  * metadata (on the entry and its message, never inside tool arguments), and
  * less the data of other extensions' custom entries. An entry still larger
  * than a request can carry is sent as a stub that keeps its place in the tree,
- * its role, and its tool calls' and results' ids and names, so the push goes
- * through and provenance links survive.
+ * its role, its tool calls' and results' ids and names, and the arguments
+ * policies read (cut short), so the push goes through and provenance survives.
  */
 export function shrinkEntry(entry: unknown): unknown {
   if (!entry || typeof entry !== "object") return entry;
@@ -147,7 +162,10 @@ export function shrinkEntry(entry: unknown): unknown {
   const calls = Array.isArray(m.content)
     ? m.content
         .filter((b) => b && typeof b === "object" && (b as { type?: unknown }).type === "toolCall")
-        .map((b) => ({ type: "toolCall", id: (b as { id?: unknown }).id, name: (b as { name?: unknown }).name, arguments: {} }))
+        .map((b) => {
+          const { id, name, arguments: args } = b as { id?: unknown; name?: unknown; arguments?: unknown };
+          return { type: "toolCall", id, name, arguments: policyArgs(args) };
+        })
     : [];
   return {
     type: e.type,

@@ -337,6 +337,24 @@ test("checks, results and shutdown name this process's registration", async () =
     assert.equal(requests.find((r) => r.path === path)?.body.generation, "gen-1", path);
 });
 
+test("without the daemon's token nothing is sent; the call is blocked", async () => {
+  // A listener on the port with no token file: not trusted as the daemon.
+  const stranger = createServer((_req, res) => res.end("{}"));
+  await new Promise<void>((r) => stranger.listen(0, "127.0.0.1", r));
+  const strangerPort = (stranger.address() as { port: number }).port;
+  let hits = 0;
+  stranger.on("request", () => hits++);
+  try {
+    const h = harness({ daemonPort: strangerPort });
+    const out = (await h.fire("tool_call", readEnv)) as { block: boolean; reason: string };
+    assert.equal(out.block, true);
+    assert.match(out.reason, /no hook token/);
+    assert.equal(hits, 0);
+  } finally {
+    await new Promise<void>((r) => stranger.close(() => r()));
+  }
+});
+
 test("no answer from the daemon blocks the call (fail closed)", async () => {
   const h = harness({ daemonPort: 9 });
   const out = (await h.fire("tool_call", readEnv)) as { block: boolean; reason: string };
@@ -400,13 +418,14 @@ test("pushed entries go whole, less media; only an oversized one becomes a stub"
   // `details` inside tool arguments is the call's own data and is kept.
   const call = { id: "e8", parentId: null, type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "x", arguments: { details: { source: ".env" } } }] } };
   assert.deepEqual(shrinkEntry(call), call);
-  // An oversized assistant entry keeps its tool calls' ids and names.
-  const huge = { id: "e7", parentId: "e6", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "t2", name: "write", arguments: { path: "a", content: "q".repeat(MAX_PUSH_BYTES) } }] } };
+  // An oversized assistant entry keeps its tool calls' ids, names and the
+  // arguments policies read (cut short).
+  const huge = { id: "e7", parentId: "e6", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "t2", name: "write", arguments: { path: "a", content: "q".repeat(MAX_PUSH_BYTES), command: "c".repeat(10_000) } }] } };
   assert.deepEqual(shrinkEntry(huge), {
     type: "message",
     id: "e7",
     parentId: "e6",
-    message: { role: "assistant", toolCallId: undefined, toolName: undefined, content: [{ type: "text", text: "[sasy-guard: entry too large to send]" }, { type: "toolCall", id: "t2", name: "write", arguments: {} }] },
+    message: { role: "assistant", toolCallId: undefined, toolName: undefined, content: [{ type: "text", text: "[sasy-guard: entry too large to send]" }, { type: "toolCall", id: "t2", name: "write", arguments: { path: "a", command: "c".repeat(4096) } }] },
   });
   // An entry larger than a request can carry is sent as a stub keeping its place.
   const wide = { id: "e5", parentId: "e4", type: "message", message: { role: "toolResult", toolCallId: "t9", toolName: "read", content: [{ type: "text", text: "z".repeat(MAX_PUSH_BYTES) }] } };
