@@ -78,10 +78,10 @@ about it or block it. The flag keeps those steps from stalling, so what you see
 is the guard's decision.
 
 Turning the checks off is a real risk: the folder is not a sandbox, so the
-session can still reach your other files and the network, and the guard is the
-only thing checking each command. Use it only for the prompts below, and quit
-the session (`/exit`) when you are done. For everyday work, start Claude Code
-the way you normally do.
+session can still reach your other files and the network, and only the guard
+(plus any hooks of your own) checks each command. Use it only for the prompts
+below, and quit the session (`/exit`) when you are done. For everyday work,
+start Claude Code the way you normally do.
 
 Your own hooks still run in this session, after the guard. They cannot undo a
 guard denial, but one that blocks, say, reading `.env` stops the first step of
