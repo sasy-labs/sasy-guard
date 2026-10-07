@@ -319,11 +319,30 @@ async function askAbout(
       record: { verdict: 'declined', reason: `${offer.reason} — your approval could not be recorded` },
     }
   }
+  // What the user chose here, kept in the record whatever follows: a trusted
+  // host stays trusted for the session even if the call is then blocked.
+  const chosen =
+    choice === 'trust-domain'
+      ? `${offer.reason} — you trusted ${offer.domain ?? 'the host'} for this session`
+      : `${offer.reason} — you approved it once`
+  const trustNote =
+    choice === 'trust-domain'
+      ? `The user chose in the SASY dialog to trust ${offer.domain ?? 'this host'} for the rest ` +
+        'of this session.'
+      : undefined
   const again = await checkCall($, input)
+  // A new approval requirement: Claude Code asks the user, as for any ask.
+  if (again.result.ask !== undefined) return { result: again.result }
   if (again.result.deny !== undefined) {
     // The decision's grounds changed since the question: ask about the new one.
     if (again.offer !== undefined && attemptsLeft > 0) {
-      return askForBypass($, input, again.offer, attemptsLeft - 1)
+      const later = await askForBypass($, input, again.offer, attemptsLeft - 1)
+      const context = [...(later.result.additionalContext ?? []), ...(trustNote ? [trustNote] : [])]
+      const laterReason = later.record?.reason ?? `blocked: ${cleanReason(later.result.deny ?? '')}`
+      return {
+        result: context.length === 0 ? later.result : { ...later.result, additionalContext: context },
+        record: { verdict: later.record?.verdict ?? 'declined', reason: `${chosen}; then ${laterReason}` },
+      }
     }
     if (again.offer !== undefined) {
       // It changed again: stop asking, keep the call blocked, and say why.
@@ -342,27 +361,23 @@ async function askAbout(
           deny:
             '[SASY] The decision changed again after the user approved it, so the action ' +
             `stays blocked.\n\n${fix}`,
+          ...(trustNote ? { additionalContext: [trustNote] } : {}),
         },
-        record: { verdict: 'declined', reason: `${changed.reason} — changed again after your approval` },
+        record: {
+          verdict: 'declined',
+          reason: `${chosen}; then ${changed.reason} — changed again after your approval`,
+        },
       }
     }
     // A plain denial now (new evidence): recorded as the denial it is.
     return { result: again.result }
   }
-  const note =
-    choice === 'trust-domain'
-      ? `The user chose in the SASY dialog to trust ${offer.domain ?? 'this host'} for the rest ` +
-        'of this session; this action may proceed.'
-      : 'The user approved a one-time bypass of a SASY check for this action in the SASY dialog.'
+  const note = trustNote
+    ? `${trustNote} This action may proceed.`
+    : 'The user approved a one-time bypass of a SASY check for this action in the SASY dialog.'
   return {
     result: { ...again.result, additionalContext: [...(again.result.additionalContext ?? []), note] },
-    record: {
-      verdict: 'approved',
-      reason:
-        choice === 'trust-domain'
-          ? `${offer.reason} — you trusted ${offer.domain ?? 'the host'} for this session`
-          : `${offer.reason} — you approved it once`,
-    },
+    record: { verdict: 'approved', reason: chosen },
   }
 }
 
