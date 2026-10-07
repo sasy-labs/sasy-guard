@@ -43,8 +43,11 @@ export type BypassOffer = {
 export type CheckAnswer = { result: PreToolUseResult; offer?: BypassOffer }
 
 /** The daemon's two choice lists: without and with a host to trust. */
-const PLAIN_LABELS = 'approve,decline'
-const TRUST_LABELS = 'approve,decline,trust-domain'
+const PLAIN_LABELS = ['approve', 'decline']
+const TRUST_LABELS = ['approve', 'decline', 'trust-domain']
+/** Whether `labels` is exactly `expected`, element by element. */
+const isExactly = (labels: unknown[], expected: string[]): boolean =>
+  labels.length === expected.length && labels.every((label, i) => label === expected[i])
 /** A host the daemon names for session trust, as it derives one. */
 const DOMAIN = /^[a-z0-9.-]{3,253}$/
 
@@ -58,10 +61,9 @@ function offerOf(value: unknown): BypassOffer | undefined {
     typeof reason === 'string' &&
     typeof policyReason === 'string' &&
     Array.isArray(labels) &&
-    labels.every(label => typeof label === 'string') &&
     (domain === undefined
-      ? labels.join(',') === PLAIN_LABELS
-      : typeof domain === 'string' && DOMAIN.test(domain) && labels.join(',') === TRUST_LABELS)
+      ? isExactly(labels, PLAIN_LABELS)
+      : typeof domain === 'string' && DOMAIN.test(domain) && isExactly(labels, TRUST_LABELS))
   if (!isValid) return undefined
   return {
     question: question as string,
