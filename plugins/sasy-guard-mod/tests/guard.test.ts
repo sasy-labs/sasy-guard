@@ -109,6 +109,8 @@ type WorldOptions = {
   health?: { exitCode: number; body: string; status?: string }
   /** Whether a hook-auth header file exists. */
   hasAuthFile?: boolean
+  /** Path endings of the sasy-watch binaries and sources that exist. */
+  watchFiles?: string[]
   /** The HTTP status the daemon answers history pushes with (404 unless
    *  given: a released daemon, which has no such route). */
   feedStatus?: string
@@ -147,11 +149,14 @@ function world(on: On, options: WorldOptions = {}): World {
   on('agent.list', () => ({ value: [] }))
   on('session.surfaces', () => ({ value: (options.surfaces ?? ['terminal']) as never }))
   const approved = new Set<string>()
-  on('fs.stat', () =>
-    options.hasAuthFile === true
-      ? { value: { kind: 'file', size: 64, mtimeMs: 0, isLink: false } }
-      : { deny: 'no such file' },
-  )
+  // The files that exist: the hook-auth file when asked for, and the
+  // sasy-watch binaries named (by default the installed one).
+  const files = options.watchFiles ?? ['/.sasy/bin/sasy-watch']
+  on('fs.stat', ($, e) => {
+    const path = String((e as { path?: unknown }).path ?? '')
+    const exists = path.endsWith('.header') ? options.hasAuthFile === true : files.some(f => path.endsWith(f))
+    return exists ? { value: { kind: 'file', size: 64, mtimeMs: 0, isLink: false } } : { deny: 'no such file' }
+  })
   on('process.run', ($, e) => {
     const argv = [...e.argv]
     w.argvs.push(argv)
@@ -228,6 +233,7 @@ function world(on: On, options: WorldOptions = {}): World {
   on('classic.PostToolUse', () => ({}))
   on('classic.SessionEnd', () => ({}))
   on('classic.PreCompact', () => ({}))
+  on('classic.UserPromptSubmit', () => ({}))
   // The other settings hooks: they deny `curl` without a [SASY] marker.
   on('classic.PreToolUse', ($, e) => {
     const command = e.tool === 'Bash' ? e.command : ''
@@ -987,4 +993,33 @@ test('the feed buffer: bounded, split into pushes, and kept across a push', () =
   // A tool result row picks up the call's structured result.
   const result = { uuid: 'x', message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: 't1' }] } }
   expect(withResults([result], new Map([['t1', { exitCode: 0 }]]))[0]?.toolUseResult).toEqual({ exitCode: 0 })
+})
+
+test('the daemon is started from the installed binary, else a development checkout', async ($, on) => {
+  const ensured = (w: { argvs: string[][] }) => w.argvs.filter(a => a.includes('ensure')).map(a => a.slice(0, -3))
+  const installed = world(on, { lifecycleExit: 7 })
+  await $.classic.SessionStart({ source: 'startup' })
+  expect(ensured(installed)).toHaveLength(1)
+  expect(ensured(installed)[0]?.[0]).toMatch(/\/\.sasy\/bin\/sasy-watch$/)
+})
+
+test('without an installed binary the checkout\'s compiled one, then bun on its source', async ($, on) => {
+  const w = world(on, { lifecycleExit: 7, watchFiles: ['/packages/claude-code/src/main.ts'] })
+  await $.classic.SessionStart({ source: 'startup' })
+  const ensure = w.argvs.find(a => a.includes('ensure'))
+  expect(ensure?.[0]).toBe('bun')
+  expect(ensure?.[1]).toMatch(/\/\.\.\/\.\.\/packages\/claude-code\/src\/main\.ts$/)
+})
+
+test('the daemon hears the host entrypoint, the terminal and the permission mode', async ($, on) => {
+  const w = world(on, { env: { CLAUDE_CODE_ENTRYPOINT: 'cli', TERM_PROGRAM: 'iTerm\u001b.app' } })
+  await started($)
+  await $.classic.UserPromptSubmit({ prompt: 'go', permission_mode: 'acceptEdits' } as never)
+
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+
+  const argv = w.argvs.find(a => a.at(-1)?.endsWith('/v1/pretooluse')) ?? []
+  expect(argv).toContain('x-claude-code-entrypoint: cli')
+  expect(argv).toContain('x-claude-code-term-program: iTerm.app')
+  expect(w.checks[0]?.permission_mode).toBe('acceptEdits')
 })

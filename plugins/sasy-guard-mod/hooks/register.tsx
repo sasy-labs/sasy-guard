@@ -23,7 +23,7 @@ import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from '
 import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
 import type { FeedBuffer, FeedRow } from './feed'
 import { MAX_RESULTS, afterPush, batches, emptyBuffer, enqueue, rowOf, withResults } from './feed'
-import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
+import type { BypassOffer, CheckAnswer, CheckInput, HostHeaders } from './enforce'
 import {
   CHECK_TIMEOUT_MS,
   DEFAULT_PORT,
@@ -157,12 +157,20 @@ const UNREACHABLE_CURL_EXITS = [7, 18, 28, 52, 55, 56]
 type CheckReply = { body: string } | { error: string; kind: 'unreachable' | 'auth' | 'answer' }
 
 /** One POST to /v1/pretooluse; the answer's body, or why there is none. */
+/** Claude Code's entrypoint and terminal program, for the daemon's headers. */
+async function hostHeaders($: EngineInterface): Promise<HostHeaders> {
+  return {
+    entrypoint: (await $.env.get('CLAUDE_CODE_ENTRYPOINT')) ?? '',
+    term: (await $.env.get('TERM_PROGRAM')) ?? '',
+  }
+}
+
 async function postCheck(
   $: EngineInterface,
   port: string,
   input: CheckInput,
 ): Promise<CheckReply> {
-  const argv = checkArgv(port, await authHeaderFile($, port))
+  const argv = checkArgv(port, await authHeaderFile($, port), await hostHeaders($))
   let ran: { exitCode: number; stdout: string }
   try {
     ran = await $.process.run(argv, { stdin: JSON.stringify(input), timeoutMs: CHECK_TIMEOUT_MS })
@@ -184,12 +192,38 @@ async function postCheck(
 }
 
 /** Starts the daemon if it is down, as the settings hook's lib.sh does. */
-async function ensureDaemon($: EngineInterface): Promise<void> {
-  const bin = (await $.env.get('SASY_WATCH_BIN')) || `${await sasyHome($)}/bin/sasy-watch`
+/** Whether `path` is a file (following a link). */
+async function isFile($: EngineInterface, path: string): Promise<boolean> {
   try {
-    await $.process.run([bin, 'ensure', '--wait-ms', '6000'], { timeoutMs: ENSURE_TIMEOUT_MS })
+    return (await $.fs.stat(path)).kind === 'file'
   } catch {
-    // Not installed, or it did not start: the retry then fails closed.
+    return false
+  }
+}
+
+/**
+ * The command that runs sasy-watch, found as the hook plugin's `lib.sh` finds
+ * it: SASY_WATCH_BIN, the installed binary, then a development checkout's
+ * compiled binary, then bun running its source.
+ */
+async function watchCommand($: EngineInterface): Promise<string[] | undefined> {
+  const explicit = await $.env.get('SASY_WATCH_BIN')
+  if (explicit && (await isFile($, explicit))) return [explicit]
+  const installed = `${await sasyHome($)}/bin/sasy-watch`
+  if (await isFile($, installed)) return [installed]
+  const dev = `${$.plugin.root}/../../packages/claude-code`
+  if (await isFile($, `${dev}/dist/sasy-watch`)) return [`${dev}/dist/sasy-watch`]
+  if (await isFile($, `${dev}/src/main.ts`)) return ['bun', `${dev}/src/main.ts`]
+  return undefined
+}
+
+async function ensureDaemon($: EngineInterface): Promise<void> {
+  const command = await watchCommand($)
+  if (command === undefined) return // nothing to start: the retry fails closed
+  try {
+    await $.process.run([...command, 'ensure', '--wait-ms', '6000'], { timeoutMs: ENSURE_TIMEOUT_MS })
+  } catch {
+    // It did not start (or bun is missing): the retry then fails closed.
   }
 }
 
@@ -501,6 +535,7 @@ async function sendFeed(
   const port = await daemonPort($)
   if (port === undefined) return { outcome: 'failed', sent: 0 }
   const auth = await authHeaderFile($, port)
+  const host = await hostHeaders($)
   let sent = 0
   for (const batch of batches(rows).concat(rows.length === 0 && gap ? [[]] : [])) {
     const used = Object.fromEntries(
@@ -508,7 +543,7 @@ async function sendFeed(
         .filter(id => agents[id] !== undefined)
         .map(id => [id, agents[id]]),
     )
-    const ran = await $.process.run(postArgv(port, auth, '/v1/session/append', 10), {
+    const ran = await $.process.run(postArgv(port, auth, '/v1/session/append', 10, 0, host), {
       stdin: JSON.stringify({ ...base, rows: batch, agents: used, gap: gap && sent === 0 }),
       timeoutMs: 13_000,
     })
@@ -538,7 +573,7 @@ async function postBestEffort(
   try {
     const port = await daemonPort($)
     if (port === undefined) return undefined
-    const argv = postArgv(port, await authHeaderFile($, port), route, maxSeconds, retrySeconds)
+    const argv = postArgv(port, await authHeaderFile($, port), route, maxSeconds, retrySeconds, await hostHeaders($))
     const ran = await $.process.run(argv, {
       stdin: JSON.stringify(body),
       timeoutMs: (maxSeconds + retrySeconds + 3) * 1000,
@@ -610,6 +645,12 @@ export const register: Register = on => {
   // structured results of finished tool calls (sent with the rows reporting
   // them), what each subagent's spawn said, and whether the daemon takes the
   // feed at all (a released daemon does not; it reads the transcript).
+  // The session's permission mode, from the latest classic event that gives
+  // it (SessionStart, UserPromptSubmit, PostToolUse): PreToolUse does not.
+  let permissionMode: string | undefined
+  const noteMode = (e: { permission_mode?: unknown }): void => {
+    if (typeof e.permission_mode === 'string' && e.permission_mode !== '') permissionMode = e.permission_mode
+  }
   let feed: FeedBuffer = emptyBuffer()
   let feedSupported = true
   const toolResults = new Map<string, Record<string, unknown>>()
@@ -642,6 +683,7 @@ export const register: Register = on => {
   // what was carried, re-pin the status line and keep what each check needs
   // to say about the session.
   on('classic.SessionStart', async ($, e, next) => {
+    noteMode(e)
     const kept = carried
     carried = undefined
     if (kept !== undefined && e.source === 'compact') {
@@ -679,7 +721,13 @@ export const register: Register = on => {
 
   // The daemon's post-tool signal: the call ran (its approval recorder's
   // evidence) and, for AskUserQuestion, the answer. Best effort, as the hook's.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    noteMode(e)
+    return next(e)
+  })
+
   on('classic.PostToolUse', async ($, e, next) => {
+    noteMode(e)
     const context = contextOf(await postBestEffort($, '/v1/posttooluse', e, 5))
     const result = await next(e)
     if (context.length === 0) return result
@@ -828,6 +876,7 @@ export const register: Register = on => {
         ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
         ...(caller.kind === 'agent' ? { agent_id: caller.agentId } : {}),
         ...(agentType === null ? {} : { agent_type: agentType }),
+        ...(permissionMode === undefined ? {} : { permission_mode: permissionMode }),
         sasy_mod: true,
       }
       // The daemon first gets every row kept since the last push, so the

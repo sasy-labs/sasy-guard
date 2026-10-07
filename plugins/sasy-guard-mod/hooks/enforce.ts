@@ -20,9 +20,24 @@ export type CheckInput = {
   agent_id?: string
   /** The caller's agent type: a subagent's, or a session started with --agent. */
   agent_type?: string
+  /** The session's permission mode (`default`, `acceptEdits`, `plan`, ...), as
+   *  of the latest prompt or finished tool call; the hook receives it the same
+   *  way. Left out until the mod has seen it. */
+  permission_mode?: string
   /** Marks the mod, so a daemon that supports it adds the bypass offer for the
    *  mod's own dialog (`sasyApproval`); an older daemon ignores it. */
   sasy_mod: true
+}
+
+/** What the daemon is told about the host, as the hook plugin's scripts tell
+ *  it: Claude Code's entrypoint (`cli`, `claude-vscode`, ...) and the terminal
+ *  program. The daemon logs both and uses the entrypoint to detect the host. */
+export type HostHeaders = { entrypoint: string; term: string }
+
+/** A value safe in a header line: no control characters, at most 64
+ *  characters (the scripts' `header_safe`). */
+export function headerSafe(value: string | undefined): string {
+  return (value ?? '').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 64)
 }
 
 /** A one-time bypass the daemon offers on a denial, for the mod's own dialog. */
@@ -87,6 +102,7 @@ export function postArgv(
   route: string,
   maxSeconds: number,
   retrySeconds = 0,
+  host: HostHeaders = { entrypoint: '', term: '' },
 ): string[] {
   // Retries, when asked for, also cover HTTP errors (a daemon whose policy
   // engine is still starting answers 400), one a second, for at most
@@ -101,7 +117,8 @@ export function postArgv(
   return [
     'curl', '-sS', '--noproxy', '*', '--max-time', String(maxSeconds), ...retry,
     '--max-filesize', '1048576', '-X', 'POST', '-H', 'content-type: application/json',
-    '-H', 'x-claude-code-entrypoint: sasy-guard-mod',
+    '-H', `x-claude-code-entrypoint: ${headerSafe(host.entrypoint) || 'unknown'}`,
+    '-H', `x-claude-code-term-program: ${headerSafe(host.term)}`,
     ...(authFile === undefined ? [] : ['-H', `@${authFile}`]),
     '--data-binary', '@-', '--write-out', '\n%{http_code}',
     `http://127.0.0.1:${port}${route}`,
@@ -109,8 +126,8 @@ export function postArgv(
 }
 
 /** curl's arguments for one policy check (/v1/pretooluse). */
-export function checkArgv(port: string, authFile: string | undefined): string[] {
-  return postArgv(port, authFile, '/v1/pretooluse', 10)
+export function checkArgv(port: string, authFile: string | undefined, host?: HostHeaders): string[] {
+  return postArgv(port, authFile, '/v1/pretooluse', 10, 0, host)
 }
 
 /** Splits curl's output into the body and the HTTP status it appended. */
