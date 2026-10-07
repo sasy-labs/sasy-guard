@@ -565,7 +565,7 @@ export const register: Register = on => {
   // feed at all (a released daemon does not; it reads the transcript).
   // Each caller's permission mode ("" = the main thread, else the subagent's
   // id), from the latest classic event that gives it (SessionStart,
-  // UserPromptSubmit, PostToolUse): PreToolUse does not. A subagent's own
+  // SubagentStart, UserPromptSubmit, PostToolUse): PreToolUse does not. A subagent's own
   // definition may set another mode than the session's.
   const modes = new Map<string, string>()
   const noteMode = (e: { permission_mode?: unknown; agent_id?: unknown }): void => {
@@ -667,8 +667,11 @@ export const register: Register = on => {
     return { ...result, additionalContext: [...(result.additionalContext ?? []), SESSION_NOTE] }
   })
 
-  // The daemon's post-tool signal: the call ran (its approval recorder's
-  // evidence) and, for AskUserQuestion, the answer. Best effort, as the hook's.
+  on('classic.SubagentStart', async ($, e, next) => {
+    noteMode(e)
+    return next(e)
+  })
+
   on('classic.UserPromptSubmit', async ($, e, next) => {
     noteMode(e)
     return next(e)
@@ -679,6 +682,8 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // The daemon's post-tool signal: the call ran (its approval recorder's
+  // evidence) and, for AskUserQuestion, the answer. Best effort, as the hook's.
   on('classic.PostToolUse', async ($, e, next) => {
     noteMode(e)
     const context = contextOf(await postBestEffort($, '/v1/posttooluse', e, 5))
