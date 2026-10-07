@@ -578,7 +578,9 @@ export const register: Register = on => {
   // Bumped with each new session, so a push in flight across the change
   // leaves the new buffer alone.
   let feedGeneration = 0
-  let feed: FeedBuffer = emptyBuffer()
+  // Until a session's start says otherwise, rows may have been lost (the mod
+  // reloaded mid-session): the first push then asks the daemon to catch up.
+  let feed: FeedBuffer = { ...emptyBuffer(), gap: 1 }
   // The session's folder as last read (at session start, each check and
   // after each main-thread tool call).
   let knownCwd: string | undefined
@@ -621,6 +623,7 @@ export const register: Register = on => {
     // mod first saw this one start there (it was enabled mid-session).
     const isOther =
       feedSession === undefined ? e.source !== 'startup' && e.source !== 'compact' : feedSession !== e.session_id
+    if (feedSession === undefined && e.source === 'startup') feed = { ...feed, gap: 0 }
     if (isOther) {
       feed = emptyBuffer()
       feedSupported = true
@@ -742,8 +745,9 @@ export const register: Register = on => {
 
   // Each row Claude Code keeps, as stored, for the next push.
   on('session.append', async ($, e, next) => {
+    const generation = feedGeneration
     const stored = await next(e)
-    if (!feedSupported) return stored
+    if (!feedSupported || generation !== feedGeneration) return stored // an ended session's row
     // Queued at once (no await between storing and queueing), with the folder
     // last seen for the session or the subagent's recorded one.
     const cwd = e.agentId === undefined ? knownCwd : agentTable[e.agentId]?.cwd
@@ -858,6 +862,10 @@ export const register: Register = on => {
       // every row kept since the last push, so it decides on the whole history.
       const check = async (checked: CheckInput): Promise<CheckAnswer> => {
         let pushed: FeedOutcome = 'unsupported'
+        // The session this check is in: if /clear, /resume or /branch ends it
+        // while the check waits or pushes, the check sends nothing more (the
+        // rows are the new session's) and is denied.
+        const generation = feedGeneration
         // All of a check's pushing, its wait for another's included, has one
         // deadline: a stalled daemon cannot hold queued calls for longer.
         const deadline = (await $.clock.now()) + PUSH_DEADLINE_MS
@@ -873,21 +881,14 @@ export const register: Register = on => {
         try {
           // Rows kept while a push ran go out before the check too (a few
           // rounds at most); a session change while a push ran ends it.
-          const generation = feedGeneration
-          // A check left over from a session that has since ended (it waited
-          // across /clear, /resume or /branch) must not send the new one's rows.
-          if ((await $.session.id()) !== checked.session_id) pushed = 'failed'
-          for (let round = 0; round < MAX_PUSH_ROUNDS && feedSupported && pushed !== 'failed'; round++) {
+          for (let round = 0; round < MAX_PUSH_ROUNDS && feedSupported; round++) {
             if (round > 0 && (pushed !== 'sent' || (feed.rows.length === 0 && feed.gap === 0))) break
             // A row reporting a tool call still running waits, briefly, for
             // the call to finish and its structured result to be known.
             const waits = reportedCalls(feed.rows).flatMap(id => running.done(id) ?? [])
             const waitMs = Math.min(RESULT_WAIT_MS, deadline - (await $.clock.now()))
             if (waits.length > 0 && waitMs > 0) await Promise.race([Promise.all(waits), $.clock.sleep(waitMs)])
-            if (generation !== feedGeneration) {
-              pushed = 'failed' // the session changed while this check waited
-              break
-            }
+            if (generation !== feedGeneration) break // the session changed: see below
             const pending = { ...feed, rows: [...feed.rows] }
             const base = {
               session_id: checked.session_id,
@@ -925,6 +926,7 @@ export const register: Register = on => {
         // without it (also rows still arriving after the last round). Only an
         // unreachable daemon may fail open, as for a check.
         if (pushed === 'sent' && feedSupported && (feed.rows.length > 0 || feed.gap > 0)) pushed = 'failed'
+        if (generation !== feedGeneration) pushed = 'failed' // the session changed while this check ran
         if (pushed === 'sent' || pushed === 'unsupported') return checkCall($, checked)
         if (pushed === 'unreachable' && (await failsOpen($))) return { result: {} }
         return { result: { deny: HISTORY_UNSENT } }
