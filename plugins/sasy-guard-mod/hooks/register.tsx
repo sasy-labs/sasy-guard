@@ -578,7 +578,8 @@ export const register: Register = on => {
   // leaves the new buffer alone.
   let feedGeneration = 0
   let feed: FeedBuffer = emptyBuffer()
-  // The session's folder as last read (at session start and each check).
+  // The session's folder as last read (at session start, each check and
+  // after each main-thread tool call).
   let knownCwd: string | undefined
   let feedSupported = true
   const toolResults = new ResultTable()
@@ -782,6 +783,9 @@ export const register: Register = on => {
       try {
         const result = await next(e)
         noteResult(e.tool_use_id, result)
+        // The call may have moved the session (EnterWorktree, cd): the rows
+        // that follow carry the folder as it is now.
+        knownCwd = await $.session.cwd()
         return result
       } finally {
         stop(e.tool_use_id)
@@ -880,7 +884,10 @@ export const register: Register = on => {
           // Rows kept while a push ran go out before the check too (a few
           // rounds at most); a session change while a push ran ends it.
           const generation = feedGeneration
-          for (let round = 0; round < MAX_PUSH_ROUNDS && feedSupported; round++) {
+          // A check left over from a session that has since ended (it waited
+          // across /clear, /resume or /branch) must not send the new one's rows.
+          if ((await $.session.id()) !== checked.session_id) pushed = 'failed'
+          for (let round = 0; round < MAX_PUSH_ROUNDS && feedSupported && pushed !== 'failed'; round++) {
             if (round > 0 && (pushed !== 'sent' || (feed.rows.length === 0 && feed.gap === 0))) break
             // A row reporting a tool call still running waits, briefly, for
             // the call to finish and its structured result to be known.
@@ -890,6 +897,10 @@ export const register: Register = on => {
             })
             const waitMs = Math.min(RESULT_WAIT_MS, deadline - (await $.clock.now()))
             if (waits.length > 0 && waitMs > 0) await Promise.race([Promise.all(waits), $.clock.sleep(waitMs)])
+            if (generation !== feedGeneration) {
+              pushed = 'failed' // the session changed while this check waited
+              break
+            }
             const pending = { ...feed, rows: [...feed.rows] }
             const base = {
               session_id: checked.session_id,
