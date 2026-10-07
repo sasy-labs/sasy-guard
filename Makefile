@@ -51,17 +51,18 @@ claude-code-guard-serve:
 
 # Mod demo: the same scripted mock, with `claude` loading the sasy-guard-mod
 # plugin from this checkout, so the mod checks each call and its status entry,
-# decision band and /guard show. Each run creates a fresh project under
-# output/ (output/mod-demo.XXXXXX) with the scenario fixtures, so a scripted
-# edit from an earlier run never changes the next one; PROJECT names your own
-# project instead (then no fixture files are written):
+# decision band and /guard show. Each run creates a fresh project in the
+# system temp folder, outside this repository and with a git repository of its
+# own (so scripted git commands never reach this checkout), with the scenario
+# fixtures; PROJECT names your own project instead (then no fixture files are
+# written):
 #   make claude-code-guard-mod-demo GROUP=agent_redirect
 claude-code-guard-mod-demo:
 	@if [ -n "$(PROJECT)" ]; then \
 	  dir="$(PROJECT)"; fixtures=""; \
 	else \
-	  mkdir -p "$(CURDIR)/output"; \
-	  dir=$$(mktemp -d "$(CURDIR)/output/mod-demo.XXXXXX"); fixtures="--setup-fixtures"; \
+	  dir=$$(mktemp -d "$${TMPDIR:-/tmp}/sasy-guard-mod-demo.XXXXXX"); \
+	  git -C "$$dir" init -q; fixtures="--setup-fixtures"; \
 	fi; \
 	$(UV_RUN_SDK) python -m demo.cc_guard.serve_mock \
 	  --scenario $(or $(GROUP),toxic_flow) $$fixtures \
