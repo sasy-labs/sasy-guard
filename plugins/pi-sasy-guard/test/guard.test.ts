@@ -220,6 +220,20 @@ test("a reset sends the branch a summary describes, so the summary can depend on
   assert.deepEqual((last.body.entries as { id: string }[]).map((e) => e.id), ["e1", "e2", "s1"]);
 });
 
+test("summarized branches go transitively, and with a session's first push", async () => {
+  const h = harness();
+  // A (read .env) was left, summarized on B; B was left, summarized on C.
+  const a1 = { id: "a1", parentId: null, type: "message", message: { role: "user", content: "read .env" } };
+  const b1 = { id: "b1", parentId: null, type: "branch_summary", fromId: "a1", summary: "A" } as never;
+  const c1 = { id: "c1", parentId: null, type: "branch_summary", fromId: "b1", summary: "B" } as never;
+  h.moveTo([a1]);
+  h.moveTo([b1]);
+  h.moveTo([c1]);
+  await h.fire("tool_call", curl);
+  const first = requests.find((r) => r.path === "/v1/session/events")!;
+  assert.deepEqual((first.body.entries as { id: string }[]).map((e) => e.id), ["a1", "b1", "c1"]);
+});
+
 test("a push the daemon does not accept blocks the call", async () => {
   const h = harness();
   sessionAnswer = { error: "not a registered pi session" };

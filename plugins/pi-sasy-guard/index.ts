@@ -121,7 +121,10 @@ export function createGuard(opts: GuardOptions = {}) {
           const jumped =
             pass === 1 ||
             (lastLeaf !== null && (firstFresh ? (firstFresh.parentId ?? null) !== lastLeaf : leaf !== lastLeaf));
-          const toSend = jumped ? withSummarizedBranches(ctx, branch) : branch.filter((e) => !sent.has(e.id));
+          // Whatever goes, the branches its summaries describe go before it (those
+          // the daemon has not seen, unless this is a reset that rebuilds it all).
+          const base = jumped ? branch : branch.filter((e) => !sent.has(e.id));
+          const toSend = withSummarizedBranches(ctx, base).filter((e) => jumped || !sent.has(e.id));
           const reported = [...rejected];
           // Even with nothing new, the push goes: its answer shows whether the
           // daemon restarted (and lost the session) since the last one.
@@ -170,11 +173,19 @@ export function createGuard(opts: GuardOptions = {}) {
           out.push(e);
         }
       };
-      for (const e of branch) {
-        const fromId = (e as { type?: unknown; fromId?: unknown }).type === "branch_summary" ? (e as { fromId?: unknown }).fromId : undefined;
-        if (typeof fromId === "string") for (const left of ctx.sessionManager.getBranch(fromId)) add(left);
-      }
-      for (const e of branch) add(e);
+      const summarized = (e: SessionEntryLike) =>
+        (e as { type?: unknown }).type === "branch_summary" ? (e as { fromId?: unknown }).fromId : undefined;
+      // Transitively: a branch that was left may hold summaries of older ones.
+      const visit = (entries: readonly SessionEntryLike[], depth: number) => {
+        for (const e of entries) {
+          const fromId = summarized(e);
+          if (typeof fromId === "string" && !seen.has(fromId) && depth < 64) {
+            visit(ctx.sessionManager.getBranch(fromId), depth + 1);
+          }
+          add(e);
+        }
+      };
+      visit(branch, 0);
       return out;
     }
 
