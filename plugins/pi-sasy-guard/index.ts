@@ -84,11 +84,12 @@ export function createGuard(opts: GuardOptions = {}) {
       if (!out || out.ok !== true) throw new Error(`sasy-watch did not accept ${path}`);
       // Without the daemon's run id a restart could go unnoticed: no answer.
       if (typeof out.instance !== "string" || out.instance === "") throw new Error(`sasy-watch did not name its run on ${path}`);
-      const changed = instance !== undefined && out.instance !== instance;
-      instance = out.instance;
       // The session routes name this process's registration; without it the
       // daemon could not tell this process's requests from a replaced one's.
       if (typeof out.generation !== "string" || out.generation === "") throw new Error(`sasy-watch did not name the registration on ${path}`);
+      // Only a complete answer updates what this process knows of the daemon.
+      const changed = instance !== undefined && out.instance !== instance;
+      instance = out.instance;
       generation = out.generation;
       return changed;
     }

@@ -226,6 +226,22 @@ test("a session answer without the registration's generation blocks the call", a
   assert.equal(requests.filter((r) => r.path === "/v1/pretooluse").length, 0);
 });
 
+test("an incomplete answer from a restarted daemon still leads to a full resend", async () => {
+  const h = harness();
+  h.entries.push({ id: "e1", parentId: null, type: "message", message: { role: "user", content: "read .env" } });
+  await h.fire("tool_call", readEnv);
+  // The daemon restarts; its first answer names its run but not the registration.
+  sessionAnswer = { ok: true, instance: "run-2" };
+  const out = (await h.fire("tool_call", curl)) as { block: boolean };
+  assert.equal(out.block, true);
+  // Its next, complete answer is still seen as a new run: the branch goes again.
+  sessionAnswer = { ok: true, instance: "run-2", generation: "gen-2" };
+  requests = [];
+  await h.fire("tool_call", curl);
+  const pushes = requests.filter((r) => r.path === "/v1/session/events");
+  assert.ok(pushes.some((r) => r.body.reset === true && (r.body.entries as { id: string }[]).some((e) => e.id === "e1")));
+});
+
 test("a session answer without the daemon's run id blocks the call", async () => {
   const h = harness();
   sessionAnswer = { ok: true };
