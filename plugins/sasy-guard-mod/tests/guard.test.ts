@@ -818,6 +818,8 @@ test('only the daemon\'s own offer shape is a bypass offer', () => {
   expect(answer({ ...trust, domain: long })?.offer?.domain).toBe(long)
   expect(answer({ ...trust, domain: `${'a'.repeat(250)}.com` })).toBeUndefined()
   expect(answer({ ...trust, domain: 'Get.Example' })).toBeUndefined()
+  expect(answer({ ...trust, domain: 'localhost' })).toBeUndefined()
+  expect(answer({ ...trust, domain: '.example.com' })).toBeUndefined()
   expect(answer({ ...trust, domain: 'get.example\u202e' })).toBeUndefined()
   const { policyReason: _dropped, ...withoutPolicy } = offer
   expect(answer(withoutPolicy)).toBeUndefined()
