@@ -805,6 +805,10 @@ export const register: Register = on => {
   // Enforcement. A failure before the daemon answered denies the call (fail
   // closed); after `next`, the result `next` settled to stands.
   on('classic.PreToolUse', async ($, e, next) => {
+    // The session this call is in: if /clear, /resume or /branch ends it
+    // while a check (or the re-check after an approval) waits or pushes, the
+    // check sends nothing more (the rows are the new session's) and is denied.
+    const generation = feedGeneration
     const { tool, tool_use_id, ...args } = e as unknown as Record<string, unknown> & {
       tool: string
       tool_use_id: string
@@ -854,10 +858,6 @@ export const register: Register = on => {
       // every row kept since the last push, so it decides on the whole history.
       const check = async (checked: CheckInput): Promise<CheckAnswer> => {
         let pushed: FeedOutcome = 'unsupported'
-        // The session this check is in: if /clear, /resume or /branch ends it
-        // while the check waits or pushes, the check sends nothing more (the
-        // rows are the new session's) and is denied.
-        const generation = feedGeneration
         // All of a check's pushing, its wait for another's included, has one
         // deadline: a stalled daemon cannot hold queued calls for longer.
         const deadline = (await $.clock.now()) + PUSH_DEADLINE_MS
