@@ -48,8 +48,9 @@ const TRUST_LABELS = ['approve', 'decline', 'trust-domain']
 /** Whether `labels` is exactly `expected`, element by element. */
 const isExactly = (labels: unknown[], expected: string[]): boolean =>
   labels.length === expected.length && labels.every((label, i) => label === expected[i])
-/** A host the daemon names for session trust, as it derives one. */
-const DOMAIN = /^[a-z0-9.-]{3,253}$/
+/** A host the daemon names for session trust, as it derives one: 3 to 253
+ *  characters of [a-z0-9.-], with at least one dot between labels. */
+const DOMAIN = /^(?=.{3,253}$)[a-z0-9-]+(\.[a-z0-9-]+)+$/
 
 /** The `sasyApproval` field of a daemon answer, or undefined when it is not one. */
 function offerOf(value: unknown): BypassOffer | undefined {
