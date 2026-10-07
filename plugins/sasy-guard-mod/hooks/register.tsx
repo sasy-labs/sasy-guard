@@ -136,56 +136,46 @@ async function postCheck(
   return { error: `sasy-watch answered HTTP ${status}`, kind }
 }
 
-/** Starts the daemon if it is down, as the settings hook's lib.sh does. */
-/** Whether `path` is a file (following a link). */
-async function isFile($: EngineInterface, path: string): Promise<boolean> {
+/** Whether a shell test passes (`test -x path`, `command -v bun`). */
+async function passes($: EngineInterface, argv: string[]): Promise<boolean> {
   try {
-    return (await $.fs.stat(path)).kind === 'file'
+    return (await $.process.run(argv, { timeoutMs: 3000 })).exitCode === 0
   } catch {
     return false
   }
 }
 
 /**
- * The commands that may run sasy-watch, in the order the hook plugin's
- * `lib.sh` tries them: SASY_WATCH_BIN, the installed binary, a development
- * checkout's compiled binary, then bun running its source. Only files that
- * exist are listed.
+ * The command that runs sasy-watch, chosen as the hook plugin's `lib.sh`
+ * chooses it: an executable SASY_WATCH_BIN, else the installed binary, else a
+ * development checkout's compiled binary, else bun running its source. The
+ * first that qualifies is used, and its failure stands.
  */
-async function watchCommands($: EngineInterface): Promise<string[][]> {
-  const dev = `${$.plugin.root}/../../packages/claude-code`
-  const candidates: [string, string[]][] = [
-    [`${await sasyHome($)}/bin/sasy-watch`, []],
-    [`${dev}/dist/sasy-watch`, []],
-    [`${dev}/src/main.ts`, ['bun']],
-  ]
+async function watchCommand($: EngineInterface): Promise<string[] | undefined> {
+  const isExecutable = (path: string) => passes($, ['test', '-x', path])
   const explicit = await $.env.get('SASY_WATCH_BIN')
-  if (explicit) candidates.unshift([explicit, []])
-  const found: string[][] = []
-  for (const [path, runner] of candidates) {
-    if (await isFile($, path)) found.push([...runner, path])
-  }
-  return found
+  if (explicit && (await isExecutable(explicit))) return [explicit]
+  const installed = `${await sasyHome($)}/bin/sasy-watch`
+  if (await isExecutable(installed)) return [installed]
+  const dev = `${$.plugin.root}/../../packages/claude-code`
+  if (await isExecutable(`${dev}/dist/sasy-watch`)) return [`${dev}/dist/sasy-watch`]
+  const hasSource = await passes($, ['test', '-f', `${dev}/src/main.ts`])
+  if (hasSource && (await passes($, ['sh', '-c', 'command -v bun']))) return ['bun', `${dev}/src/main.ts`]
+  return undefined
 }
 
-/** Starts the daemon with the first command that runs, as `lib.sh` skips a
- *  binary it cannot execute; with none, the retry then fails closed. */
+/** Starts the daemon if it is down, as the settings hook's lib.sh does; with
+ *  nothing to start, or a start that fails, the retry fails closed. */
 async function ensureDaemon($: EngineInterface): Promise<void> {
-  for (const command of await watchCommands($)) {
-    try {
-      const ran = await $.process.run([...command, 'ensure', '--wait-ms', '6000'], { timeoutMs: ENSURE_TIMEOUT_MS })
-      if (ran.exitCode === 0) return
-    } catch {
-      // Not executable, or bun is missing: try the next.
-    }
+  const command = await watchCommand($)
+  if (command === undefined) return
+  try {
+    await $.process.run([...command, 'ensure', '--wait-ms', '6000'], { timeoutMs: ENSURE_TIMEOUT_MS })
+  } catch {
+    // It did not start: the retry then fails closed.
   }
 }
 
-/**
- * The policy's answer on one call. Fails closed: when the daemon cannot be
- * reached after one attempt to start it, the call is denied, unless
- * SASY_FAIL_OPEN=true, as for the settings hook.
- */
 /** Whether an unreachable daemon lets calls through: SASY_FAIL_OPEN=true and,
  *  as in the hook, the daemon's hook-auth file in place. */
 async function failsOpen($: EngineInterface): Promise<boolean> {
@@ -693,6 +683,11 @@ export const register: Register = on => {
     return next(e)
   })
 
+  on('classic.PostToolUseFailure', async ($, e, next) => {
+    noteMode(e)
+    return next(e)
+  })
+
   on('classic.PostToolUse', async ($, e, next) => {
     noteMode(e)
     const context = contextOf(await postBestEffort($, '/v1/posttooluse', e, 5))
@@ -834,9 +829,9 @@ export const register: Register = on => {
       const sessionCwd = await $.session.cwd()
       const cwd = caller.kind === 'agent' ? caller.cwd ?? sessionCwd : sessionCwd
       const agentType = caller.kind === 'agent' ? caller.type : info.agentType
-      // A subagent before its first finished call has no mode of its own yet:
-      // it inherits the session's.
-      const mode = (caller.kind === 'agent' ? modes.get(caller.agentId) : undefined) ?? modes.get('')
+      // A subagent's own definition may set another mode than the session's,
+      // so until one of its calls has finished its mode is not known.
+      const mode = modes.get(caller.kind === 'agent' ? caller.agentId : '')
       const input: CheckInput = {
         session_id: await $.session.id(),
         tool_name: String(tool),
