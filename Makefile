@@ -61,8 +61,9 @@ claude-code-guard-mod-demo:
 	@if [ -n "$(PROJECT)" ]; then \
 	  dir="$(PROJECT)"; fixtures=""; \
 	else \
-	  dir=$$(mktemp -d "$${TMPDIR:-/tmp}/sasy-guard-mod-demo.XXXXXX"); \
-	  git -C "$$dir" init -q; fixtures="--setup-fixtures"; \
+	  dir=$$(mktemp -d "$${TMPDIR:-/tmp}/sasy-guard-mod-demo.XXXXXX") && [ -d "$$dir" ] \
+	    || { echo "error: could not create a temporary demo project" >&2; exit 1; }; \
+	  git -C "$$dir" init -q || exit 1; fixtures="--setup-fixtures"; \
 	fi; \
 	$(UV_RUN_SDK) python -m demo.cc_guard.serve_mock \
 	  --scenario $(or $(GROUP),toxic_flow) $$fixtures \
