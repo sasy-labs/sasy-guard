@@ -354,7 +354,7 @@ test('/guard reports daemon health and recent decisions without a model turn', a
   expect(health).toContain('--noproxy')
   expect(out.text).toContain('daemon: up, policy engine ready · endpoint 127.0.0.1:50051')
   expect(out.text).toContain('this session: 1 checked · 1 denied · 0 asked')
-  expect(out.text).toContain('deny  Bash  rm -rf build')
+  expect(out.text).toContain('deny      Bash  rm -rf build')
   expect(out.text).toContain('OR ask the user for a one-time bypass.')
 })
 
@@ -715,6 +715,12 @@ test('the mod asks the user itself and, on approval, runs the call once', async 
   expect(w.checks).toHaveLength(2)
   expect(w.hookCalls.at(-1)).toBe(CURL_SH)
   expect(w.lines.at(-1)).toBe('1 checked · 0 denied · 1 asked')
+  // The band says what the user chose, not that approval is still needed.
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /asked you, and you allowed Bash: curl/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /needs approval/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /you approved it once/ })).toBeDefined()
+  await ui.unmount()
 })
 
 test('declining in the dialog keeps the call blocked and tells the model', async ($, on) => {
@@ -730,6 +736,9 @@ test('declining in the dialog keeps the call blocked and tells the model', async
   expect(w.checks).toHaveLength(1)
   // Recorded as an ask, with what the user chose.
   expect(w.lines.at(-1)).toBe('1 checked · 0 denied · 1 asked')
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /asked you, and blocked Bash: curl/ })).toBeDefined()
+  await ui.unmount()
 })
 
 test('a dismissed dialog declines', async ($, on) => {

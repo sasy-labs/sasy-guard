@@ -1,5 +1,7 @@
 /** The verdict sasy-guard reached on one tool call. */
-export type GuardVerdict = 'deny' | 'ask'
+/** What sasy-guard decided about a call: denied, asking (Claude Code's own
+ *  prompt), or, for the mod's own approval dialog, what the user chose. */
+export type GuardVerdict = 'deny' | 'ask' | 'approved' | 'declined'
 
 /** One tool call that sasy-guard denied or held for the user's approval. */
 export type GuardDecision = {

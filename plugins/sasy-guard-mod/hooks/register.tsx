@@ -234,7 +234,7 @@ async function canAsk($: EngineInterface): Promise<boolean> {
 }
 
 /** What became of one approval dialog: the call's result and what to record. */
-type DialogOutcome = { result: PreToolUseResult; summary: string }
+type DialogOutcome = { result: PreToolUseResult; record: DialogRecord }
 
 /**
  * The mod's own approval dialog for a one-time bypass the daemon offered. It
@@ -284,13 +284,13 @@ async function askForBypass(
           '[SASY] The user declined a one-time bypass of this check. Follow the ' +
           `suggested fix instead of retrying the same action.\n\n${policy}`,
       },
-      summary: 'you denied it',
+      record: { verdict: 'declined', reason: `${offer.reason} — you denied it` },
     }
   }
   if (!isRecorded) {
     return {
       result: { deny: `[SASY] The approval could not be recorded, so the action stays blocked.\n\n${policy}` },
-      summary: 'your approval could not be recorded',
+      record: { verdict: 'declined', reason: `${offer.reason} — your approval could not be recorded` },
     }
   }
   const again = await checkCall($, input)
@@ -299,7 +299,10 @@ async function askForBypass(
     if (again.offer !== undefined && attemptsLeft > 0) {
       return askForBypass($, input, again.offer, attemptsLeft - 1)
     }
-    return { result: again.result, summary: 'it was blocked again' }
+    return {
+      result: again.result,
+      record: { verdict: 'declined', reason: `${offer.reason} — blocked again after your approval` },
+    }
   }
   const note =
     choice === 'trust-domain'
@@ -308,7 +311,13 @@ async function askForBypass(
       : 'The user approved a one-time bypass of a SASY check for this action in the SASY dialog.'
   return {
     result: { ...again.result, additionalContext: [...(again.result.additionalContext ?? []), note] },
-    summary: choice === 'trust-domain' ? `you trusted ${offer.domain ?? 'the host'}` : 'you approved it once',
+    record: {
+      verdict: 'approved',
+      reason:
+        choice === 'trust-domain'
+          ? `${offer.reason} — you trusted ${offer.domain ?? 'the host'} for this session`
+          : `${offer.reason} — you approved it once`,
+    },
   }
 }
 
@@ -371,23 +380,29 @@ async function daemonHealth($: EngineInterface): Promise<string> {
 
 /** One decision for /guard: a heading, then its reason, whole or first line. */
 function decisionLines(d: GuardDecision, isWhole: boolean): string[] {
-  const head = `  ${clockTime(d.at)}  ${d.verdict.padEnd(4)}  ${d.tool}  ${d.target}`
+  const head = `  ${clockTime(d.at)}  ${d.verdict.padEnd(8)}  ${d.tool}  ${d.target}`
   const reason = d.reason.split('\n').filter(line => line.trim() !== '')
   const body = isWhole ? reason : reason.slice(0, 1).map(line => shorten(line, 120))
   return [head.trimEnd(), ...body.map(line => `            ${line}`)]
 }
 
-/** Counts one checked call and keeps it when it carries a [SASY] verdict. */
+/** What the mod's own dialog came to, for the record: the offer the user
+ *  answered (its reason) and whether they approved. */
+type DialogRecord = { verdict: 'approved' | 'declined'; reason: string }
+
+/** Counts one checked call and keeps it when it carries a [SASY] verdict, or
+ *  when the mod's own dialog asked the user about it. */
 async function record(
   $: EngineInterface,
   e: Readonly<Record<string, unknown>>,
   result: PreToolUseResult,
+  dialog?: DialogRecord,
 ): Promise<void> {
-  const found = verdictOf(result)
+  const found = dialog ?? verdictOf(result)
   const total = await update($, counts, c => ({
     checked: c.checked + 1,
     denied: c.denied + (found?.verdict === 'deny' ? 1 : 0),
-    asked: c.asked + (found?.verdict === 'ask' ? 1 : 0),
+    asked: c.asked + (found?.verdict === 'ask' || dialog !== undefined ? 1 : 0),
   }))
   $.ui.status(statusText(total))
   if (found === null) return
@@ -408,9 +423,10 @@ async function recordSafely(
   $: EngineInterface,
   e: unknown,
   result: PreToolUseResult,
+  dialog?: DialogRecord,
 ): Promise<void> {
   try {
-    await record($, e as Readonly<Record<string, unknown>>, result)
+    await record($, e as Readonly<Record<string, unknown>>, result, dialog)
   } catch {
     // The counts and the band miss one call; the decision stands.
   }
@@ -593,7 +609,7 @@ export const register: Register = on => {
     const caller = attribute(await read($, agents), callerOf.get(tool_use_id))
     let ours: PreToolUseResult
     // When the mod's own dialog asked the user, what to record for the call.
-    let asked: PreToolUseResult | undefined
+    let dialog: DialogRecord | undefined
     if (info === null) {
       ours = {
         deny:
@@ -636,7 +652,7 @@ export const register: Register = on => {
       if (answer.offer !== undefined && (await canAsk($))) {
         const outcome = await askForBypass($, input, answer.offer)
         ours = outcome.result
-        asked = { ask: `[SASY] ${answer.offer.reason} — ${outcome.summary}` }
+        dialog = outcome.record
       } else {
         ours = answer.result
       }
@@ -644,7 +660,7 @@ export const register: Register = on => {
     // Any other settings hooks run whatever SASY answered.
     const theirs = await next(e)
     const result = ours.deny !== undefined ? denyWith(ours, theirs) : combine(ours, theirs)
-    await recordSafely($, e, asked ?? result)
+    await recordSafely($, e, result, dialog)
     return result
   }).catch(($, e, next) =>
     next.called ? next(e) : { deny: '[SASY] security check failed inside sasy-guard-mod' },
@@ -675,8 +691,13 @@ export const register: Register = on => {
     if (latest.seq <= (await read($, dismissedSeq))) return next(e)
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    const verb = latest.verdict === 'deny' ? 'denied' : 'needs approval for'
-    const color = latest.verdict === 'deny' ? 'red' : 'yellow'
+    const verb = {
+      deny: 'denied',
+      ask: 'needs approval for',
+      approved: 'asked you, and you allowed',
+      declined: 'asked you, and blocked',
+    }[latest.verdict]
+    const color = { deny: 'red', ask: 'yellow', approved: 'green', declined: 'red' }[latest.verdict]
     // Rows besides the reason: the heading, a possible overflow line, the button.
     const room = Math.max(1, Math.min(BAND_REASON_LINES, e.props.maxRows - 3))
     const reason = latest.reason.split('\n').filter(line => line.trim() !== '')
