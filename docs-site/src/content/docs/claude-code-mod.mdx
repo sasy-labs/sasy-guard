@@ -67,8 +67,20 @@ git init -q
 mkdir build && echo x > build/out.txt   # something for rm -rf to delete
 echo hello > notes                      # something to upload
 printf 'AWS_SECRET_ACCESS_KEY=AKIA-not-real\n' > .env
-claude
+claude --dangerously-skip-permissions
 ```
+
+The last line starts Claude Code with its own permission checks turned off
+(no permission prompts, no auto mode). Use this only for the test, in this
+throwaway folder. With Claude Code's checks on, it may stop or ask about a
+risky command before the guard ever sees it, and then you are testing Claude
+Code rather than the guard. For everyday work, start Claude Code the way you
+normally do.
+
+If your own user settings (`~/.claude/settings.json`) have hooks that block
+commands such as `rm` or reading `.env`, they can get in the way in the same
+way. Add `--setting-sources project,local` to the command so that Claude Code
+skips your user settings for this test and only the guard decides.
 
 Then type these prompts. Each denial shows in the band and the status entry,
 and `/guard` lists it. For `curl_sh`, the denial carries a one-time bypass:
