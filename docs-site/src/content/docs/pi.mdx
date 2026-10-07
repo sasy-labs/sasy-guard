@@ -148,13 +148,14 @@ pi ──extension──▶ sasy-watch daemon ──gRPC──▶ sasy engine
 - The **extension** handles pi's `tool_call` event (every tool the model calls)
   and `user_bash` event (every `!` command you type). Before each check it sends
   the daemon the session entries it has not sent yet. When a call does not run,
-  because it was blocked or you declined it, the extension records that in the
-  pi session as an entry pi keeps for extensions and never shows the model. The
-  daemon reads it with the other entries, so it does not treat the call as
-  having produced output, and a resumed session knows too. If the daemon
-  restarts, the extension notices and sends the session's whole current branch
-  again. If you resume the same session in a second pi process, the daemon
-  follows the newer one, and the earlier process's checks are denied.
+  because it was blocked or you declined it (a `!` command you decline
+  included), the extension records that in the pi session as an entry pi keeps
+  for extensions and never shows the model. The daemon reads it with the other
+  entries, so it does not treat the call as having produced output, and a
+  resumed session knows too. If the daemon restarts, the extension notices and
+  sends the session's whole current branch again. If you resume the same session
+  in a second pi process, the daemon follows the newer one, and the earlier
+  process's checks are denied.
 - The **daemon** translates pi's tools into the tool names the policy uses
   (`bash` becomes `Bash`, `read` becomes `Read` with an absolute `file_path`,
   resolved as pi resolves it, `~` and all,

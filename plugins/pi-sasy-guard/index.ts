@@ -326,6 +326,9 @@ export function createGuard(opts: GuardOptions = {}) {
         const settled = await settleAsk(ctx, d, "bash", input);
         blocked = !settled.approved;
         outcome = settled.outcome;
+        // Recorded like a declined tool call, by the check's id, so the daemon
+        // knows the approval it asked for was refused.
+        if (blocked) reject(id);
       }
       record(ctx, d, "bash", input, outcome);
       if (!blocked) {

@@ -38,6 +38,6 @@ read, for one). `core.ts` holds the parts that need neither pi nor the network.
 ## Develop
 
 ```sh
-node --test plugins/pi-sasy-guard/test/   # Node 22.19+, no install needed
+npm test --prefix plugins/pi-sasy-guard   # Node 22.19+, no install needed
 make pi-guard-demo                        # scripted model, real pi session
 ```

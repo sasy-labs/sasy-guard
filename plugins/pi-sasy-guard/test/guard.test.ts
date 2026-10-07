@@ -390,6 +390,20 @@ test("an ask opens a pi dialog whose default blocks; declining or having no UI b
   assert.equal(headless.ui.confirms, 0);
 });
 
+test("a declined ! command is recorded by its check's id; an approved one is not", async () => {
+  answer = ask("[SASY] hidden instructions are in context");
+  const decline = harness({ confirm: false });
+  const out = (await decline.fire("user_bash", { type: "user_bash", command: "ls", excludeFromContext: false, cwd: "/w" })) as {
+    result: { exitCode: number };
+  };
+  assert.equal(out.result.exitCode, 1);
+  const check = requests.filter((r) => r.path === "/v1/pretooluse").at(-1)!;
+  assert.deepEqual(decline.appended, [{ customType: "sasy-guard", data: { rejected: [check.body.tool_use_id] } }]);
+  const approve = harness({ confirm: true });
+  assert.equal(await approve.fire("user_bash", { type: "user_bash", command: "ls", excludeFromContext: false, cwd: "/w" }), undefined);
+  assert.deepEqual(approve.appended, []);
+});
+
 test("a dialog that fails blocks the call and records it as never run", async () => {
   const h = harness({ dialogFails: true });
   answer = ask("[SASY] needs review");
