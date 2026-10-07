@@ -143,8 +143,9 @@ export function createGuard(opts: GuardOptions = {}) {
           if (parts.length === 0) parts.push([]);
           let restarted = false;
           for (const [i, part] of parts.entries()) {
-            restarted =
-              (await postOk("/v1/session/events", {
+            // A restart is remembered at once: if a later batch fails, the next
+            // push must still resend the whole branch.
+            if (await postOk("/v1/session/events", {
                 session_id: sessionId(ctx),
                 cwd: ctx.cwd,
                 ...sessionFile(ctx),
@@ -152,7 +153,10 @@ export function createGuard(opts: GuardOptions = {}) {
                 ...(generation ? { generation } : {}),
                 entries: part,
                 reset: jumped && i === 0,
-              })) || restarted;
+              })) {
+              restarted = true;
+              resetOwed = true;
+            }
             for (const e of part as { id: string }[]) sent.add(e.id);
           }
           if (!restarted) {

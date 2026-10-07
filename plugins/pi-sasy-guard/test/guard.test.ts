@@ -217,6 +217,37 @@ test("a daemon that restarts again during the resend blocks the call", async () 
   assert.deepEqual((pushes[0].body.entries as { id: string }[]).map((e) => e.id), ["e1", "e2", "g1"]);
 });
 
+test("a restart seen mid-push leads to a full resend even if a later batch fails", async () => {
+  const h = harness();
+  // Three entries too large to share a request: three batches.
+  const big = (id: string, parentId: string | null) => ({ id, parentId, type: "message", message: { role: "user", content: "b".repeat(MAX_PUSH_BYTES / 2) } });
+  h.entries.push(big("e1", null), big("e2", "e1"), big("e3", "e2"));
+  // Registration and batch 1 reach run A, batch 2 a restarted run B, batch 3 fails.
+  // Answers, in order: registration (1), batch 1 (2), batch 2 (3), batch 3 (4).
+  let answers = 0;
+  sessionAnswer = {
+    get ok() {
+      answers++;
+      return answers !== 4;
+    },
+    get instance() {
+      return answers <= 2 ? "run-a" : "run-b";
+    },
+    generation: "gen-1",
+  };
+  const out = (await h.fire("tool_call", curl)) as { block: boolean; reason: string };
+  assert.equal(out.block, true);
+  assert.match(out.reason, /did not accept/);
+  assert.equal(answers, 4);
+  // Run B settles: the next push resends the whole branch as a reset.
+  sessionAnswer = { ok: true, instance: "run-b", generation: "gen-1" };
+  requests = [];
+  await h.fire("tool_call", curl);
+  const first = requests.find((r) => r.path === "/v1/session/events")!;
+  assert.equal(first.body.reset, true);
+  assert.deepEqual((first.body.entries as { id: string }[]).map((e) => e.id), ["e1"]);
+});
+
 test("a session answer without the registration's generation blocks the call", async () => {
   const h = harness();
   sessionAnswer = { ok: true, instance: "run-1" };
