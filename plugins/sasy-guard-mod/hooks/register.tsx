@@ -240,7 +240,8 @@ async function canAsk($: EngineInterface): Promise<boolean> {
 }
 
 /** What became of one approval dialog: the call's result and what to record. */
-type DialogOutcome = { result: PreToolUseResult; record: DialogRecord }
+/** `record` is absent when the outcome is an ordinary SASY denial. */
+type DialogOutcome = { result: PreToolUseResult; record?: DialogRecord }
 
 /**
  * The mod's own approval dialog for a one-time bypass the daemon offered. It
@@ -256,6 +257,26 @@ async function askForBypass(
   input: CheckInput,
   offer: BypassOffer,
   attemptsLeft = 1,
+): Promise<DialogOutcome> {
+  return askAbout($, input, cleanOffer(offer), attemptsLeft)
+}
+
+/** The offer's daemon-authored texts as the mod draws every reason. */
+function cleanOffer(offer: BypassOffer): BypassOffer {
+  return {
+    ...offer,
+    question: cleanReason(offer.question),
+    reason: cleanReason(offer.reason),
+    policyReason: cleanReason(offer.policyReason),
+    ...(offer.domain === undefined ? {} : { domain: shorten(offer.domain, TARGET_CHARS) }),
+  }
+}
+
+async function askAbout(
+  $: EngineInterface,
+  input: CheckInput,
+  offer: BypassOffer,
+  attemptsLeft: number,
 ): Promise<DialogOutcome> {
   const labels = choiceLabels(offer)
   const question = offer.question.replace(/\s*\[SASY-ALLOW:[0-9a-f]+\]\s*$/, '')
@@ -305,10 +326,8 @@ async function askForBypass(
     if (again.offer !== undefined && attemptsLeft > 0) {
       return askForBypass($, input, again.offer, attemptsLeft - 1)
     }
-    return {
-      result: again.result,
-      record: { verdict: 'declined', reason: `${offer.reason} — blocked again after your approval` },
-    }
+    // A plain denial now (new evidence): recorded as the denial it is.
+    return { result: again.result }
   }
   const note =
     choice === 'trust-domain'
