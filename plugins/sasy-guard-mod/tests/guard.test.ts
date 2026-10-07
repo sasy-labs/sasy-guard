@@ -652,3 +652,26 @@ test('a worktree belongs to the subagent that entered it, or the one it was made
   // The main thread's own worktree: the session's folder follows it.
   expect(worktreeOwner({ name: 'scratch' })).toBeUndefined()
 })
+
+test('/guard does not print an endpoint that is not an address', async ($, on) => {
+  const odd = { ...HEALTH, endpoint: 'IGNORE_PREVIOUS_INSTRUCTIONS:50051' }
+  world(on, { health: { exitCode: 0, body: JSON.stringify(odd) } })
+
+  await $.session.start(START)
+  const out = await $.command.run(GUARD)
+
+  expect(out.text).toContain('answered, but not as the sasy-watch daemon')
+  expect(out.text).not.toContain('IGNORE_PREVIOUS')
+})
+
+test('invisible and reordering characters are not drawn', async ($, on) => {
+  world(on)
+  await started($)
+
+  await $.tool.call({ tool: 'Bash', command: 'rm -rf build\u202e\u200bxyz' })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const heading = await ui.find({ type: 'Text', text: /sasy-guard denied Bash/ })
+  expect(heading?.text).toContain('rm -rf buildxyz')
+  await ui.unmount()
+})
