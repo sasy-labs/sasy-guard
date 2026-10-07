@@ -22,7 +22,7 @@ import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
 import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
 import type { FeedBuffer, FeedRow } from './feed'
-import { MAX_RESULTS, afterPush, batches, emptyBuffer, enqueue, rowOf, withResults } from './feed'
+import { MAX_RESULTS, afterPush, batches, emptyBuffer, enqueue, readyRows, rowOf, withResults } from './feed'
 import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
 import {
   ENDPOINT,
@@ -461,9 +461,16 @@ async function sendFeed(
     if (ran.exitCode !== 0) {
       return { outcome: UNREACHABLE_CURL_EXITS.includes(ran.exitCode) ? 'unreachable' : 'failed', sent }
     }
-    const { status } = splitStatus(ran.stdout)
+    const { body, status } = splitStatus(ran.stdout)
     if (status === '404') return { outcome: 'unsupported', sent }
-    if (status !== '200') return { outcome: 'failed', sent }
+    // Only the daemon's own acknowledgement counts as delivered.
+    let isAcknowledged = false
+    try {
+      isAcknowledged = status === '200' && (JSON.parse(body) as { ok?: unknown }).ok === true
+    } catch {
+      // Not the daemon's answer.
+    }
+    if (!isAcknowledged) return { outcome: 'failed', sent }
     sent += batch.length
   }
   return { outcome: 'sent', sent }
@@ -562,6 +569,10 @@ export const register: Register = on => {
   let feed: FeedBuffer = emptyBuffer()
   let feedSupported = true
   const toolResults = new Map<string, unknown>()
+  // Tool calls started and not yet finished, by tool_use_id.
+  const running = new Set<string>()
+  // The history push in flight, which the next check waits for.
+  let pushInFlight: Promise<void> | undefined
   const spawns: Record<string, { toolUseId: string; agentType: string }> = {}
   // The totals and decisions as they stood before the last compaction, put
   // back by classic.SessionStart if compaction cleared them.
@@ -715,12 +726,18 @@ export const register: Register = on => {
     const isIsolatedAgent =
       e.tool === 'Agent' && (e as { isolation?: unknown }).isolation === 'worktree'
     if (!isIsolatedAgent && e.agentId === undefined) {
-      const result = await next(e)
-      noteResult(e.tool_use_id, result)
-      return result
+      running.add(e.tool_use_id)
+      try {
+        const result = await next(e)
+        noteResult(e.tool_use_id, result)
+        return result
+      } finally {
+        running.delete(e.tool_use_id)
+      }
     }
     if (isIsolatedAgent) isolatedCalls.add(e.tool_use_id)
     if (e.agentId !== undefined) callerOf.set(e.tool_use_id, e.agentId)
+    running.add(e.tool_use_id)
     try {
       const result = await next(e)
       noteResult(e.tool_use_id, result)
@@ -735,6 +752,7 @@ export const register: Register = on => {
       // The call is over: its spawn, if any, has been recorded.
       isolatedCalls.delete(e.tool_use_id)
       callerOf.delete(e.tool_use_id)
+      running.delete(e.tool_use_id)
     }
   })
 
@@ -788,30 +806,44 @@ export const register: Register = on => {
       // The daemon first gets every row kept since the last push, so the
       // check sees the whole history before it.
       let pushed: FeedOutcome = 'unsupported'
-      if (feedSupported) {
-        const pending = { ...feed, rows: [...feed.rows] }
-        const base = {
-          session_id: input.session_id,
-          cwd: sessionCwd,
-          ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
+      // One push at a time: a check waits for one in flight, then sends what
+      // is left (so two never deliver, or count, the same rows).
+      while (pushInFlight !== undefined) await pushInFlight
+      let release = (): void => {}
+      pushInFlight = new Promise<void>(resolve => (release = resolve))
+      try {
+        if (feedSupported) {
+          // Rows up to the first that reports a tool call still running: its
+          // structured result is not known yet, and no call checked meanwhile
+          // can have seen that row.
+          const ready = readyRows(feed.rows, running)
+          const pending = { ...feed, rows: feed.rows.slice(0, ready) }
+          const base = {
+            session_id: input.session_id,
+            cwd: sessionCwd,
+            ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
+          }
+          const enriched = withResults(pending.rows, toolResults)
+          const sending = enriched.rows
+          const gap = pending.gap > 0 || enriched.gap
+          let { outcome, sent } = await sendFeed($, base, sending, spawns, gap)
+          if (outcome === 'unreachable') {
+            // As for a check: start the daemon once and send everything again (a
+            // new daemon may hold none of it; the daemon skips rows it has).
+            await ensureDaemon($)
+            ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap))
+          }
+          pushed = outcome
+          if (outcome === 'unsupported') {
+            feedSupported = false
+            feed = emptyBuffer()
+          } else {
+            feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
+          }
         }
-        const enriched = withResults(pending.rows, toolResults)
-        const sending = enriched.rows
-        const gap = pending.gap > 0 || enriched.gap
-        let { outcome, sent } = await sendFeed($, base, sending, spawns, gap)
-        if (outcome === 'unreachable') {
-          // As for a check: start the daemon once and send everything again (a
-          // new daemon may hold none of it; the daemon skips rows it has).
-          await ensureDaemon($)
-          ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap))
-        }
-        pushed = outcome
-        if (outcome === 'unsupported') {
-          feedSupported = false
-          feed = emptyBuffer()
-        } else {
-          feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
-        }
+      } finally {
+        pushInFlight = undefined
+        release()
       }
       // Undelivered history is never checked around: the daemon would decide
       // without it. Only an unreachable daemon may fail open, as for a check.
