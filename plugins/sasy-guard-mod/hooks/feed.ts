@@ -150,9 +150,11 @@ export function withResults(
     // One structured result describes one tool result: a row reporting
     // several, or a call still finishing, comes from the transcript.
     if (ids.length > 1 || ids.some(isRunning)) return fromTranscript(row)
-    const found = ids.map(id => results.get(id)).find(r => r !== undefined)
-    if (found === undefined) return row
-    if (found === TOO_LARGE) return fromTranscript(row)
+    if (ids.length === 0) return row
+    // A tool result the mod never saw (the mod reloaded meanwhile, say) comes
+    // from the transcript, as does one too large or deep to send.
+    const found = results.get(ids[0]!)
+    if (found === undefined || found === TOO_LARGE) return fromTranscript(row)
     const enriched = { ...row, toolUseResult: found }
     return sizeOf(enriched) <= MAX_BATCH_BYTES ? enriched : fromTranscript(row)
   })

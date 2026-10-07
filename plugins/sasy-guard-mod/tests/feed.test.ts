@@ -97,3 +97,10 @@ test('rows and results nested deeper than the daemon parses are left to the tran
   table.note('t1', nest(MAX_DEPTH))
   expect(table.get('t1')).toBe(TOO_LARGE)
 })
+
+test('a tool result the mod never saw comes from the transcript; sizes count escapes', () => {
+  const row = { uuid: 'z', message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: 'unseen' }] } }
+  expect(withResults([row], new Map())[0]?.fromTranscript).toBe(true)
+  // A lone surrogate is escaped by JSON.stringify, and counted as sent.
+  expect(utf8Length(JSON.stringify('\ud800'))).toBe(8)
+})
