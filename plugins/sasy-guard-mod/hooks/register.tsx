@@ -314,9 +314,18 @@ async function askAbout(
     }
   }
   if (!isRecorded) {
+    // No answer is not proof that nothing changed: the daemon may have applied
+    // the choice before the connection failed, so say both.
+    const maybeTrusted =
+      choice === 'trust-domain'
+        ? [`The SASY daemon may have recorded the user's choice to trust ${offer.domain ?? 'this host'} for this session.`]
+        : []
     return {
-      result: { deny: `[SASY] The approval could not be recorded, so the action stays blocked.\n\n${policy}` },
-      record: { verdict: 'declined', reason: `${offer.reason} — your approval could not be recorded` },
+      result: {
+        deny: `[SASY] The approval could not be confirmed, so the action stays blocked.\n\n${policy}`,
+        ...(maybeTrusted.length === 0 ? {} : { additionalContext: maybeTrusted }),
+      },
+      record: { verdict: 'declined', reason: `${offer.reason} — your choice could not be confirmed (it may still have taken effect)` },
     }
   }
   // What the user chose here, kept in the record whatever follows: a trusted
@@ -331,8 +340,16 @@ async function askAbout(
         'of this session.'
       : undefined
   const again = await checkCall($, input)
+  // The re-check's own verdict (a new ask, or a plain denial on new evidence),
+  // recorded after what the user chose, which the model is also told of.
+  const after = (verdict: GuardVerdict, text: string): DialogOutcome => ({
+    result: trustNote
+      ? { ...again.result, additionalContext: [...(again.result.additionalContext ?? []), trustNote] }
+      : again.result,
+    record: { verdict, reason: `${chosen}; then ${cleanReason(text.slice(Math.max(text.indexOf(MARKER), 0)).replace(MARKER, ''))}` },
+  })
   // A new approval requirement: Claude Code asks the user, as for any ask.
-  if (again.result.ask !== undefined) return { result: again.result }
+  if (again.result.ask !== undefined) return after('ask', again.result.ask)
   if (again.result.deny !== undefined) {
     // The decision's grounds changed since the question: ask about the new one.
     if (again.offer !== undefined && attemptsLeft > 0) {
@@ -370,7 +387,7 @@ async function askAbout(
       }
     }
     // A plain denial now (new evidence): recorded as the denial it is.
-    return { result: again.result }
+    return after('deny', again.result.deny)
   }
   const note = trustNote
     ? `${trustNote} This action may proceed.`
@@ -451,7 +468,7 @@ function decisionLines(d: GuardDecision, isWhole: boolean): string[] {
 
 /** What the mod's own dialog came to, for the record: the offer the user
  *  answered (its reason) and whether they approved. */
-type DialogRecord = { verdict: 'approved' | 'declined'; reason: string }
+type DialogRecord = { verdict: GuardVerdict; reason: string }
 
 /** Counts one checked call and keeps it when it carries a [SASY] verdict, or
  *  when the mod's own dialog asked the user about it. */

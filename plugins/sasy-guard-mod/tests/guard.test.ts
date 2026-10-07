@@ -926,10 +926,10 @@ test('a plain denial on the re-check after approval is recorded as a denial', as
   const call = await $.tool.call({ tool: 'Bash', command: CURL_SH })
 
   expect(call.deny ?? call.text).toContain('now known to be malicious')
-  expect(w.lines.at(-1)).toBe('1 checked · 1 denied · 0 asked')
+  // The user was asked, and the call is denied.
+  expect(w.lines.at(-1)).toBe('1 checked · 1 denied · 1 asked')
   const out = await $.command.run(GUARD)
-  expect(out.text).toContain('now known to be malicious')
-  expect(out.text).not.toContain('blocked again after your approval')
+  expect(out.text).toContain('you approved it once; then The installer is now known to be malicious')
 })
 
 test('a decision that changes again after two approvals stays blocked, recorded as asked', async ($, on) => {
