@@ -53,7 +53,7 @@ calls are not checked (as with the hook plugin).
 
 ## Requirements and limits
 
-- Claude Code v2.1.287 or later. The status entry, band and `/guard` output are
+- Claude Code v2.1.289 or later. The status entry, band and `/guard` output are
   drawn in the terminal and the Desktop Code tab; the VS Code chat panel and
   `claude -p` draw nothing, but the mod still checks every call there.
 - Where mods are blocked (`allowManagedModsOnly`, `disableAllHooks`) the mod does

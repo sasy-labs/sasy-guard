@@ -41,7 +41,7 @@ other**: with both, every tool call is checked twice.
    If the sasy-guard plugin is installed, turn it off:
    `claude plugin disable sasy-guard`.
 
-3. **Run Claude Code** (v2.1.287 or later) in your project:
+3. **Run Claude Code** (v2.1.289 or later) in your project:
 
    ```bash
    claude
@@ -137,7 +137,7 @@ That happens when:
 | Checks every tool call | yes | yes, except where it fails closed (see above) |
 | Subagents in their own git worktree | checked | refused |
 | Shows decisions in the session | no | status entry, band, `/guard` |
-| Claude Code version | any with hooks | v2.1.287 or later |
+| Claude Code version | any with hooks | v2.1.289 or later |
 | Where an organization blocks user mods | works | does not load |
 | Per-project setup with `sasy-guard enable` | yes | no (plugin install only) |
 

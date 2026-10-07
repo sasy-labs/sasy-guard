@@ -49,13 +49,14 @@ export function worktreeAgentId(name: string): string | undefined {
 }
 
 /**
- * The subagent a WorktreeCreate puts in a folder of its own, if any: the one
- * that entered it (its `agent_id`, as for EnterWorktree under any name), else
- * the isolated subagent its `agent-<id>` name was made for. None for the main
- * thread's own worktree, which the session's folder follows.
+ * The isolated subagent a WorktreeCreate was made for, from its `agent-<id>`
+ * name. None when the event carries an `agent_id`: a subagent entering a
+ * worktree itself (EnterWorktree) is handled at that tool call, once it
+ * succeeds. None for the main thread's own worktree, which the session's
+ * folder follows.
  */
-export function worktreeOwner(event: { name?: unknown; agent_id?: unknown }): string | undefined {
-  if (typeof event.agent_id === 'string' && event.agent_id !== '') return event.agent_id
+export function isolatedWorktreeAgent(event: { name?: unknown; agent_id?: unknown }): string | undefined {
+  if (typeof event.agent_id === 'string' && event.agent_id !== '') return undefined
   return typeof event.name === 'string' ? worktreeAgentId(event.name) : undefined
 }
 

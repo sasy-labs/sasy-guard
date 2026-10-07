@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 
-import { addSpawn, attribute, markUnattributable, worktreeAgentId, worktreeOwner } from '../hooks/agents'
+import { addSpawn, attribute, markUnattributable, worktreeAgentId, isolatedWorktreeAgent } from '../hooks/agents'
 import { carryOver } from '../hooks/carry'
 import { combine, denyWith, parseAnswer, toResult } from '../hooks/enforce'
 
@@ -810,12 +810,13 @@ test('only the daemon\'s own offer shape is a bypass offer', () => {
   expect(parseAnswer(JSON.stringify({ sasyApproval: offer }))).toBeUndefined()
 })
 
-test('a worktree belongs to the subagent that entered it, or the one it was made for', () => {
-  expect(worktreeOwner({ name: 'scratch', agent_id: 'a1' })).toBe('a1')
-  expect(worktreeOwner({ name: 'agent-adf75aa4c2affa6f1' })).toBe('adf75aa4c2affa6f1')
-  expect(worktreeOwner({ name: 'agent-adf75aa4c2affa6f1', agent_id: 'a9' })).toBe('a9')
+test('a worktree named for an isolated subagent marks that subagent', () => {
+  expect(isolatedWorktreeAgent({ name: 'agent-adf75aa4c2affa6f1' })).toBe('adf75aa4c2affa6f1')
+  // A subagent entering a worktree itself is handled at its EnterWorktree call.
+  expect(isolatedWorktreeAgent({ name: 'scratch', agent_id: 'a1' })).toBeUndefined()
+  expect(isolatedWorktreeAgent({ name: 'agent-adf75aa4c2affa6f1', agent_id: 'a9' })).toBeUndefined()
   // The main thread's own worktree: the session's folder follows it.
-  expect(worktreeOwner({ name: 'scratch' })).toBeUndefined()
+  expect(isolatedWorktreeAgent({ name: 'scratch' })).toBeUndefined()
 })
 
 test('/guard does not print an endpoint that is not an address', async ($, on) => {
@@ -837,6 +838,16 @@ test('/guard prints a host-name endpoint', async ($, on) => {
   const out = await $.command.run(GUARD)
 
   expect(out.text).toContain('sasy.fly.dev:443')
+})
+
+test('/guard prints a one-label host-name endpoint', async ($, on) => {
+  const local = { ...HEALTH, endpoint: 'x:50051' }
+  world(on, { health: { exitCode: 0, body: JSON.stringify(local) } })
+
+  await $.session.start(START)
+  const out = await $.command.run(GUARD)
+
+  expect(out.text).toContain('x:50051')
 })
 
 test('invisible and reordering characters are not drawn', async ($, on) => {
