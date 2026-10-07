@@ -69,6 +69,9 @@ const MAX_EARLY = 200
 const HEALTH_TIMEOUT_MS = 3000
 /** How long a history push waits for a reported tool call to finish. */
 const RESULT_WAIT_MS = 5000
+/** The denial for a check whose history did not reach the daemon. */
+const HISTORY_UNSENT =
+  '[SASY] security check unavailable: the session history could not be sent to the sasy-watch daemon'
 /** Pushes before a check: the first, then rounds for rows kept meanwhile. */
 const MAX_PUSH_ROUNDS = 3
 /** The most time a check spends sending history, all rounds included: room
@@ -853,16 +856,22 @@ export const register: Register = on => {
       // every row kept since the last push, so it decides on the whole history.
       const check = async (checked: CheckInput): Promise<CheckAnswer> => {
         let pushed: FeedOutcome = 'unsupported'
+        // All of a check's pushing, its wait for another's included, has one
+        // deadline: a stalled daemon cannot hold queued calls for longer.
+        const deadline = (await $.clock.now()) + PUSH_DEADLINE_MS
         // One push at a time: a check waits for one in flight, then sends what
         // is left (so two never deliver, or count, the same rows).
-        while (pushInFlight !== undefined) await pushInFlight
+        while (pushInFlight !== undefined) {
+          const left = deadline - (await $.clock.now())
+          if (left <= 0) return { result: { deny: HISTORY_UNSENT } }
+          await Promise.race([pushInFlight, $.clock.sleep(left)])
+        }
         let release = (): void => {}
         pushInFlight = new Promise<void>(resolve => (release = resolve))
         try {
           // Rows kept while a push ran go out before the check too (a few
           // rounds at most); a session change while a push ran ends it.
           const generation = feedGeneration
-          const deadline = (await $.clock.now()) + PUSH_DEADLINE_MS
           for (let round = 0; round < MAX_PUSH_ROUNDS && feedSupported; round++) {
             if (round > 0 && (pushed !== 'sent' || (feed.rows.length === 0 && feed.gap === 0))) break
             // A row reporting a tool call still running waits, briefly, for
@@ -911,13 +920,7 @@ export const register: Register = on => {
         if (pushed === 'sent' && feedSupported && (feed.rows.length > 0 || feed.gap > 0)) pushed = 'failed'
         if (pushed === 'sent' || pushed === 'unsupported') return checkCall($, checked)
         if (pushed === 'unreachable' && (await failsOpen($))) return { result: {} }
-        return {
-          result: {
-            deny:
-              '[SASY] security check unavailable: the session history could not be sent ' +
-              'to the sasy-watch daemon',
-          },
-        }
+        return { result: { deny: HISTORY_UNSENT } }
       }
       const answer = await check(input)
       // A one-time bypass on offer: ask the user here, holding the call, where
