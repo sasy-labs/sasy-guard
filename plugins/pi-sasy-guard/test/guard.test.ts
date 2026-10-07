@@ -25,7 +25,7 @@ let home: string;
 let requests: Req[] = [];
 let answer: Answer = {};
 /** What the fake daemon answers on /v1/session/* routes. */
-let sessionAnswer: Answer = { ok: true, instance: "run-1" };
+let sessionAnswer: Answer = { ok: true, instance: "run-1", generation: "gen-1" };
 
 before(async () => {
   home = mkdtempSync(join(tmpdir(), "pi-sasy-guard-"));
@@ -56,7 +56,7 @@ after(async () => {
 beforeEach(() => {
   requests = [];
   answer = {};
-  sessionAnswer = { ok: true, instance: "run-1" };
+  sessionAnswer = { ok: true, instance: "run-1", generation: "gen-1" };
 });
 
 const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } });
@@ -144,6 +144,8 @@ test("a denial blocks the call with the policy's reason and shows it", async () 
   });
   // The session file rides on every push, so a restarted daemon can rebuild from it.
   assert.equal(requests[1].body.pi_session_file, file);
+  // Pushes name this process's registration, so the daemon can refuse a late one.
+  assert.equal(requests[1].body.generation, "gen-1");
   // The blocked call is also recorded in the session, out of the model's context.
   assert.deepEqual(h.appended, [{ customType: "sasy-guard", data: { rejected: ["c2"] } }]);
   // The blocked call is reported as never run on the next push; e1 is not re-sent.

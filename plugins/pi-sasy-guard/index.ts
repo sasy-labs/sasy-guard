@@ -64,6 +64,9 @@ export function createGuard(opts: GuardOptions = {}) {
 
     /** The daemon run the session's history was last pushed to. */
     let instance: string | undefined;
+    /** This process's registration of the session, as the daemon names it;
+     *  pushes carry it so the daemon can refuse a late push from an earlier one. */
+    let generation: string | undefined;
     /** Push sequence numbers grow with the clock, so they keep growing across
      *  pi restarts that resume a session against the same daemon. */
     let lastSeq = 0;
@@ -75,12 +78,13 @@ export function createGuard(opts: GuardOptions = {}) {
      * and lost the session), in which case the caller resends the whole branch.
      */
     async function postOk(path: string, body: unknown): Promise<boolean> {
-      const out = (await client.postEnsuring(path, body)) as { ok?: unknown; instance?: unknown } | null;
+      const out = (await client.postEnsuring(path, body)) as { ok?: unknown; instance?: unknown; generation?: unknown } | null;
       if (!out || out.ok !== true) throw new Error(`sasy-watch did not accept ${path}`);
       // Without the daemon's run id a restart could go unnoticed: no answer.
       if (typeof out.instance !== "string" || out.instance === "") throw new Error(`sasy-watch did not name its run on ${path}`);
       const changed = instance !== undefined && out.instance !== instance;
       instance = out.instance;
+      if (typeof out.generation === "string") generation = out.generation;
       return changed;
     }
 
@@ -138,6 +142,7 @@ export function createGuard(opts: GuardOptions = {}) {
                 cwd: ctx.cwd,
                 ...sessionFile(ctx),
                 seq: nextSeq(),
+                ...(generation ? { generation } : {}),
                 entries: part,
                 rejected_tool_call_ids: i === 0 ? reported : [],
                 reset: jumped && i === 0,
@@ -261,6 +266,7 @@ export function createGuard(opts: GuardOptions = {}) {
     pi.on("session_start", async (_event, ctx) => {
       sent = new Set();
       lastLeaf = null;
+      generation = undefined;
       rejected = [];
       counts = { checked: 0, denied: 0, asked: 0 };
       decisions = [];
