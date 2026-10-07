@@ -71,9 +71,11 @@ claude --dangerously-skip-permissions
 ```
 
 The last line starts Claude Code with its own permission checks turned off
-(no permission prompts, no auto mode). With those checks on, Claude Code may
-stop or ask about a risky command before the guard ever sees it, and then you
-are testing Claude Code rather than the guard.
+(no permission prompts, no auto mode). The guard checks every command either
+way, but the two-step tests below need their harmless first step (reading
+`.env`, fetching a page) to actually run, and Claude Code's own checks may ask
+about it or block it. The flag keeps those steps from stalling, so what you see
+is the guard's decision.
 
 Turning the checks off is a real risk: the folder is not a sandbox, so the
 session can still reach your other files and the network, and the guard is the
@@ -81,9 +83,10 @@ only thing checking each command. Use it only for the prompts below, and quit
 the session (`/exit`) when you are done. For everyday work, start Claude Code
 the way you normally do.
 
-Your own hooks still run in this session. If one of yours blocks commands such
-as `rm` or reading `.env`, it may answer before the guard does, and that row
-then shows your hook's message instead of the guard's.
+Your own hooks still run in this session, after the guard. They cannot undo a
+guard denial, but one that blocks, say, reading `.env` stops the first step of
+the `toxic_flow` test, so the second step has nothing to react to. Turn such a
+hook off for the test, or expect that row to differ.
 
 Then type these prompts. Each denial shows in the band and the status entry,
 and `/guard` lists it. For `curl_sh`, the denial carries a one-time bypass:
