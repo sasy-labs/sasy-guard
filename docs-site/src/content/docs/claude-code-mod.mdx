@@ -81,6 +81,33 @@ It also shows its decisions in the session:
   whether the daemon is running, which policy engine it uses and its fail mode,
   this session's totals, and the five most recent decisions, the newest in full.
 
+## Session history
+
+Some rules judge a call by what came before it in the session. The
+`toxic_flow` rule, for example, blocks a network upload when a secret file was
+read earlier, because the upload could carry the secret out. To apply such
+rules, the daemon keeps the session's history: each prompt, each reply from
+Claude, and each tool result.
+
+With the hook plugin, the daemon learns that history by reading the session's
+transcript (the file where Claude Code records the conversation) as it grows.
+The mod sends the history itself. Every row Claude Code keeps is collected and
+sent to the daemon just before the next check, so the daemon has the whole
+history when it decides. The mod also adds what the transcript records beside a
+row: the folder it ran in and the full result of the tool call it reports.
+
+- A daemon that does not accept the history (the released `sasy-watch`) keeps
+  reading the transcript. The mod finds this out at its first check and stops
+  sending.
+- If the daemon refuses the history, the call is blocked and the rows are sent
+  again before the next check.
+- The daemon still reads the transcript once when a session starts, after
+  `--resume` and after the daemon restarts: those load earlier history rather
+  than add to it.
+- When you rewind the conversation to an earlier point, the history sent by
+  the mod does not show the rewind. The abandoned turns stay in the daemon's
+  history, which can only make its decisions more cautious.
+
 ## One-time approvals
 
 Some rules ask before a call runs rather than refusing it outright, for example
@@ -137,6 +164,7 @@ That happens when:
 | Checks every tool call | yes | yes, except where it fails closed (see above) |
 | Subagents in their own git worktree | checked | refused |
 | Shows decisions in the session | no | status entry, band, `/guard` |
+| How the daemon learns the session history | reads the transcript | sent by the mod before each check |
 | Claude Code version | any with hooks | v2.1.289 or later |
 | Where an organization blocks user mods | works | does not load |
 | Per-project setup with `sasy-guard enable` | yes | no (plugin install only) |
