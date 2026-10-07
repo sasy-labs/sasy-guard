@@ -78,9 +78,10 @@ possible, the extension sends the daemon each new entry of pi's session
 <Aside type="caution" title="Runtime version">
 The pi extension needs a `sasy-watch` daemon that accepts pi's sessions and tool
 calls, which the runtime releases after 0.2.0 include. The 0.2.0 runtime
-predates this support. Against it, the daemon refuses the extension's requests,
-so the extension blocks every tool call, because it treats a check that gets no
-answer as a denial. `uv tool install sasy-guard` installs the latest release;
+predates this support: its daemon does not write the hook token the extension
+sends with each request. The footer then adds `daemon did not answer`, and the
+extension blocks every tool call with `[SASY] security check unavailable`,
+because it treats a check that gets no answer as a denial. `uv tool install sasy-guard` installs the latest release;
 `uv tool upgrade sasy-guard` then `sasy-guard install` moves an existing install
 to it.
 </Aside>
