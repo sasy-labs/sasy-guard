@@ -51,6 +51,8 @@ const isExactly = (labels: unknown[], expected: string[]): boolean =>
 /** A host the daemon names for session trust, as it derives one: 3 to 253
  *  characters of [a-z0-9.-], with at least one dot between labels. */
 const DOMAIN = /^(?=.{3,253}$)[a-z0-9-]+(\.[a-z0-9-]+)+$/
+/** The daemon's routing tag, which ends every question it asks. */
+const ROUTING_TAG = /\[SASY-ALLOW:[0-9a-f]+\]$/
 
 /** The `sasyApproval` field of a daemon answer, or undefined when it is not one. */
 function offerOf(value: unknown): BypassOffer | undefined {
@@ -58,7 +60,7 @@ function offerOf(value: unknown): BypassOffer | undefined {
   const { question, labels, reason, policyReason, domain, ...unknown } = value
   const isValid =
     Object.keys(unknown).length === 0 &&
-    typeof question === 'string' && question !== '' &&
+    typeof question === 'string' && ROUTING_TAG.test(question) &&
     typeof reason === 'string' &&
     typeof policyReason === 'string' &&
     Array.isArray(labels) &&
