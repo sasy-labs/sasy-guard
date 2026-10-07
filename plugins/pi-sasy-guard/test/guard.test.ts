@@ -200,6 +200,14 @@ test("a daemon that restarts again during the resend blocks the call", async () 
   const out = (await h.fire("tool_call", curl)) as { block: boolean; reason: string };
   assert.equal(out.block, true);
   assert.match(out.reason, /restarted while the session was being resent/);
+  // The daemon settles: the next push resends the whole branch as a reset,
+  // since the daemon may hold only part of it.
+  sessionAnswer = { ok: true, instance: "run-settled", generation: "gen-y" };
+  requests = [];
+  await h.fire("tool_call", curl);
+  const pushes = requests.filter((r) => r.path === "/v1/session/events");
+  assert.equal(pushes[0].body.reset, true);
+  assert.deepEqual((pushes[0].body.entries as { id: string }[]).map((e) => e.id), ["e1", "e2"]);
 });
 
 test("a session answer without the registration's generation blocks the call", async () => {

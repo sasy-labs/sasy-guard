@@ -49,6 +49,9 @@ export function createGuard(opts: GuardOptions = {}) {
     let sent = new Set<string>();
     /** The leaf of the branch last pushed, to notice pi moving to another branch. */
     let lastLeaf: string | null = null;
+    /** The daemon may hold part of the branch only (it restarted mid-resend):
+     *  the next push resends the whole branch as a reset. */
+    let resetOwed = false;
     let rejected: string[] = [];
     let counts: Counts = { checked: 0, denied: 0, asked: 0 };
     let decisions: DecisionRecord[] = [];
@@ -127,6 +130,7 @@ export function createGuard(opts: GuardOptions = {}) {
           // On the second pass the daemon is a new run: resend everything as a reset.
           const jumped =
             pass === 1 ||
+            resetOwed ||
             (lastLeaf !== null && (firstFresh ? (firstFresh.parentId ?? null) !== lastLeaf : leaf !== lastLeaf));
           // Whatever goes, the branches its summaries describe go before it (those
           // the daemon has not seen, unless this is a reset that rebuilds it all).
@@ -153,6 +157,7 @@ export function createGuard(opts: GuardOptions = {}) {
             for (const e of part as { id: string }[]) sent.add(e.id);
           }
           if (!restarted) {
+            resetOwed = false;
             lastLeaf = leaf;
             rejected = rejected.filter((id) => !reported.includes(id));
             return;
@@ -161,6 +166,7 @@ export function createGuard(opts: GuardOptions = {}) {
           lastLeaf = null;
         }
         // The daemon restarted again during the resend: its history may be partial.
+        resetOwed = true;
         throw new Error("sasy-watch restarted while the session was being resent");
       });
       pushChain = run.catch(() => {});
