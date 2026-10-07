@@ -110,6 +110,8 @@ type WorldOptions = {
   hasAuthFile?: boolean
   /** Path endings of the sasy-watch binaries and sources that exist. */
   watchFiles?: string[]
+  /** Path endings of those whose `ensure` succeeds (none unless given). */
+  ensureOk?: string[]
   /** The HTTP status the daemon answers history pushes with (404 unless
    *  given: a released daemon, which has no such route). */
   feedStatus?: string
@@ -230,7 +232,9 @@ function world(on: On, options: WorldOptions = {}): World {
       const h = options.health ?? { exitCode: 0, body: JSON.stringify(HEALTH) }
       return h.exitCode === 0 ? ran(0, `${h.body}\n${h.status ?? '200'}`) : ran(h.exitCode, '')
     }
-    return ran(1, '') // sasy-watch ensure: not installed in the test
+    // sasy-watch ensure: fails unless the test names the binary as working.
+    const isOk = argv.includes('ensure') && (options.ensureOk ?? []).some(f => argv.some(a => a.endsWith(f)))
+    return ran(isOk ? 0 : 1, '')
   })
   on('classic.SessionStart', () => ({}))
   on('classic.PostToolUse', () => ({}))
@@ -898,4 +902,16 @@ test('the daemon hears the host entrypoint, the terminal and the permission mode
   expect(argv).toContain('x-claude-code-entrypoint: cli')
   expect(argv).toContain('x-claude-code-term-program: iTerm.app')
   expect(w.checks[0]?.permission_mode).toBe('acceptEdits')
+})
+
+test('a sasy-watch that will not run is skipped for the next one, as lib.sh does', async ($, on) => {
+  const w = world(on, {
+    lifecycleExit: 7,
+    env: { SASY_WATCH_BIN: '/opt/stale/sasy-watch' },
+    watchFiles: ['/opt/stale/sasy-watch', '/.sasy/bin/sasy-watch', '/packages/claude-code/dist/sasy-watch'],
+    ensureOk: ['/.sasy/bin/sasy-watch'],
+  })
+  await $.classic.SessionStart({ source: 'startup' })
+  const tried = w.argvs.filter(a => a.includes('ensure')).map(a => a[0])
+  expect(tried).toEqual(['/opt/stale/sasy-watch', expect.stringMatching(/\/\.sasy\/bin\/sasy-watch$/)])
 })

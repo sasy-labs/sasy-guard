@@ -14,7 +14,8 @@ Both talk to the same local `sasy-watch` daemon and policy engine, installed by
 
 - **Session start**: starts the daemon if it is down (found as the hook
   plugin's `lib.sh` finds it: `SASY_WATCH_BIN`, the installed binary, then a
-  development checkout's build or source), registers the session
+  development checkout's build or source, skipping one that does not run),
+  registers the session
   (`/v1/session/start`), and tells the model that denials carry a `[SASY]`
   reason to relay.
 - **Each tool call** (`classic.PreToolUse`): sends the daemon the same request

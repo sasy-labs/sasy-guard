@@ -147,28 +147,37 @@ async function isFile($: EngineInterface, path: string): Promise<boolean> {
 }
 
 /**
- * The command that runs sasy-watch, found as the hook plugin's `lib.sh` finds
- * it: SASY_WATCH_BIN, the installed binary, then a development checkout's
- * compiled binary, then bun running its source.
+ * The commands that may run sasy-watch, in the order the hook plugin's
+ * `lib.sh` tries them: SASY_WATCH_BIN, the installed binary, a development
+ * checkout's compiled binary, then bun running its source. Only files that
+ * exist are listed.
  */
-async function watchCommand($: EngineInterface): Promise<string[] | undefined> {
-  const explicit = await $.env.get('SASY_WATCH_BIN')
-  if (explicit && (await isFile($, explicit))) return [explicit]
-  const installed = `${await sasyHome($)}/bin/sasy-watch`
-  if (await isFile($, installed)) return [installed]
+async function watchCommands($: EngineInterface): Promise<string[][]> {
   const dev = `${$.plugin.root}/../../packages/claude-code`
-  if (await isFile($, `${dev}/dist/sasy-watch`)) return [`${dev}/dist/sasy-watch`]
-  if (await isFile($, `${dev}/src/main.ts`)) return ['bun', `${dev}/src/main.ts`]
-  return undefined
+  const candidates: [string, string[]][] = [
+    [`${await sasyHome($)}/bin/sasy-watch`, []],
+    [`${dev}/dist/sasy-watch`, []],
+    [`${dev}/src/main.ts`, ['bun']],
+  ]
+  const explicit = await $.env.get('SASY_WATCH_BIN')
+  if (explicit) candidates.unshift([explicit, []])
+  const found: string[][] = []
+  for (const [path, runner] of candidates) {
+    if (await isFile($, path)) found.push([...runner, path])
+  }
+  return found
 }
 
+/** Starts the daemon with the first command that runs, as `lib.sh` skips a
+ *  binary it cannot execute; with none, the retry then fails closed. */
 async function ensureDaemon($: EngineInterface): Promise<void> {
-  const command = await watchCommand($)
-  if (command === undefined) return // nothing to start: the retry fails closed
-  try {
-    await $.process.run([...command, 'ensure', '--wait-ms', '6000'], { timeoutMs: ENSURE_TIMEOUT_MS })
-  } catch {
-    // It did not start (or bun is missing): the retry then fails closed.
+  for (const command of await watchCommands($)) {
+    try {
+      const ran = await $.process.run([...command, 'ensure', '--wait-ms', '6000'], { timeoutMs: ENSURE_TIMEOUT_MS })
+      if (ran.exitCode === 0) return
+    } catch {
+      // Not executable, or bun is missing: try the next.
+    }
   }
 }
 
@@ -591,11 +600,14 @@ export const register: Register = on => {
   // structured results of finished tool calls (sent with the rows reporting
   // them), what each subagent's spawn said, and whether the daemon takes the
   // feed at all (a released daemon does not; it reads the transcript).
-  // The session's permission mode, from the latest classic event that gives
-  // it (SessionStart, UserPromptSubmit, PostToolUse): PreToolUse does not.
-  let permissionMode: string | undefined
-  const noteMode = (e: { permission_mode?: unknown }): void => {
-    if (typeof e.permission_mode === 'string' && e.permission_mode !== '') permissionMode = e.permission_mode
+  // Each caller's permission mode ("" = the main thread, else the subagent's
+  // id), from the latest classic event that gives it (SessionStart,
+  // UserPromptSubmit, PostToolUse): PreToolUse does not. A subagent's own
+  // definition may set another mode than the session's.
+  const modes = new Map<string, string>()
+  const noteMode = (e: { permission_mode?: unknown; agent_id?: unknown }): void => {
+    if (typeof e.permission_mode !== 'string' || e.permission_mode === '') return
+    modes.set(typeof e.agent_id === 'string' ? e.agent_id : '', e.permission_mode)
   }
   // The session the buffered rows belong to: /clear, /resume and /branch move
   // to another, whose history starts afresh.
@@ -822,6 +834,9 @@ export const register: Register = on => {
       const sessionCwd = await $.session.cwd()
       const cwd = caller.kind === 'agent' ? caller.cwd ?? sessionCwd : sessionCwd
       const agentType = caller.kind === 'agent' ? caller.type : info.agentType
+      // A subagent before its first finished call has no mode of its own yet:
+      // it inherits the session's.
+      const mode = (caller.kind === 'agent' ? modes.get(caller.agentId) : undefined) ?? modes.get('')
       const input: CheckInput = {
         session_id: await $.session.id(),
         tool_name: String(tool),
@@ -831,7 +846,7 @@ export const register: Register = on => {
         ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
         ...(caller.kind === 'agent' ? { agent_id: caller.agentId } : {}),
         ...(agentType === null ? {} : { agent_type: agentType }),
-        ...(permissionMode === undefined ? {} : { permission_mode: permissionMode }),
+        ...(mode === undefined ? {} : { permission_mode: mode }),
         sasy_mod: true,
       }
       // The daemon first gets every row kept since the last push, so the
