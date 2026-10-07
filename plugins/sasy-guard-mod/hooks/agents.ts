@@ -92,7 +92,7 @@ export function attribute(table: AgentTable, agentId: string | undefined): Calle
   if (agentId === undefined) return { kind: 'main' }
   const record = table[agentId]
   if (record === undefined) {
-    return { kind: 'unknown', why: 'a subagent that started before this mod loaded' }
+    return { kind: 'unknown', why: 'an agent this mod did not see start (one started before the mod loaded, or one Claude Code runs itself, such as a preview of a suggested prompt)' }
   }
   if (record.isUnattributable) {
     return { kind: 'unknown', why: WORKTREE_WHY }
