@@ -63,14 +63,15 @@ export function isolatedWorktreeAgent(event: { name?: unknown; agent_id?: unknow
 /**
  * The table with one more subagent. It inherits its parent's folder when its
  * spawn named none, and is unattributable when it runs isolated or its parent
- * is unknown or unattributable. A teammate runs in the session's folder.
+ * is unknown or unattributable. A teammate runs in the folder its spawn named,
+ * never its parent's.
  */
 export function addSpawn(table: AgentTable, spawn: Spawn, isIsolated: boolean): AgentTable {
   const parent = spawn.parentAgentId === undefined ? undefined : table[spawn.parentAgentId]
   const isParentUnknown =
     spawn.parentAgentId !== undefined && (parent === undefined || parent.isUnattributable)
   const inherited = parent?.cwd ?? null
-  const cwd = spawn.isTeammate === true ? null : spawn.cwd ?? inherited
+  const cwd = spawn.isTeammate === true ? spawn.cwd ?? null : spawn.cwd ?? inherited
   const record: AgentRecord = {
     type: spawn.teammateName ?? spawn.subagentType,
     cwd,

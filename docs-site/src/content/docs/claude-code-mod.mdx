@@ -164,7 +164,9 @@ make claude-code-guard-mod-demo GROUP=agent_redirect
 Each run creates a fresh throwaway project in the system temp folder, with a
 git repository of its own and the files the scenarios need, including a fake
 `.env`; with `PROJECT=/path/to/project` it uses that directory and writes no
-files. Run the printed commands in a second terminal,
+fixture files there. The scripted tool calls still run in that project and some
+scenarios edit files, so point `PROJECT` only at a copy you can lose. Run the
+printed commands in a second terminal,
 answer **Yes** to the mock API key, and type any prompt. When the scripted call
 is denied, the band names the call and the policy's reason, the status entry
 counts it, and `/guard` lists it. If the sasy-guard plugin is installed, disable
