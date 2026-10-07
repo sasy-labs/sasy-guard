@@ -2,6 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 
 import { addSpawn, attribute, markUnattributable, worktreeAgentId, worktreeOwner } from '../hooks/agents'
+import { carryOver } from '../hooks/carry'
 import { combine, denyWith, toResult } from '../hooks/enforce'
 
 const DENY_REASON =
@@ -668,10 +669,35 @@ test('invisible and reordering characters are not drawn', async ($, on) => {
   world(on)
   await started($)
 
-  await $.tool.call({ tool: 'Bash', command: 'rm -rf build\u202e\u200bxyz' })
+  await $.tool.call({ tool: 'Bash', command: 'rm -rf build\u202e\u200b\u061c\u00ad\u{e0041}\ufe0fxyz' })
 
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   const heading = await ui.find({ type: 'Text', text: /sasy-guard denied Bash/ })
   expect(heading?.text).toContain('rm -rf buildxyz')
   await ui.unmount()
+})
+
+test('a reset keeps subagents always, and the totals only after compaction', () => {
+  const spawned = addSpawn({}, { agentId: 'a1', subagentType: 'Explore', cwd: '/repo' }, false)
+  const decision = { seq: 1, at: 0, tool: 'Bash', target: 'rm -rf build', verdict: 'deny', reason: 'r' }
+  const kept = {
+    agents: spawned,
+    isolatedEarly: ['w1'],
+    counts: { checked: 3, denied: 1, asked: 0 },
+    decisions: [decision] as never,
+    dismissedSeq: 1,
+  }
+  const reset = { agents: {}, isolatedEarly: [], counts: { checked: 0, denied: 0, asked: 0 }, decisions: [], dismissedSeq: 0 }
+
+  expect(carryOver(kept, reset, 'compact')).toEqual(kept)
+  const cleared = carryOver(kept, reset, 'clear')
+  expect(cleared.agents).toEqual(spawned)
+  expect(cleared.isolatedEarly).toEqual(['w1'])
+  expect(cleared.counts).toEqual(reset.counts)
+  expect(cleared.decisions).toEqual([])
+  // Values recorded since the reset stand: newer agent records win, totals stay.
+  const since = { ...reset, agents: addSpawn({}, { agentId: 'a1', subagentType: 'Plan' }, false), counts: { checked: 1, denied: 0, asked: 0 } }
+  const after = carryOver(kept, since, 'compact')
+  expect(after.agents.a1).toEqual(since.agents.a1)
+  expect(after.counts).toEqual(since.counts)
 })
