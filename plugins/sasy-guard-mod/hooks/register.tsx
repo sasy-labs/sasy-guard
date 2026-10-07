@@ -465,12 +465,14 @@ async function sendFeed(
   const host = await hostHeaders($)
   let sent = 0
   for (const batch of batches(rows).concat(rows.length === 0 && gap ? [[]] : [])) {
-    // One deadline for all of a check's pushing: a slow port holder cannot
-    // hold the call for longer.
-    if ((await $.clock.now()) > deadline) return { outcome: 'failed', sent }
-    const ran = await $.process.run(postArgv(port, auth, '/v1/session/append', 10, 0, host), {
+    // One deadline for all of a check's pushing: each request gets only the
+    // time left, so a slow port holder cannot hold the call for longer.
+    const left = deadline - (await $.clock.now())
+    if (left < 1000) return { outcome: 'failed', sent }
+    const seconds = Math.min(10, Math.floor(left / 1000))
+    const ran = await $.process.run(postArgv(port, auth, '/v1/session/append', seconds, 0, host), {
       stdin: JSON.stringify({ ...base, rows: batch, agents: agentsOf(batch, agents), gap: gap && sent === 0 }),
-      timeoutMs: 13_000,
+      timeoutMs: seconds * 1000 + 500,
     })
     if (ran.exitCode !== 0) {
       return { outcome: UNREACHABLE_CURL_EXITS.includes(ran.exitCode) ? 'unreachable' : 'failed', sent }
@@ -872,7 +874,7 @@ export const register: Register = on => {
           const generation = feedGeneration
           const deadline = (await $.clock.now()) + PUSH_DEADLINE_MS
           for (let round = 0; round < MAX_PUSH_ROUNDS && feedSupported; round++) {
-            if (round > 0 && (pushed !== 'sent' || feed.rows.length === 0)) break
+            if (round > 0 && (pushed !== 'sent' || (feed.rows.length === 0 && feed.gap === 0))) break
             // A row reporting a tool call still running waits, briefly, for
             // the call to finish and its structured result to be known.
             const waits = reportedCalls(feed.rows).flatMap(id => {
@@ -886,14 +888,12 @@ export const register: Register = on => {
               cwd: sessionCwd,
               ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
             }
-            const enriched = withResults(pending.rows, toolResults)
-            const sending = enriched.rows
-            // A result still unknown: its row goes without it, and the daemon
-            // reads it from the transcript first.
-            const isMissing = reportedCalls(sending).some(id => running.has(id))
-            const gap = pending.gap > 0 || enriched.gap || isMissing
+            // A row the mod cannot give whole goes marked: the daemon takes it
+            // from the transcript (waiting until it is written).
+            const sending = withResults(pending.rows, toolResults, id => running.has(id))
+            const gap = pending.gap > 0
             let { outcome, sent } = await sendFeed($, base, sending, spawns, gap, deadline)
-            if (outcome === 'unreachable') {
+            if (outcome === 'unreachable' && deadline - (await $.clock.now()) > ENSURE_TIMEOUT_MS + 1000) {
               // As for a check: start the daemon once and send everything again
               // (a new daemon may hold none of it; it skips rows it has).
               await ensureDaemon($)
@@ -918,7 +918,7 @@ export const register: Register = on => {
         // Undelivered history is never checked around: the daemon would decide
         // without it (also rows still arriving after the last round). Only an
         // unreachable daemon may fail open, as for a check.
-        if (pushed === 'sent' && feedSupported && feed.rows.length > 0) pushed = 'failed'
+        if (pushed === 'sent' && feedSupported && (feed.rows.length > 0 || feed.gap > 0)) pushed = 'failed'
         if (pushed === 'sent' || pushed === 'unsupported') return checkCall($, checked)
         if (pushed === 'unreachable' && (await failsOpen($))) return { result: {} }
         return {

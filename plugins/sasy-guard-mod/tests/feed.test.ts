@@ -26,13 +26,15 @@ test('the feed buffer: bounded, split into pushes, and kept across a push', () =
   expect(afterPush({ rows: [], bytes: 0, gap: 2 }, pending, 2, true)).toEqual({ rows: [], bytes: 0, gap: 2 })
   // A tool result row picks up the call's structured result.
   const result = { uuid: 'x', message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: 't1' }] } }
-  expect(withResults([result], new Map([['t1', { exitCode: 0 }]])).rows[0]?.toolUseResult).toEqual({ exitCode: 0 })
+  expect(withResults([result], new Map([['t1', { exitCode: 0 }]]))[0]?.toolUseResult).toEqual({ exitCode: 0 })
   // An errored call's result is a string, and is sent as one.
-  expect(withResults([result], new Map([['t1', 'Error: refused']])).rows[0]?.toolUseResult).toBe('Error: refused')
+  expect(withResults([result], new Map([['t1', 'Error: refused']]))[0]?.toolUseResult).toBe('Error: refused')
   // A result too large for a push is left to the transcript.
   const big = withResults([result], new Map([['t1', { out: '漢'.repeat(1_100_000) }]]))
-  expect(big.rows[0]?.toolUseResult).toBeUndefined()
-  expect(big.gap).toBe(true)
+  expect(big[0]?.toolUseResult).toBeUndefined()
+  expect(big[0]?.fromTranscript).toBe(true)
+  // A call still finishing: its row is taken from the transcript too.
+  expect(withResults([result], new Map(), id => id === 't1')[0]?.fromTranscript).toBe(true)
 })
 
 test('sizes are UTF-8 bytes, as the daemon counts a request body', () => {
@@ -60,12 +62,12 @@ test('the tool calls a push\'s rows report', () => {
 test('a row reporting several tool calls, or a result too large, is left to the transcript', () => {
   const both = { uuid: 'x', message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: 't1' }, { type: 'tool_result', tool_use_id: 't2' }] } }
   const out = withResults([both], new Map<string, unknown>([['t1', 'User rejected tool use'], ['t2', { ok: true }]]))
-  expect(out.rows[0]?.toolUseResult).toBeUndefined()
-  expect(out.gap).toBe(true)
+  expect(out[0]?.toolUseResult).toBeUndefined()
+  expect(out[0]?.fromTranscript).toBe(true)
   const one = { uuid: 'y', message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: 't3' }] } }
   const big = withResults([one], new Map<string, unknown>([['t3', TOO_LARGE]]))
-  expect(big.rows[0]?.toolUseResult).toBeUndefined()
-  expect(big.gap).toBe(true)
+  expect(big[0]?.toolUseResult).toBeUndefined()
+  expect(big[0]?.fromTranscript).toBe(true)
 })
 
 test('the result table is bounded and says how many it dropped', () => {

@@ -13,6 +13,9 @@ export type FeedRow = {
   /** The tool's structured result: an object when it ran, a string when it
    *  errored or was refused (the transcript's `toolUseResult`). */
   toolUseResult?: unknown
+  /** The mod cannot give this row whole (its tool result is unknown here):
+   *  the daemon takes it from the transcript, waiting until it is written. */
+  fromTranscript?: true
 }
 
 /** Rows waiting to be sent, their serialized size, and how many losses of
@@ -138,29 +141,21 @@ function resultIds(row: FeedRow): string[] {
 export function withResults(
   rows: FeedRow[],
   results: { get(id: string): unknown },
-): { rows: FeedRow[]; gap: boolean } {
-  let gap = false
-  const out = rows.map(row => {
+  isRunning: (id: string) => boolean = () => false,
+): FeedRow[] {
+  const fromTranscript = (row: FeedRow): FeedRow => ({ ...row, fromTranscript: true })
+  return rows.map(row => {
     if (row.toolUseResult !== undefined) return row
     const ids = resultIds(row)
-    // One structured result describes one tool result; a row reporting
-    // several cannot carry theirs, so it is read from the transcript.
-    if (ids.length > 1) {
-      gap = true
-      return row
-    }
+    // One structured result describes one tool result: a row reporting
+    // several, or a call still finishing, comes from the transcript.
+    if (ids.length > 1 || ids.some(isRunning)) return fromTranscript(row)
     const found = ids.map(id => results.get(id)).find(r => r !== undefined)
     if (found === undefined) return row
-    if (found === TOO_LARGE) {
-      gap = true
-      return row
-    }
+    if (found === TOO_LARGE) return fromTranscript(row)
     const enriched = { ...row, toolUseResult: found }
-    if (sizeOf(enriched) <= MAX_BATCH_BYTES) return enriched
-    gap = true
-    return row
+    return sizeOf(enriched) <= MAX_BATCH_BYTES ? enriched : fromTranscript(row)
   })
-  return { rows: out, gap }
 }
 
 /** The rows split into pushes the daemon takes, in order (no row is larger
@@ -291,5 +286,6 @@ export type FeedOutcome = 'sent' | 'unsupported' | 'unreachable' | 'failed'
 export const RESULT_WAIT_MS = 5000
 /** Pushes before a check: the first, then rounds for rows kept meanwhile. */
 export const MAX_PUSH_ROUNDS = 3
-/** The most time a check spends sending history, all rounds included. */
-export const PUSH_DEADLINE_MS = 20_000
+/** The most time a check spends sending history, all rounds included: room
+ *  for one timed-out request, one daemon start, and a retry. */
+export const PUSH_DEADLINE_MS = 30_000
