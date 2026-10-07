@@ -1,7 +1,7 @@
-// The policy check's pure parts: the request the mod sends the sasy-watch
-// daemon's /v1/pretooluse route (the settings hook's own payload), and how the
-// daemon's answer becomes a `classic.PreToolUse` result. register.tsx makes the
-// calls, since only it may hold the engine interface.
+// The daemon requests' pure parts: the curl arguments for the sasy-watch
+// daemon's routes (the settings hooks' own payloads), and how the daemon's
+// answer to a policy check becomes a `classic.PreToolUse` result. register.tsx
+// makes the calls, since only it may hold the engine interface.
 import type { PreToolUseResult } from 'claude-code'
 
 export const DEFAULT_PORT = '51711'
@@ -16,25 +16,37 @@ export type CheckInput = {
   tool_use_id: string
   cwd: string
   transcript_path?: string
-  /** A session started with --agent: its agent type, as the hook receives it. */
+  /** A subagent's id, as the hook receives it for a subagent's call. */
+  agent_id?: string
+  /** The caller's agent type: a subagent's, or a session started with --agent. */
   agent_type?: string
 }
 
 /**
- * curl's arguments for one check: bounded in time and size, never via a proxy,
- * the body on stdin, the HTTP status appended on a line of its own. A daemon
- * that authenticates hooks is sent its header file with `-H @file`, so the
- * secret never appears in a process's arguments.
+ * curl's arguments for one POST to the daemon: bounded in time and size, never
+ * via a proxy, the body on stdin, the HTTP status appended on a line of its
+ * own. A daemon that authenticates hooks is sent its header file with
+ * `-H @file`, so the secret never appears in a process's arguments.
  */
-export function checkArgv(port: string, authFile: string | undefined): string[] {
+export function postArgv(
+  port: string,
+  authFile: string | undefined,
+  route: string,
+  maxSeconds: number,
+): string[] {
   return [
-    'curl', '-sS', '--noproxy', '*', '--max-time', '10', '--max-filesize', '1048576',
-    '-X', 'POST', '-H', 'content-type: application/json',
+    'curl', '-sS', '--noproxy', '*', '--max-time', String(maxSeconds),
+    '--max-filesize', '1048576', '-X', 'POST', '-H', 'content-type: application/json',
     '-H', 'x-claude-code-entrypoint: sasy-guard-mod',
     ...(authFile === undefined ? [] : ['-H', `@${authFile}`]),
     '--data-binary', '@-', '--write-out', '\n%{http_code}',
-    `http://127.0.0.1:${port}/v1/pretooluse`,
+    `http://127.0.0.1:${port}${route}`,
   ]
+}
+
+/** curl's arguments for one policy check (/v1/pretooluse). */
+export function checkArgv(port: string, authFile: string | undefined): string[] {
+  return postArgv(port, authFile, '/v1/pretooluse', 10)
 }
 
 /** Splits curl's output into the body and the HTTP status it appended. */

@@ -3,24 +3,6 @@
 # daemon is unreachable (after one respawn attempt), block the tool.
 . "$(dirname "$0")/lib.sh"
 
-# The plugin's mod checks a call itself before this hook runs and lists the
-# calls it checked in SASY_GUARD_MOD_CHECKED (space-separated tool_use_ids).
-# Stand aside for exactly those, so a call is checked once; any other call,
-# including every call when the mod is not loaded, is checked here as before.
-PAYLOAD_READ=0
-if [ -n "${SASY_GUARD_MOD_CHECKED:-}" ]; then
-  PAYLOAD=$(cat)
-  PAYLOAD_READ=1
-  ID=$(json_field "$PAYLOAD" tool_use_id)
-  case " $SASY_GUARD_MOD_CHECKED " in
-    *" $ID "*) [ -n "$ID" ] && exit 0 ;;
-  esac
-  if [ "${SASY_FORCE_SCRIPT:-0}" != "1" ] && [ -x "$SASY_HOME/bin/sasy-hook" ]; then
-    printf '%s' "$PAYLOAD" | "$SASY_HOME/bin/sasy-hook"
-    exit $?
-  fi
-fi
-
 # Fast path: if the native hook binary is installed, replace this shell with
 # it (one process vs sh+curl — fail-closed and faster). `exec` passes our
 # stdin straight through. No config read here (it would spawn jq and negate
@@ -31,7 +13,7 @@ if [ "${SASY_FORCE_SCRIPT:-0}" != "1" ] && [ -x "$SASY_HOME/bin/sasy-hook" ]; th
   exec "$SASY_HOME/bin/sasy-hook"
 fi
 
-[ "$PAYLOAD_READ" = 1 ] || PAYLOAD=$(cat)
+PAYLOAD=$(cat)
 
 # Strip control characters (notably CR/LF) and cap the length before splicing an
 # env value into a curl -H argument: a crafted CLAUDE_CODE_ENTRYPOINT/TERM_PROGRAM

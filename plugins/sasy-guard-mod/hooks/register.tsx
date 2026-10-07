@@ -1,11 +1,14 @@
-// sasy-guard mod: checks each tool call against the policy and shows the result.
+// sasy-guard-mod: SASY policy enforcement for Claude Code, as a mod.
 //
-// At `classic.PreToolUse`, which runs just above the settings hooks, the mod
-// asks the sasy-watch daemon about the call (enforce.ts) and refuses it, asks
-// the user, or lets it go on to the other settings hooks. Each call it checked
-// is listed in SASY_GUARD_MOD_CHECKED, and the plugin's own PreToolUse script
-// stands aside for exactly those calls, so a call is checked once. Where the
-// mod does not load, the script checks every call as before.
+// A standalone alternative to the sasy-guard hook plugin (install one or the
+// other). Talking to the same local sasy-watch daemon, it does what that
+// plugin's settings hooks do, from inside Claude Code: at SessionStart it starts
+// the daemon if needed and registers the session; at classic.PreToolUse it
+// asks the daemon about each tool call (enforce.ts builds the request) and
+// denies it, asks the user, or lets it go on to any other settings hooks; at
+// PostToolUse it sends the daemon its post-tool signal; at SessionEnd it ends
+// the session. It fails closed: no answer from the daemon, or a call whose
+// caller it cannot name (agents.ts), is denied.
 //
 // It also draws the decisions: a status line with the session's counts, a band
 // above the prompt for the latest denial or approval request, and a `/guard`
@@ -14,6 +17,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PreToolUseResult, Register } from 'claude-code'
 
 import type { GuardCounts, GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
+import type { AgentTable } from './agents'
+import { addSpawn, attribute, markUnattributable, worktreeAgentId } from './agents'
 import type { CheckInput } from './enforce'
 import {
   CHECK_TIMEOUT_MS,
@@ -22,6 +27,7 @@ import {
   checkArgv,
   combine,
   denyWith,
+  postArgv,
   splitStatus,
   toResult,
 } from './enforce'
@@ -37,17 +43,26 @@ const HEALTH_TIMEOUT_MS = 3000
 const MARKER = '[SASY]'
 const REASON_CHARS = 4000
 
-const counts = atom({ plugin: 'sasy-guard', key: 'counts' } as const, {
+const counts = atom({ plugin: 'sasy-guard-mod', key: 'counts' } as const, {
   checked: 0,
   denied: 0,
   asked: 0,
 })
-const decisions = atom({ plugin: 'sasy-guard', key: 'decisions' } as const, [])
-const dismissedSeq = atom({ plugin: 'sasy-guard', key: 'dismissedSeq' } as const, 0)
+const decisions = atom({ plugin: 'sasy-guard-mod', key: 'decisions' } as const, [])
+const dismissedSeq = atom({ plugin: 'sasy-guard-mod', key: 'dismissedSeq' } as const, 0)
 const sessionInfo = atom(
-  { plugin: 'sasy-guard', key: 'sessionInfo' } as const,
+  { plugin: 'sasy-guard-mod', key: 'sessionInfo' } as const,
   null as GuardSessionInfo | null,
 )
+const agents = atom({ plugin: 'sasy-guard-mod', key: 'agents' } as const, {} as AgentTable)
+/** Agent ids whose worktree appeared before their spawn finished. */
+const isolatedEarly = atom({ plugin: 'sasy-guard-mod', key: 'isolatedEarly' } as const, [] as string[])
+
+/** What the model is told at SessionStart, as the hook plugin's script says it. */
+const SESSION_NOTE =
+  'SASY policy enforcement is active for this session. Tool calls are checked against ' +
+  'a security policy; denied calls return a [SASY] reason — relay it to the user and ' +
+  'follow its suggested fix rather than retrying or working around it.'
 
 /** The tool-call fields that name what a call acts on, in order of preference. */
 const TARGET_FIELDS = ['command', 'file_path', 'notebook_path', 'url', 'path', 'pattern']
@@ -176,6 +191,7 @@ async function ensureDaemon($: EngineInterface): Promise<void> {
  * SASY_FAIL_OPEN=true, as for the settings hook.
  */
 async function checkCall($: EngineInterface, input: CheckInput): Promise<PreToolUseResult> {
+  // Mirrors the hook plugin's pretooluse.sh, which this mod replaces.
   const port = await daemonPort($)
   let answer: CheckReply =
     port === undefined
@@ -273,11 +289,10 @@ async function record(
   $: EngineInterface,
   e: Readonly<Record<string, unknown>>,
   result: PreToolUseResult,
-  isChecked: boolean,
 ): Promise<void> {
   const found = verdictOf(result)
   const total = await update($, counts, c => ({
-    checked: c.checked + (isChecked ? 1 : 0),
+    checked: c.checked + 1,
     denied: c.denied + (found?.verdict === 'deny' ? 1 : 0),
     asked: c.asked + (found?.verdict === 'ask' ? 1 : 0),
   }))
@@ -300,23 +315,51 @@ async function recordSafely(
   $: EngineInterface,
   e: unknown,
   result: PreToolUseResult,
-  isChecked: boolean,
 ): Promise<void> {
   try {
-    await record($, e as Readonly<Record<string, unknown>>, result, isChecked)
+    await record($, e as Readonly<Record<string, unknown>>, result)
   } catch {
     // The counts and the band miss one call; the decision stands.
   }
 }
 
 /**
- * Lists the calls this mod is checking in SASY_GUARD_MOD_CHECKED, which the
- * settings hooks Claude Code starts next inherit; pretooluse.sh stands aside
- * for exactly those tool_use_ids.
+ * One best-effort POST to a daemon route (session start and end, the post-tool
+ * signal), with the hook-auth header when the daemon wrote one. Resolves to the
+ * answer's body on HTTP 200, else undefined; never throws.
  */
-async function publishChecking($: EngineInterface, ids: ReadonlySet<string>): Promise<void> {
-  // Reads the set when it runs, not when it was queued: see `publishing`.
-  await $.env.set('SASY_GUARD_MOD_CHECKED', ids.size === 0 ? undefined : [...ids].join(' '))
+async function postBestEffort(
+  $: EngineInterface,
+  route: string,
+  body: unknown,
+  maxSeconds: number,
+): Promise<string | undefined> {
+  try {
+    const port = await daemonPort($)
+    if (port === undefined) return undefined
+    const argv = postArgv(port, await authHeaderFile($, port), route, maxSeconds)
+    const ran = await $.process.run(argv, {
+      stdin: JSON.stringify(body),
+      timeoutMs: (maxSeconds + 2) * 1000,
+    })
+    if (ran.exitCode !== 0) return undefined
+    const { body: answer, status } = splitStatus(ran.stdout)
+    return status === '200' ? answer : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The `additionalContext` a daemon answer carries, if any. */
+function contextOf(answer: string | undefined): string[] {
+  if (answer === undefined) return []
+  try {
+    const out = JSON.parse(answer) as { hookSpecificOutput?: { additionalContext?: unknown } }
+    const note = out.hookSpecificOutput?.additionalContext
+    return typeof note === 'string' && note !== '' ? [note] : []
+  } catch {
+    return []
+  }
 }
 
 export const register: Register = on => {
@@ -324,14 +367,11 @@ export const register: Register = on => {
   // skipped, and one that fails after next leaves next's result standing.
   // Whether /guard registered; if another plugin owns the name, pass it on.
   let ownsCommand = false
-  // The subagent calls in flight (tool.call knows the caller,
-  // classic.PreToolUse does not), and the calls this mod is checking now.
-  const fromSubagent = new Set<string>()
-  const checking = new Set<string>()
-  // Writes of SASY_GUARD_MOD_CHECKED, one after another: two in flight could
-  // otherwise land out of order and drop a call from the list, and the hook
-  // would then check that call a second time.
-  let publishing: Promise<void> = Promise.resolve()
+  // The subagent behind each call in flight, by tool_use_id: tool.call knows
+  // it, classic.PreToolUse does not. And the Agent calls that asked for a
+  // worktree of their own, by tool_use_id, until their spawn is recorded.
+  const callerOf = new Map<string, string>()
+  const isolatedCalls = new Set<string>()
 
   on('session.start', async ($, e, next) => {
     $.ui.status(statusText(await read($, counts)))
@@ -350,9 +390,11 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // Fires at startup and after /clear, /resume, /branch and compaction. The
-  // resets clear $.state without a new session.start: re-pin the status line,
-  // and keep the transcript path the daemon is sent with each check.
+  // Fires at startup and after /clear, /resume, /branch and compaction: as the
+  // hook plugin's session-start script, start the daemon if needed and
+  // register the session (a fresh registration after /clear). The resets also
+  // clear $.state without a new session.start: re-pin the status line and keep
+  // what each check needs to say about the session.
   on('classic.SessionStart', async ($, e, next) => {
     const path = typeof e.transcript_path === 'string' ? e.transcript_path : ''
     const type = typeof e.agent_type === 'string' ? e.agent_type : ''
@@ -361,68 +403,125 @@ export const register: Register = on => {
       agentType: type === '' ? null : type,
     }))
     $.ui.status(statusText(await read($, counts)))
+    let isRegistered = (await postBestEffort($, '/v1/session/start', e, 60)) !== undefined
+    if (!isRegistered) {
+      await ensureDaemon($)
+      isRegistered = (await postBestEffort($, '/v1/session/start', e, 60)) !== undefined
+    }
+    if (!isRegistered) {
+      $.ui.toast('sasy-guard: the SASY daemon did not start; tool calls will be blocked')
+    }
+    const result = await next(e)
+    return { ...result, additionalContext: [...(result.additionalContext ?? []), SESSION_NOTE] }
+  })
+
+  // The daemon's post-tool signal: the call ran (its approval recorder's
+  // evidence) and, for AskUserQuestion, the answer. Best effort, as the hook's.
+  on('classic.PostToolUse', async ($, e, next) => {
+    const context = contextOf(await postBestEffort($, '/v1/posttooluse', e, 5))
+    const result = await next(e)
+    if (context.length === 0) return result
+    return { ...result, additionalContext: [...(result.additionalContext ?? []), ...context] }
+  })
+
+  on('classic.SessionEnd', async ($, e, next) => {
+    await postBestEffort($, '/v1/session/end', { session_id: e.session_id }, 1)
     return next(e)
   })
 
-  // Subagent calls are left to the settings hook: its payload carries the
-  // subagent's own working directory and identity, which a mod cannot see.
+  // Subagents: their type and folder when they start, and whether they run in
+  // a worktree of their own (asked by the Agent call, or seen at WorktreeCreate).
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if (started.agentId === undefined) return started
+    const agentId = started.agentId
+    const early = await read($, isolatedEarly)
+    const isIsolated = isolatedCalls.has(e.tool_use_id) || early.includes(agentId)
+    isolatedCalls.delete(e.tool_use_id)
+    await update($, agents, table =>
+      addSpawn(
+        table,
+        {
+          agentId,
+          subagentType: e.subagentType,
+          ...(e.cwd === undefined ? {} : { cwd: e.cwd }),
+          ...(e.parentAgentId === undefined ? {} : { parentAgentId: e.parentAgentId }),
+          ...(e.isTeammate === true ? { isTeammate: true } : {}),
+        },
+        isIsolated,
+      ),
+    )
+    return started
+  })
+
+  on('classic.WorktreeCreate', async ($, e, next) => {
+    const agentId = worktreeAgentId(String(e.name))
+    if (agentId !== undefined) {
+      const known = (await read($, agents))[agentId] !== undefined
+      if (known) await update($, agents, table => markUnattributable(table, agentId))
+      else await update($, isolatedEarly, ids => [...ids, agentId].slice(-200))
+    }
+    return next(e)
+  })
+
   on('tool.call', async ($, e, next) => {
+    if (e.tool === 'Agent' && (e as { isolation?: unknown }).isolation === 'worktree') {
+      isolatedCalls.add(e.tool_use_id)
+    }
     if (e.agentId === undefined) return next(e)
-    fromSubagent.add(e.tool_use_id)
+    callerOf.set(e.tool_use_id, e.agentId)
     try {
       return await next(e)
     } finally {
-      fromSubagent.delete(e.tool_use_id)
+      callerOf.delete(e.tool_use_id)
     }
   })
 
-  // Enforcement, for main-thread calls once SessionStart has said what the
-  // hook payload would carry. A failure before the daemon answered denies the
-  // call (fail closed); after `next`, the result `next` settled to stands.
+  // Enforcement. A failure before the daemon answered denies the call (fail
+  // closed); after `next`, the result `next` settled to stands.
   on('classic.PreToolUse', async ($, e, next) => {
     const { tool, tool_use_id, ...args } = e as unknown as Record<string, unknown> & {
       tool: string
       tool_use_id: string
     }
     const info = await read($, sessionInfo)
-    if (info === null || fromSubagent.has(tool_use_id)) {
-      // The hook checks it. Not counted as checked by the mod; a [SASY]
-      // verdict from the hook is still shown.
-      const deferred = await next(e)
-      await recordSafely($, e, deferred, false)
-      return deferred
+    const caller = attribute(await read($, agents), callerOf.get(tool_use_id))
+    let ours: PreToolUseResult
+    if (info === null) {
+      ours = {
+        deny:
+          '[SASY] security check unavailable: sasy-guard-mod has not seen this session ' +
+          'start (it was enabled mid-session); start a new session',
+      }
+    } else if (caller.kind === 'unknown') {
+      ours = {
+        deny:
+          `[SASY] security check unavailable: this call comes from ${caller.why}, so its ` +
+          'folder and identity cannot be checked; use the sasy-guard hook plugin for this workflow',
+      }
+    } else {
+      const sessionCwd = await $.session.cwd()
+      const cwd = caller.kind === 'agent' ? caller.cwd ?? sessionCwd : sessionCwd
+      const agentType = caller.kind === 'agent' ? caller.type : info.agentType
+      ours = await checkCall($, {
+        session_id: await $.session.id(),
+        tool_name: String(tool),
+        tool_input: args,
+        tool_use_id,
+        cwd,
+        ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
+        ...(caller.kind === 'agent' ? { agent_id: caller.agentId } : {}),
+        ...(agentType === null ? {} : { agent_type: agentType }),
+      })
     }
-    const ours = await checkCall($, {
-      session_id: await $.session.id(),
-      tool_name: String(tool),
-      tool_input: args,
-      tool_use_id,
-      cwd: await $.session.cwd(),
-      ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
-      ...(info.agentType === null ? {} : { agent_type: info.agentType }),
-    })
-    // The other settings hooks run whatever SASY answered, as they would beside
-    // the plugin's own hook; the plugin's hook stands aside for this call.
-    checking.add(tool_use_id)
-    publishing = publishing.catch(() => undefined).then(() => publishChecking($, checking))
-    await publishing
-    let result: PreToolUseResult
-    try {
-      const theirs = await next(e)
-      result = ours.deny !== undefined ? denyWith(ours, theirs) : combine(ours, theirs)
-    } finally {
-      checking.delete(tool_use_id)
-      // Runs after next: a failure here must not reach the .catch, which
-      // would replace this mod's decision with the downstream result.
-      publishing = publishing.catch(() => undefined).then(() => publishChecking($, checking))
-      await publishing.catch(() => undefined)
-    }
-    await recordSafely($, e, result, true)
+    // Any other settings hooks run whatever SASY answered.
+    const theirs = await next(e)
+    const result = ours.deny !== undefined ? denyWith(ours, theirs) : combine(ours, theirs)
+    await recordSafely($, e, result)
     return result
   }).catch(($, e, next) =>
-    next.called ? next(e) : { deny: '[SASY] security check failed inside the sasy-guard mod' },
+    next.called ? next(e) : { deny: '[SASY] security check failed inside sasy-guard-mod' },
   )
-
 
   on('command.run', { command: COMMAND }, async ($, e, next) => {
     if (!ownsCommand) return next(e)

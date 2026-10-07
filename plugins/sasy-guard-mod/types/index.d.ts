@@ -21,9 +21,12 @@ export type GuardSessionInfo = { transcriptPath: string | null; agentType: strin
 /** Per-session totals over every tool call sasy-guard checked. */
 export type GuardCounts = { checked: number; denied: number; asked: number }
 
+/** A subagent as the mod knows it (agents.ts AgentRecord). */
+export type GuardAgentRecord = { type: string; cwd: string | null; isUnattributable: boolean }
+
 declare module 'claude-code' {
   interface PluginState {
-    'sasy-guard': {
+    'sasy-guard-mod': {
       counts: GuardCounts
       /** The newest decisions, oldest first, capped in the hooks module. */
       decisions: GuardDecision[]
@@ -34,6 +37,10 @@ declare module 'claude-code' {
        *  can rebuild the session) and the agent type of a session started with
        *  --agent. The mod checks a call only once it knows these. */
       sessionInfo: GuardSessionInfo | null
+      /** The subagents seen this session, by agent id (agents.ts). */
+      agents: Readonly<Record<string, GuardAgentRecord>>
+      /** Agent ids whose worktree appeared before their spawn finished. */
+      isolatedEarly: string[]
     }
   }
 }

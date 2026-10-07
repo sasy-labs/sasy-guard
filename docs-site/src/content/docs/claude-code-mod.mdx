@@ -1,0 +1,134 @@
+---
+title: Sasy Guard as a Claude Code Mod
+description: The sasy-guard-mod plugin checks every Claude Code tool call against the SASY policy from inside Claude Code and shows each decision in the session.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+**sasy-guard-mod** enforces the same SASY security policy as the
+[sasy-guard plugin](/claude-code/), in a different way. The sasy-guard plugin
+uses **hooks**: separate programs that Claude Code starts for each event. This
+plugin is a **mod**: code that runs inside Claude Code itself, which lets it
+also draw in Claude Code's interface. See the
+[Claude Code mods documentation](https://code.claude.com/docs/en/plugins/mods/overview)
+for how mods work in general.
+
+Both plugins talk to the same local SASY runtime: the `sasy-watch` daemon (a
+background process that keeps each conversation's history and runs the checks)
+and the policy engine. They make the same decisions. **Install one or the
+other**: with both, every tool call is checked twice.
+
+## Install
+
+<Steps>
+
+1. **Install the runtime**, as for the sasy-guard plugin:
+
+   ```bash
+   uv tool install sasy-guard
+   sasy-guard install
+   ```
+
+2. **Add the mod plugin** from the plugin marketplace:
+
+   ```bash
+   claude plugin marketplace add sasy-labs/sasy-demo
+   claude plugin install sasy-guard-mod
+   ```
+
+   If the sasy-guard plugin is installed, turn it off:
+   `claude plugin disable sasy-guard`.
+
+3. **Run Claude Code** (v2.1.287 or later) in your project:
+
+   ```bash
+   claude
+   ```
+
+   The line `sasy-guard-mod: 0 checked · 0 denied · 0 asked` under the prompt
+   shows the mod loaded. Type `/guard` to see whether the daemon is up.
+
+</Steps>
+
+To try the prompts that trigger each rule, see
+[Test it](/claude-code/#test-it) on the sasy-guard page; they work the same with
+the mod.
+
+## What it does
+
+- **When a session starts**, it starts the `sasy-watch` daemon if it is not
+  running, registers the session with it, and tells Claude that a denied call
+  comes with a `[SASY] …` reason to pass on to you.
+- **Before each tool call**, it asks the daemon whether the call is allowed and
+  denies it, asks you, or lets it run. Calls made by a **subagent** (a helper
+  agent Claude starts for part of a task) are checked as the subagent's own: the
+  mod notes each subagent's type and folder when it starts.
+- **After each tool call**, it tells the daemon the call ran, which the daemon
+  uses for one-time approvals.
+- **When the session ends**, it tells the daemon.
+
+It also shows its decisions in the session:
+
+- **A status entry** under the prompt with this session's totals, such as
+  `sasy-guard-mod: 4 checked · 2 denied · 0 asked`.
+- **A band above the prompt** after a denial or an approval request. It names
+  the tool and what the call acted on (the command, path or URL), followed by the
+  policy's reason and suggested fix. **Dismiss** hides the band until the next
+  decision; `ctrl+x` then `Tab` reaches the button from the keyboard.
+- **A `/guard` command** that answers without a turn of the model. It reports
+  whether the daemon is running, which policy engine it uses and its fail mode,
+  this session's totals, and the five most recent decisions, the newest in full.
+
+## When it refuses a call
+
+The mod **fails closed**: when it cannot get a decision, the call does not run.
+That happens when:
+
+- the daemon cannot be reached after one attempt to start it (set
+  `SASY_FAIL_OPEN=true` to let calls through instead; this applies only when the
+  daemon's hook-authentication file is in place);
+- the daemon refuses authentication, or its answer is not one the mod knows;
+- the mod cannot tell who is making the call: a subagent that runs in a git
+  worktree of its own (its folder is not visible to a mod), a subagent that
+  started before the mod loaded, or any call in a session the mod did not see
+  start (for example, after enabling the mod mid-session). Start a new session,
+  or use the sasy-guard plugin for workflows with worktree subagents.
+
+## Choosing between the two plugins
+
+| | sasy-guard (hooks) | sasy-guard-mod (mod) |
+|---|---|---|
+| Checks every tool call | yes | yes, except where it fails closed (see above) |
+| Subagents in their own git worktree | checked | refused |
+| Shows decisions in the session | no | status entry, band, `/guard` |
+| Claude Code version | any with hooks | v2.1.287 or later |
+| Where an organization blocks user mods | works | does not load |
+| Per-project setup with `sasy-guard enable` | yes | no (plugin install only) |
+
+<Aside>
+The status entry, band and `/guard` output are drawn in the terminal and in the
+Code tab of the Desktop app. The VS Code chat panel and `claude -p` draw
+nothing; the mod still checks every call there. Where mods cannot run (an
+organization's `allowManagedModsOnly` setting, or `disableAllHooks`), the mod
+does not load and nothing is checked, so use the sasy-guard plugin.
+</Aside>
+
+## Try it with the bundled demo
+
+If you have cloned this repository, `make claude-code-guard-mod-demo` starts the
+scripted mock Anthropic endpoint (it replays a scenario's tool calls, since a
+real model refuses the dangerous ones) and prints the commands to run Claude
+Code with the mod loaded from this checkout:
+
+```bash
+make claude-code-guard-mod-demo                     # toxic_flow
+make claude-code-guard-mod-demo GROUP=agent_redirect
+```
+
+It creates a throwaway project under `output/mod-demo` with the files the
+scenarios need (including a fake `.env`); with `PROJECT=` set it uses that
+directory and writes no files. Run the printed commands in a second terminal,
+answer **Yes** to the mock API key, and type any prompt. When the scripted call
+is denied, the band names the call and the policy's reason, the status entry
+counts it, and `/guard` lists it. If the sasy-guard plugin is installed, disable
+it for the demo.

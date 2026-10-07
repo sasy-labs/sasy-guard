@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 
+import { addSpawn, attribute, markUnattributable, worktreeAgentId } from '../hooks/agents'
 import { combine, denyWith, toResult } from '../hooks/enforce'
 
 const DENY_REASON =
@@ -10,7 +11,7 @@ const DENY_REASON =
   'OR ask the user for a one-time bypass.'
 const ASK_REASON = '[SASY] Pushing to a public remote needs your approval (public_push).'
 const BAND = {
-  plugin: 'sasy-guard',
+  plugin: 'sasy-guard-mod',
   component: 'AbovePrompt',
   props: {
     hasSurvey: false,
@@ -71,10 +72,8 @@ type World = {
   checks: Record<string, unknown>[]
   /** Every argv the mod ran. */
   argvs: string[][]
-  /** Every value the mod gave SASY_GUARD_MOD_CHECKED, in order. */
-  checkedSets: (string | undefined)[]
-  /** SASY_GUARD_MOD_CHECKED as the other settings hooks saw it, by command. */
-  seenByHooks: Record<string, string | undefined>
+  /** Every body the mod posted to a daemon route other than a check, by route. */
+  posts: Record<string, Record<string, unknown>[]>
   /** The commands the other settings hooks were asked about. */
   hookCalls: string[]
 }
@@ -82,6 +81,8 @@ type World = {
 type WorldOptions = {
   /** curl's exit code for /v1/pretooluse (0: the daemon answers). */
   checkExit?: number
+  /** curl's exit code for session start, post-tool and session end (0: answered). */
+  lifecycleExit?: number
   /** curl cannot be started at all. */
   curlMissing?: boolean
   /** The HTTP status the daemon answers checks with (200 unless given). */
@@ -103,24 +104,11 @@ function world(on: On, options: WorldOptions = {}): World {
     lines: [],
     checks: [],
     argvs: [],
-    checkedSets: [],
-    seenByHooks: {},
+    posts: {},
     hookCalls: [],
   }
-  let checked: string | undefined
   mock.clock(on, { now: 0 })
   mock.env(on, options.env ?? {})
-  let writes = 0
-  on('env.set', async ($, e) => {
-    if (e.name === 'SASY_GUARD_MOD_CHECKED') {
-      // Earlier writes take longer, so unserialised writes would land out of order.
-      const ticks = Math.max(0, 40 - 10 * writes++)
-      for (let i = 0; i < ticks; i++) await Promise.resolve()
-      checked = e.value
-      w.checkedSets.push(e.value)
-    }
-    return { value: undefined }
-  })
   on('ui.status', ($, e) => {
     w.lines.push(String(e.text))
     return { value: undefined }
@@ -151,6 +139,17 @@ function world(on: On, options: WorldOptions = {}): World {
       const command = String((input.tool_input as { command?: unknown }).command ?? '')
       return ran(0, `${JSON.stringify(policy(command))}\n${options.checkStatus ?? '200'}`)
     }
+    for (const route of ['/v1/session/start', '/v1/posttooluse', '/v1/session/end']) {
+      if (url.endsWith(route)) {
+        if ((options.lifecycleExit ?? 0) !== 0) return ran(options.lifecycleExit ?? 7, '')
+        ;(w.posts[route] ??= []).push(JSON.parse(e.init?.stdin ?? '{}') as Record<string, unknown>)
+        const answer =
+          route === '/v1/posttooluse'
+            ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'decision applied' } }
+            : {}
+        return ran(0, `${JSON.stringify(answer)}\n200`)
+      }
+    }
     if (url.endsWith('/healthz')) {
       const h = options.health ?? { exitCode: 0, body: JSON.stringify(HEALTH) }
       return h.exitCode === 0 ? ran(0, `${h.body}\n${h.status ?? '200'}`) : ran(h.exitCode, '')
@@ -158,11 +157,12 @@ function world(on: On, options: WorldOptions = {}): World {
     return ran(1, '') // sasy-watch ensure: not installed in the test
   })
   on('classic.SessionStart', () => ({}))
+  on('classic.PostToolUse', () => ({}))
+  on('classic.SessionEnd', () => ({}))
   // The other settings hooks: they deny `curl` without a [SASY] marker.
   on('classic.PreToolUse', ($, e) => {
     const command = e.tool === 'Bash' ? e.command : ''
     w.hookCalls.push(command)
-    w.seenByHooks[command] = checked
     return command.startsWith('curl') ? { deny: 'blocked by another hook' } : {}
   })
   on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
@@ -196,22 +196,8 @@ test('the mod asks the daemon about each call and enforces its answer', async ($
     cwd: '/work',
   })
   expect(typeof w.checks[0]?.tool_use_id).toBe('string')
-  // The other settings hooks still see a denied call, as beside the plugin's hook.
+  // Any other settings hooks still see a denied call.
   expect(w.hookCalls).toEqual(['ls', 'rm -rf build'])
-  expect(w.seenByHooks['rm -rf build']).toBe(String(w.checks[1]?.tool_use_id))
-})
-
-test('the plugin script stands aside for exactly the calls the mod checked', async ($, on) => {
-  const w = world(on)
-  await started($)
-
-  await $.tool.call({ tool: 'Bash', command: 'ls' })
-  await $.tool.call({ tool: 'Bash', command: 'pwd' })
-
-  expect(w.seenByHooks.ls).toBe(String(w.checks[0]?.tool_use_id))
-  expect(w.seenByHooks.pwd).toBe(String(w.checks[1]?.tool_use_id))
-  // Cleared once each call was decided.
-  expect(w.checkedSets.at(-1)).toBeUndefined()
 })
 
 test('an ask from the daemon asks the user even when other hooks allow', async ($, on) => {
@@ -444,18 +430,6 @@ test('a reason is kept without terminal escapes and held to a size', async ($, o
   expect(w.lines.at(-1)).toBe('1 checked · 1 denied · 0 asked')
 })
 
-test('before SessionStart the mod leaves the call to the settings hook', async ($, on) => {
-  const w = world(on)
-
-  await $.tool.call({ tool: 'Bash', command: 'ls' })
-
-  expect(w.checks).toHaveLength(0)
-  expect(w.hookCalls).toEqual(['ls'])
-  expect(w.seenByHooks.ls).toBeUndefined()
-  // The hook checked it, not the mod.
-  expect(w.lines.at(-1)).toBe('0 checked · 0 denied · 0 asked')
-})
-
 test('the session agent type from SessionStart is sent with main-thread checks', async ($, on) => {
   const w = world(on)
 
@@ -531,19 +505,6 @@ test('SASY\'s input rewrite wins over another hook\'s', () => {
   })
 })
 
-test('concurrent calls each find themselves in the list the hook reads', async ($, on) => {
-  const w = world(on)
-  await started($)
-
-  await Promise.all(['pwd', 'ls', 'date'].map(command => $.tool.call({ tool: 'Bash', command })))
-
-  for (const command of ['pwd', 'ls', 'date']) {
-    const id = String(w.checks.find(c => (c.tool_input as { command?: string }).command === command)?.tool_use_id)
-    expect(w.seenByHooks[command]?.split(' ')).toContain(id)
-  }
-  expect(w.checkedSets.at(-1)).toBeUndefined()
-})
-
 test('a curl failure other than an unreachable daemon never fails open', async ($, on) => {
   const w = world(on, { checkExit: 26, env: { SASY_FAIL_OPEN: 'true' } })
   await started($)
@@ -579,4 +540,83 @@ test('curl that cannot run never fails open', async ($, on) => {
 
   expect(call.deny ?? call.text).toContain('could not run curl')
   expect(w.argvs.some(a => a[1] === 'ensure')).toBe(false)
+})
+
+test('without SessionStart the mod cannot name the session, so it denies', async ($, on) => {
+  const w = world(on)
+
+  const call = await $.tool.call({ tool: 'Bash', command: 'ls' })
+
+  expect(call.deny ?? call.text).toContain('has not seen this session start')
+  expect(w.checks).toHaveLength(0)
+})
+
+test('SessionStart registers the session with the daemon and tells the model', async ($, on) => {
+  const w = world(on)
+  let note: readonly string[] | undefined
+
+  const result = await $.classic.SessionStart({ source: 'startup', transcript_path: '/t/s.jsonl' })
+  note = result.additionalContext
+
+  expect(w.posts['/v1/session/start']?.[0]).toMatchObject({ transcript_path: '/t/s.jsonl' })
+  expect(note?.join(' ')).toContain('SASY policy enforcement is active')
+  expect(w.argvs.some(a => a[1] === 'ensure')).toBe(false)
+})
+
+test('SessionStart starts the daemon when registration fails, and says so if it stays down', async ($, on) => {
+  const w = world(on, { lifecycleExit: 7 })
+
+  await $.classic.SessionStart({ source: 'startup' })
+
+  expect(w.argvs.some(a => a[1] === 'ensure')).toBe(true)
+  expect(w.lines.some(line => line.startsWith('toast: sasy-guard: the SASY daemon did not start'))).toBe(true)
+})
+
+test('the post-tool signal reaches the daemon and its note reaches the model', async ($, on) => {
+  const w = world(on)
+
+  const result = await $.classic.PostToolUse({
+    tool_name: 'Bash',
+    tool_input: { command: 'ls' },
+    tool_response: { stdout: '' },
+    tool_use_id: 'toolu_x',
+  } as never)
+
+  expect(w.posts['/v1/posttooluse']?.[0]).toMatchObject({ tool_name: 'Bash', tool_use_id: 'toolu_x' })
+  expect(result.additionalContext).toEqual(['decision applied'])
+})
+
+test('SessionEnd ends the session at the daemon', async ($, on) => {
+  const w = world(on)
+
+  await $.classic.SessionEnd({ reason: 'prompt_input_exit', session_id: 'session-9' } as never)
+
+  expect(w.posts['/v1/session/end']?.[0]).toEqual({ session_id: 'session-9' })
+})
+
+test('a subagent runs where its spawn said, else its parent\'s folder, else the session\'s', () => {
+  let table = addSpawn({}, { agentId: 'a1', subagentType: 'general-purpose' }, false)
+  table = addSpawn(table, { agentId: 'a2', subagentType: 'Explore', cwd: '/repo/sub' }, false)
+  table = addSpawn(table, { agentId: 'a3', subagentType: 'fork', parentAgentId: 'a2' }, false)
+  table = addSpawn(table, { agentId: 'a4', subagentType: 'scout', cwd: '/x', isTeammate: true }, false)
+
+  expect(attribute(table, undefined)).toEqual({ kind: 'main' })
+  expect(attribute(table, 'a1')).toEqual({ kind: 'agent', agentId: 'a1', type: 'general-purpose', cwd: null })
+  expect(attribute(table, 'a2')).toEqual({ kind: 'agent', agentId: 'a2', type: 'Explore', cwd: '/repo/sub' })
+  expect(attribute(table, 'a3')).toEqual({ kind: 'agent', agentId: 'a3', type: 'fork', cwd: '/repo/sub' })
+  expect(attribute(table, 'a4')).toEqual({ kind: 'agent', agentId: 'a4', type: 'scout', cwd: null })
+})
+
+test('subagents the mod cannot place are unattributable', () => {
+  let table = addSpawn({}, { agentId: 'w1', subagentType: 'general-purpose' }, true)
+  table = addSpawn(table, { agentId: 'c1', subagentType: 'Explore', parentAgentId: 'w1' }, false)
+  table = addSpawn(table, { agentId: 'o1', subagentType: 'Explore', parentAgentId: 'gone' }, false)
+  table = addSpawn(table, { agentId: 'm1', subagentType: 'Explore' }, false)
+  table = markUnattributable(table, 'm1')
+
+  for (const id of ['w1', 'c1', 'o1', 'm1', 'never-seen']) {
+    expect(attribute(table, id).kind).toBe('unknown')
+  }
+  expect(worktreeAgentId('agent-adf75aa4c2affa6f1')).toBe('adf75aa4c2affa6f1')
+  expect(worktreeAgentId('my-branch')).toBeUndefined()
 })

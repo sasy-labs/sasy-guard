@@ -16,9 +16,9 @@ script therefore plays once per fresh ``claude`` session — to run a different
 scenario, restart this server with a new ``--scenario`` and start ``claude``
 again.
 
-With ``--plugin-dir`` the banner's ``claude`` command loads the sasy-guard
-plugin from that folder (its hooks and its mod) instead of relying on an
-installed plugin, so the mod's status entry, decision band and ``/guard``
+With ``--plugin-dir`` the banner's ``claude`` command loads a plugin from that
+folder (the demo passes sasy-guard-mod) instead of relying on an installed one,
+so the mod checks each call and its status entry, decision band and ``/guard``
 command show in the session.
 """
 
@@ -112,8 +112,8 @@ def _print_banner(scenario_group: str, expected: str, headline: str,
         steps: The scripted tool calls, the gating call last.
         project: The directory ``claude`` should run in.
         base_url: The mock endpoint's URL.
-        plugin_dir: The sasy-guard plugin folder to load with
-            ``--plugin-dir``, or None to rely on an installed plugin.
+        plugin_dir: The plugin folder to load with ``--plugin-dir``, or None to
+            rely on an installed plugin.
     """
     bar = "═" * 66
     print(f"\n{bar}")
@@ -142,7 +142,7 @@ def _print_banner(scenario_group: str, expected: str, headline: str,
     print("\n  Then type any prompt (e.g. 'do the task'). The mock replays the")
     print("  steps above; SASY gates each one. Ctrl-C here when done.")
     if plugin_dir is not None:
-        print("\n  The plugin's mod checks each call and shows each decision:")
+        print("\n  sasy-guard-mod checks each call and shows each decision:")
         print("    · a status entry under the prompt: checked / denied / asked")
         print("    · a band above the prompt explaining the latest denial or ask")
         print("    · /guard: daemon health and recent decisions, no model turn")
@@ -174,8 +174,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--plugin-dir", default=None,
-        help="sasy-guard plugin folder for the printed claude command to load "
-             "with --plugin-dir (shows the plugin's mod in the session)",
+        help="plugin folder for the printed claude command to load with "
+             "--plugin-dir (the mod demo passes plugins/sasy-guard-mod)",
     )
     parser.add_argument(
         "--list", action="store_true", help="list scenarios and exit",

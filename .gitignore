@@ -56,4 +56,4 @@ benchmarks/tau2-airline/output/
 output/
 
 # Claude Code lays its mod API types here on each load
-plugins/sasy-guard/.claude-plugin/types/
+plugins/*/.claude-plugin/types/

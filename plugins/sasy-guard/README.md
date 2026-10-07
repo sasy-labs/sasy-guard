@@ -2,11 +2,8 @@
 
 Claude Code plugin enforcing SASY Datalog policies on tool calls.
 
-A mod checks each tool call against the policy from inside Claude Code and
-shows the decisions ([The mod](#the-mod)); four settings hooks back it up and
-check every call where the mod does not load. The hooks are
-`SessionStart` (ensure the `sasy-watch` daemon, register the session, pin the
-policy profile), `SessionEnd` (deregister),
+Four hooks, nothing else: `SessionStart` (ensure the `sasy-watch` daemon,
+register the session, pin the policy profile), `SessionEnd` (deregister),
 `PreToolUse` (check every tool call via the daemon → `RMProxy.CheckToolCall`;
 denied calls block with a `[SASY]` reason, even in bypassPermissions mode), and
 `PostToolUse` (signal that an `@ask`'d tool ran — a marker-independent approval
@@ -46,37 +43,6 @@ claude --plugin-dir plugins/sasy-guard
 
 # Inside the session: `rm -rf` and force pushes are denied with a [SASY] reason.
 ```
-
-## The mod
-
-`hooks/register.tsx`, listed under `modules` in `hooks/hooks.json`, is a Claude
-Code [mod](https://code.claude.com/docs/en/plugins/mods/overview). At
-`classic.PreToolUse` it posts each call to the daemon's `/v1/pretooluse` (the
-same payload the hook sends, with the daemon's hook-auth header when one
-exists) and refuses the call, asks the user, or passes it on. It fails closed
-like the hook (`SASY_FAIL_OPEN=true` overrides only with the daemon's hook-auth
-file in place). The calls it checked are
-listed in `SASY_GUARD_MOD_CHECKED`, and `scripts/pretooluse.sh` stands aside
-for exactly those, so each call is checked once. The script checks the rest:
-subagent calls (whose working directory a mod cannot see) and every call where
-the mod does not load. `disableAllHooks` turns off both.
-
-The mod also shows a status entry with the session's checked / denied / asked
-totals, a band above the prompt explaining the latest `[SASY]` denial or ask
-(with a Dismiss button), and a `/guard` command that answers without a model
-turn, reporting the daemon's `/healthz` and recent decisions.
-
-```sh
-claude plugin validate plugins/sasy-guard   # what the mod hooks and calls
-claude plugin test plugins/sasy-guard       # tests/guard.test.ts
-```
-
-Requires Claude Code v2.1.287 or later; drawing appears in the terminal and the
-Desktop Code tab only.
-
-Demo (scripted mock, plugin loaded from a checkout): in the public
-[sasy-guard](https://github.com/sasy-labs/sasy-guard) repo, run
-`make claude-code-guard-mod-demo` and follow the printed commands.
 
 ## Profiles (`profiles/`)
 
