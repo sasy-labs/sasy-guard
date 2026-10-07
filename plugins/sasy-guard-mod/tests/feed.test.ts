@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { MAX_BUFFER_ROWS, afterPush, batches, emptyBuffer, enqueue, reportedCalls, utf8Length, withResults } from '../hooks/feed'
+import { MAX_BUFFER_ROWS, MAX_RESULTS, ResultTable, TOO_LARGE, afterPush, batches, emptyBuffer, enqueue, reportedCalls, utf8Length, withResults } from '../hooks/feed'
 
 test('the feed buffer: bounded, split into pushes, and kept across a push', () => {
   const row = (uuid: string, size = 10) => ({ uuid, message: { type: 'user', content: [{ type: 'text', text: 'x'.repeat(size) }] } })
@@ -55,4 +55,27 @@ test('the tool calls a push\'s rows report', () => {
   const text = (uuid: string) => ({ uuid, message: { type: 'user', content: [{ type: 'text', text: 'x' }] } })
   const result = (uuid: string, id: string) => ({ uuid, message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: id }] } })
   expect(reportedCalls([text('a'), result('b', 't1'), text('c'), result('d', 't2')])).toEqual(['t1', 't2'])
+})
+
+test('a row reporting several tool calls, or a result too large, is left to the transcript', () => {
+  const both = { uuid: 'x', message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: 't1' }, { type: 'tool_result', tool_use_id: 't2' }] } }
+  const out = withResults([both], new Map<string, unknown>([['t1', 'User rejected tool use'], ['t2', { ok: true }]]))
+  expect(out.rows[0]?.toolUseResult).toBeUndefined()
+  expect(out.gap).toBe(true)
+  const one = { uuid: 'y', message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: 't3' }] } }
+  const big = withResults([one], new Map<string, unknown>([['t3', TOO_LARGE]]))
+  expect(big.rows[0]?.toolUseResult).toBeUndefined()
+  expect(big.gap).toBe(true)
+})
+
+test('the result table is bounded and says how many it dropped', () => {
+  const table = new ResultTable()
+  for (let i = 0; i < MAX_RESULTS; i++) expect(table.note(`t${i}`, { i })).toBe(0)
+  expect(table.note('extra', { i: -1 })).toBe(1)
+  expect(table.values.has('t0')).toBe(false)
+  // One too large for a push is kept as a marker, not the value.
+  table.note('huge', { out: '漢'.repeat(1_100_000) })
+  expect(table.values.get('huge')).toBe(TOO_LARGE)
+  table.forget(['huge', 'extra'])
+  expect(table.values.has('huge')).toBe(false)
 })

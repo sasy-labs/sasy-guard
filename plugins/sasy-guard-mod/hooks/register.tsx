@@ -22,7 +22,7 @@ import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
 import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
 import type { FeedBuffer, FeedRow } from './feed'
-import { MAX_RESULTS, afterPush, batches, emptyBuffer, enqueue, reportedCalls, rowOf, withResults } from './feed'
+import { ResultTable, afterPush, batches, emptyBuffer, enqueue, reportedCalls, rowOf, withResults } from './feed'
 import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
 import {
   ENDPOINT,
@@ -573,7 +573,7 @@ export const register: Register = on => {
   let feedSession: string | undefined
   let feed: FeedBuffer = emptyBuffer()
   let feedSupported = true
-  const toolResults = new Map<string, unknown>()
+  const toolResults = new ResultTable()
   // Tool calls started and not yet finished, by tool_use_id, each with what
   // ends its wait.
   const running = new Map<string, { done: Promise<void>; finish: () => void }>()
@@ -689,7 +689,9 @@ export const register: Register = on => {
     const agentId = started.agentId
     const isIsolated = isolatedCalls.has(e.tool_use_id) || earlyWorktrees.includes(agentId)
     isolatedCalls.delete(e.tool_use_id)
-    spawns[agentId] = { toolUseId: e.tool_use_id, agentType: e.subagentType }
+    // A teammate is named by its team name, as its checks name it.
+    const teammate = started.teammateId?.split('@')[0]
+    spawns[agentId] = { toolUseId: e.tool_use_id, agentType: teammate || e.subagentType }
     agentTable = addSpawn(
       agentTable,
       {
@@ -733,13 +735,10 @@ export const register: Register = on => {
   // The tool's structured result, for the history row that reports it.
   const noteResult = (id: string, result: { result?: unknown }): void => {
     if (!feedSupported || result.result === undefined || result.result === null) return
-    toolResults.set(id, result.result)
-    if (toolResults.size > MAX_RESULTS) {
-      // A result dropped before its row went out: that row is read from the
-      // transcript instead.
-      toolResults.delete(toolResults.keys().next().value!)
-      feed = { ...feed, gap: feed.gap + 1 }
-    }
+    // Each result dropped before its row went out: that row is read from the
+    // transcript instead.
+    const dropped = toolResults.note(id, result.result)
+    if (dropped > 0) feed = { ...feed, gap: feed.gap + dropped }
   }
 
   on('tool.call', async ($, e, next) => {
@@ -847,7 +846,7 @@ export const register: Register = on => {
               cwd: sessionCwd,
               ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
             }
-            const enriched = withResults(pending.rows, toolResults)
+            const enriched = withResults(pending.rows, toolResults.values)
             const sending = enriched.rows
             // A result still unknown: its row goes without it, and the daemon
             // reads it from the transcript first.
@@ -867,7 +866,7 @@ export const register: Register = on => {
             } else {
               feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
               // The results those rows carried are delivered: no longer needed.
-              for (const id of reportedCalls(sending.slice(0, sent))) toolResults.delete(id)
+              toolResults.forget(reportedCalls(sending.slice(0, sent)))
             }
           }
         } finally {

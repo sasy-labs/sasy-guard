@@ -28,8 +28,12 @@ export const MAX_BATCH_BYTES = 3_000_000
  *  rows were lost, so the daemon reads the transcript again. */
 export const MAX_BUFFER_ROWS = 20_000
 export const MAX_BUFFER_BYTES = 32_000_000
-/** Tool results remembered for the rows that report them. */
+/** Tool results remembered for the rows that report them, by count and by
+ *  serialized size. */
 export const MAX_RESULTS = 500
+export const MAX_RESULT_BYTES = 32_000_000
+/** Kept in place of a result too large for any push. */
+export const TOO_LARGE: unique symbol = Symbol('too large')
 
 export const emptyBuffer = (): FeedBuffer => ({ rows: [], bytes: 0, gap: 0 })
 
@@ -50,6 +54,9 @@ export function utf8Length(text: string): number {
   }
   return bytes
 }
+
+/** A result's serialized size. */
+export const resultSize = (value: unknown): number => utf8Length(JSON.stringify(value) ?? '')
 
 /** A row's size in a push. */
 const sizeOf = (row: FeedRow): number => utf8Length(JSON.stringify(row))
@@ -115,8 +122,19 @@ export function withResults(
   let gap = false
   const out = rows.map(row => {
     if (row.toolUseResult !== undefined) return row
-    const found = resultIds(row).map(id => results.get(id)).find(r => r !== undefined)
+    const ids = resultIds(row)
+    // One structured result describes one tool result; a row reporting
+    // several cannot carry theirs, so it is read from the transcript.
+    if (ids.length > 1) {
+      gap = true
+      return row
+    }
+    const found = ids.map(id => results.get(id)).find(r => r !== undefined)
     if (found === undefined) return row
+    if (found === TOO_LARGE) {
+      gap = true
+      return row
+    }
     const enriched = { ...row, toolUseResult: found }
     if (sizeOf(enriched) <= MAX_BATCH_BYTES) return enriched
     gap = true
@@ -162,5 +180,46 @@ export function afterPush(now: FeedBuffer, pending: FeedBuffer, sent: number, de
     rows,
     bytes: rows.reduce((n, row) => n + sizeOf(row), 0),
     gap: delivered ? now.gap - pending.gap : now.gap,
+  }
+}
+
+/**
+ * The structured results of finished tool calls, kept until the rows that
+ * report them are delivered: at most MAX_RESULTS of them and MAX_RESULT_BYTES
+ * in all. One too large for any push is kept as TOO_LARGE, so its row is left
+ * to the transcript.
+ */
+export class ResultTable {
+  readonly values = new Map<string, unknown>()
+  private bytes = 0
+
+  /** Keeps one result; returns how many older ones were dropped to stay in
+   *  bounds (each a row the daemon must read from the transcript). */
+  note(id: string, value: unknown): number {
+    const size = resultSize(value)
+    this.values.set(id, size > MAX_BATCH_BYTES ? TOO_LARGE : value)
+    if (size <= MAX_BATCH_BYTES) this.bytes += size
+    let dropped = 0
+    while (this.values.size > MAX_RESULTS || this.bytes > MAX_RESULT_BYTES) {
+      const [oldest] = this.values.keys()
+      this.forget([oldest!])
+      dropped++
+    }
+    return dropped
+  }
+
+  /** Lets go of every result (a new session). */
+  clear(): void {
+    this.values.clear()
+    this.bytes = 0
+  }
+
+  /** Lets go of the results whose rows were delivered. */
+  forget(ids: string[]): void {
+    for (const id of ids) {
+      const value = this.values.get(id)
+      if (value !== undefined && value !== TOO_LARGE) this.bytes -= resultSize(value)
+      this.values.delete(id)
+    }
   }
 }
