@@ -810,6 +810,8 @@ test('only the daemon\'s own offer shape is a bypass offer', () => {
   // Only the daemon's two exact choice lists, never a repeated or reordered one.
   expect(answer({ ...offer, labels: Array(1000).fill('approve').concat('decline') })).toBeUndefined()
   expect(answer({ ...offer, labels: ['decline', 'approve'] })).toBeUndefined()
+  expect(answer({ ...offer, labels: [['approve'], ['decline']] })).toBeUndefined()
+  expect(answer({ ...offer, labels: ['approve,decline'] })).toBeUndefined()
   // A host to trust is a host name as the daemon derives one, kept whole.
   const long = `${'a'.repeat(240)}.example.com`
   const trust = { ...offer, labels: ['approve', 'decline', 'trust-domain'] }

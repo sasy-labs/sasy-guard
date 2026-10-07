@@ -58,6 +58,7 @@ function offerOf(value: unknown): BypassOffer | undefined {
     typeof reason === 'string' &&
     typeof policyReason === 'string' &&
     Array.isArray(labels) &&
+    labels.every(label => typeof label === 'string') &&
     (domain === undefined
       ? labels.join(',') === PLAIN_LABELS
       : typeof domain === 'string' && DOMAIN.test(domain) && labels.join(',') === TRUST_LABELS)
