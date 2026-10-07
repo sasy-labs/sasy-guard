@@ -18,7 +18,7 @@ import type { EngineInterface, PreToolUseResult, Register } from 'claude-code'
 
 import type { GuardCounts, GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
 import type { AgentTable } from './agents'
-import { addSpawn, attribute, markUnattributable, worktreeAgentId } from './agents'
+import { addSpawn, attribute, markUnattributable, worktreeOwner } from './agents'
 import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
 import {
   CHECK_TIMEOUT_MS,
@@ -67,8 +67,11 @@ const SESSION_NOTE =
 /** The tool-call fields that name what a call acts on, in order of preference. */
 const TARGET_FIELDS = ['command', 'file_path', 'notebook_path', 'url', 'path', 'pattern']
 
-/** C0 and C1 control characters other than newline and tab. */
-const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f\u0080-\u009f]/g
+/** C0 and C1 control characters other than newline and tab, and the
+ *  invisible or reordering marks (zero-width, bidirectional) that could make a
+ *  drawn command or path look like a different one. */
+const CONTROL =
+  /[\u0000-\u0008\u000b-\u001f\u007f\u0080-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g
 
 function shorten(text: string, max: number): string {
   const flat = text.replace(/\s+/g, ' ').replace(CONTROL, '').trim()
@@ -322,7 +325,9 @@ async function askForBypass(
 }
 
 /** The /healthz fields /guard prints, each held to the shape the daemon sends. */
-const ENDPOINT = /^[A-Za-z0-9.:[\]_-]{1,255}$/
+/** An endpoint /guard may print: a loopback name or an IP address and a port.
+ *  Anything else (a host name is free text) is not printed. */
+const ENDPOINT = /^(localhost|\d{1,3}(\.\d{1,3}){3}|\[[0-9a-fA-F:]{2,39}\]):\d{1,5}$/
 const FAIL_MODES = ['open', 'closed']
 
 /**
@@ -523,7 +528,10 @@ export const register: Register = on => {
       isRegistered = (await postBestEffort($, '/v1/session/start', e, 5, 20)) !== undefined
     }
     if (!isRegistered) {
-      $.ui.toast('sasy-guard: the SASY daemon did not start; tool calls will be blocked')
+      $.ui.toast(
+        'sasy-guard: the SASY daemon did not start; tool calls will be blocked ' +
+          '(unless SASY_FAIL_OPEN=true with the hook-auth file in place)',
+      )
     }
     const result = await next(e)
     return { ...result, additionalContext: [...(result.additionalContext ?? []), SESSION_NOTE] }
@@ -574,7 +582,10 @@ export const register: Register = on => {
   })
 
   on('classic.WorktreeCreate', async ($, e, next) => {
-    const agentId = worktreeAgentId(String(e.name))
+    // A worktree created for an isolated subagent is named `agent-<id>`; one a
+    // subagent enters itself (EnterWorktree) carries that subagent's agent_id.
+    // Either way that subagent now runs in a folder no mod event gives.
+    const agentId = worktreeOwner(e)
     if (agentId !== undefined) {
       const known = (await read($, agents))[agentId] !== undefined
       if (known) await update($, agents, table => markUnattributable(table, agentId))

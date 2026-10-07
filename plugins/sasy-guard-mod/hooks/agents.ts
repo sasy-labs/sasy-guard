@@ -46,6 +46,17 @@ export function worktreeAgentId(name: string): string | undefined {
 }
 
 /**
+ * The subagent a WorktreeCreate puts in a folder of its own, if any: the one
+ * that entered it (its `agent_id`, as for EnterWorktree under any name), else
+ * the isolated subagent its `agent-<id>` name was made for. None for the main
+ * thread's own worktree, which the session's folder follows.
+ */
+export function worktreeOwner(event: { name?: unknown; agent_id?: unknown }): string | undefined {
+  if (typeof event.agent_id === 'string' && event.agent_id !== '') return event.agent_id
+  return typeof event.name === 'string' ? worktreeAgentId(event.name) : undefined
+}
+
+/**
  * The table with one more subagent. It inherits its parent's folder when its
  * spawn named none, and is unattributable when it runs isolated or its parent
  * is unknown or unattributable. A teammate runs in the session's folder.

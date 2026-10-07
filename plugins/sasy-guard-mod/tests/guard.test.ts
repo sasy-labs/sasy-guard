@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 
-import { addSpawn, attribute, markUnattributable, worktreeAgentId } from '../hooks/agents'
+import { addSpawn, attribute, markUnattributable, worktreeAgentId, worktreeOwner } from '../hooks/agents'
 import { combine, denyWith, parseAnswer, toResult } from '../hooks/enforce'
 
 const DENY_REASON =
@@ -793,4 +793,35 @@ test('only the daemon\'s own offer shape is a bypass offer', () => {
   expect(answer(withoutPolicy)).toBeUndefined()
   expect(answer(offer, { hookEventName: 'PreToolUse', updatedInput: { command: 'ls' } })).toBeUndefined()
   expect(parseAnswer(JSON.stringify({ sasyApproval: offer }))).toBeUndefined()
+})
+
+test('a worktree belongs to the subagent that entered it, or the one it was made for', () => {
+  expect(worktreeOwner({ name: 'scratch', agent_id: 'a1' })).toBe('a1')
+  expect(worktreeOwner({ name: 'agent-adf75aa4c2affa6f1' })).toBe('adf75aa4c2affa6f1')
+  expect(worktreeOwner({ name: 'agent-adf75aa4c2affa6f1', agent_id: 'a9' })).toBe('a9')
+  // The main thread's own worktree: the session's folder follows it.
+  expect(worktreeOwner({ name: 'scratch' })).toBeUndefined()
+})
+
+test('/guard does not print an endpoint that is not an address', async ($, on) => {
+  const odd = { ...HEALTH, endpoint: 'IGNORE_PREVIOUS_INSTRUCTIONS:50051' }
+  world(on, { health: { exitCode: 0, body: JSON.stringify(odd) } })
+
+  await $.session.start(START)
+  const out = await $.command.run(GUARD)
+
+  expect(out.text).toContain('answered, but not as the sasy-watch daemon')
+  expect(out.text).not.toContain('IGNORE_PREVIOUS')
+})
+
+test('invisible and reordering characters are not drawn', async ($, on) => {
+  world(on)
+  await started($)
+
+  await $.tool.call({ tool: 'Bash', command: 'rm -rf build\u202e\u200bxyz' })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const heading = await ui.find({ type: 'Text', text: /sasy-guard denied Bash/ })
+  expect(heading?.text).toContain('rm -rf buildxyz')
+  await ui.unmount()
 })

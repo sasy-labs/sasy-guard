@@ -43,7 +43,8 @@ It fails closed. A call is denied when the daemon cannot be reached after one
 `sasy-watch ensure` (unless `SASY_FAIL_OPEN=true` and the daemon's hook-auth file
 is in place), when the daemon's answer is not one of its exact answer shapes or
 authentication is refused, and when the mod cannot name the call's caller: a
-subagent running in a git worktree of its own, a subagent that started before
+subagent running in a git worktree of its own (given one, or entering one), a
+subagent that started before
 the mod loaded, or any call in a session the mod did not see start. An Agent
 call asking for a remote (cloud) subagent is refused too: that subagent's calls
 run where neither the mod nor the local daemon sees them. A subagent whose own

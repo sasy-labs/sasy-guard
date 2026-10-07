@@ -114,7 +114,8 @@ That happens when:
   daemon's hook-authentication file is in place);
 - the daemon refuses authentication, or its answer is not one the mod knows;
 - the mod cannot tell who is making the call: a subagent that runs in a git
-  worktree of its own (its folder is not visible to a mod), a subagent that
+  worktree of its own, given one or entering one itself (its folder is not
+  visible to a mod), a subagent that
   started before the mod loaded, or any call in a session the mod did not see
   start (for example, after enabling the mod mid-session). Start a new session,
   or use the sasy-guard plugin for workflows with worktree subagents;
