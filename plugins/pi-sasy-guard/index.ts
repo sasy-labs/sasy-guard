@@ -74,9 +74,10 @@ export function createGuard(opts: GuardOptions = {}) {
     async function postOk(path: string, body: unknown): Promise<boolean> {
       const out = (await client.postEnsuring(path, body)) as { ok?: unknown; instance?: unknown } | null;
       if (!out || out.ok !== true) throw new Error(`sasy-watch did not accept ${path}`);
-      const now = typeof out.instance === "string" ? out.instance : undefined;
-      const changed = instance !== undefined && now !== undefined && now !== instance;
-      if (now !== undefined) instance = now;
+      // Without the daemon's run id a restart could go unnoticed: no answer.
+      if (typeof out.instance !== "string" || out.instance === "") throw new Error(`sasy-watch did not name its run on ${path}`);
+      const changed = instance !== undefined && out.instance !== instance;
+      instance = out.instance;
       return changed;
     }
 

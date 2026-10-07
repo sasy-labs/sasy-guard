@@ -184,6 +184,14 @@ test("a daemon that restarts again during the resend blocks the call", async () 
   assert.match(out.reason, /restarted while the session was being resent/);
 });
 
+test("a session answer without the daemon's run id blocks the call", async () => {
+  const h = harness();
+  sessionAnswer = { ok: true };
+  const out = (await h.fire("tool_call", readEnv)) as { block: boolean; reason: string };
+  assert.equal(out.block, true);
+  assert.match(out.reason, /did not name its run/);
+});
+
 test("a push the daemon does not accept blocks the call", async () => {
   const h = harness();
   sessionAnswer = { error: "not a registered pi session" };
@@ -292,6 +300,8 @@ test("decisions parse from the daemon's hook output", () => {
   assert.equal(parseDecision({ hookSpecificOutput: { permissionDecision: "block" } }), undefined);
   assert.equal(parseDecision({ hookSpecificOutput: [] }), undefined);
   assert.equal(parseDecision({ message: "policy engine unavailable" }), undefined);
+  assert.equal(parseDecision({ hookSpecificOutput: { hookEventName: "PreToolUse" } }), undefined);
+  assert.deepEqual(parseDecision({ hookSpecificOutput: { additionalContext: "note" } }), { kind: "allow" });
   assert.deepEqual(parseDecision({ hookSpecificOutput: { updatedInput: {} } }), { kind: "allow" });
   assert.equal(parseDecision({ hookSpecificOutput: 3 }), undefined);
 });

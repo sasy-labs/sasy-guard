@@ -46,7 +46,12 @@ export function parseDecision(body: unknown): Decision | undefined {
   if (d === "ask") return { kind: "ask", reason };
   // No decision (an input rewrite only) or an explicit allow; any other value
   // is unknown to this extension and fails closed.
-  if (d === undefined || d === "allow") return { kind: "allow" };
+  if (d === "allow") return { kind: "allow" };
+  // No decision is "no objection" only from the daemon's own output forms: an
+  // input rewrite or added context. Anything else is unknown.
+  const { updatedInput, additionalContext } = hs as Record<string, unknown>;
+  const rewrite = typeof updatedInput === "object" && updatedInput !== null && !Array.isArray(updatedInput);
+  if (d === undefined && (rewrite || typeof additionalContext === "string")) return { kind: "allow" };
   return undefined;
 }
 
