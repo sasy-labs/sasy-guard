@@ -220,29 +220,32 @@ export class ResultTable {
 
   /** A call whose structured result the mod does not have (refused, or
    *  failed): its row is left to the transcript, which records it. */
-  unknown(id: string): void {
-    this.markLost(id)
+  unknown(id: string): number {
+    return this.markLost(id)
   }
 
-  /** Keeps one result, dropping the oldest to stay in bounds. */
-  note(id: string, value: unknown): void {
+  /** Keeps one result, dropping the oldest to stay in bounds. Returns how
+   *  many lost ids it had to forget (each then a gap for the daemon). */
+  note(id: string, value: unknown): number {
     const size = resultSize(value)
-    if (size > MAX_BATCH_BYTES) {
-      this.markLost(id)
-      return
-    }
+    if (size > MAX_BATCH_BYTES) return this.markLost(id)
     this.values.set(id, value)
     this.bytes += size
+    let forgotten = 0
     while (this.values.size > MAX_RESULTS || this.bytes > MAX_RESULT_BYTES) {
       const [oldest] = this.values.keys()
       this.forget([oldest!])
-      this.markLost(oldest!)
+      forgotten += this.markLost(oldest!)
     }
+    return forgotten
   }
 
-  private markLost(id: string): void {
+  /** Remembers a lost id; returns 1 if an older one had to be forgotten. */
+  private markLost(id: string): number {
     this.lost.add(id)
-    if (this.lost.size > MAX_LOST) this.lost.delete(this.lost.values().next().value!)
+    if (this.lost.size <= MAX_LOST) return 0
+    this.lost.delete(this.lost.values().next().value!)
+    return 1
   }
 
   /** Lets go of every result (a new session). */

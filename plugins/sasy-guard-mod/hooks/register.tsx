@@ -763,10 +763,13 @@ export const register: Register = on => {
     if (!feedSupported) return
     // A refused or failed call has no structured result here (the transcript
     // records its error string): its row is read from the transcript.
-    if (result.result === undefined || result.result === null) return toolResults.unknown(id)
     // A result too large or dropped is remembered by id: its row, whenever it
-    // comes, is read from the transcript instead.
-    toolResults.note(id, result.result)
+    // comes, is read from the transcript instead. Past that memory, a gap.
+    const forgotten =
+      result.result === undefined || result.result === null
+        ? toolResults.unknown(id)
+        : toolResults.note(id, result.result)
+    if (forgotten > 0) feed = { ...feed, gap: feed.gap + forgotten }
   }
 
   on('tool.call', async ($, e, next) => {
