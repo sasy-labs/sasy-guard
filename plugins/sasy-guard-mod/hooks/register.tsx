@@ -233,19 +233,24 @@ async function canAsk($: EngineInterface): Promise<boolean> {
   return (await $.session.surfaces()).length > 0
 }
 
+/** What became of one approval dialog: the call's result and what to record. */
+type DialogOutcome = { result: PreToolUseResult; summary: string }
+
 /**
  * The mod's own approval dialog for a one-time bypass the daemon offered. It
  * holds the call while it asks, records the answer with the daemon
- * (/v1/approval, routed by this call's tool_use_id), and on approval checks the
- * call again: the daemon then allows it once, unless what the decision rested
- * on changed. A dismissed dialog declines. Replaces the model-driven
- * AskUserQuestion round trip; the model reads only the outcome.
+ * (/v1/approval, bound to this call's tool_use_id and offer), and on approval
+ * checks the call again: the daemon then allows it once, unless what the
+ * decision rested on changed, in which case the new offer is shown once more.
+ * A dismissed dialog declines. Replaces the model-driven AskUserQuestion round
+ * trip; the model reads only the outcome.
  */
 async function askForBypass(
   $: EngineInterface,
   input: CheckInput,
   offer: BypassOffer,
-): Promise<PreToolUseResult> {
+  attemptsLeft = 1,
+): Promise<DialogOutcome> {
   const labels = choiceLabels(offer)
   const question = offer.question.replace(/\s*\[SASY-ALLOW:[0-9a-f]+\]\s*$/, '')
   let answer = labels.decline ?? 'Deny'
@@ -271,24 +276,39 @@ async function askForBypass(
   } catch {
     // Not the daemon's answer: nothing was recorded.
   }
+  const policy = offer.policyReason.replace(MARKER, '').trim()
   if (choice === 'decline') {
     return {
-      deny:
-        `[SASY] The user declined a one-time bypass: ${offer.reason}. ` +
-        'Follow the suggested fix instead of retrying the same action.',
+      result: {
+        deny:
+          '[SASY] The user declined a one-time bypass of this check. Follow the ' +
+          `suggested fix instead of retrying the same action.\n\n${policy}`,
+      },
+      summary: 'you denied it',
     }
   }
   if (!isRecorded) {
-    return { deny: `[SASY] The approval could not be recorded, so the action stays blocked: ${offer.reason}.` }
+    return {
+      result: { deny: `[SASY] The approval could not be recorded, so the action stays blocked.\n\n${policy}` },
+      summary: 'your approval could not be recorded',
+    }
   }
   const again = await checkCall($, input)
-  if (again.result.deny !== undefined) return again.result
+  if (again.result.deny !== undefined) {
+    // The decision's grounds changed since the question: ask about the new one.
+    if (again.offer !== undefined && attemptsLeft > 0) {
+      return askForBypass($, input, again.offer, attemptsLeft - 1)
+    }
+    return { result: again.result, summary: 'it was blocked again' }
+  }
+  const note =
+    choice === 'trust-domain'
+      ? `The user chose in the SASY dialog to trust ${offer.domain ?? 'this host'} for the rest ` +
+        'of this session; this action may proceed.'
+      : 'The user approved a one-time bypass of a SASY check for this action in the SASY dialog.'
   return {
-    ...again.result,
-    additionalContext: [
-      ...(again.result.additionalContext ?? []),
-      'The user approved a one-time bypass of a SASY check for this action in the SASY dialog.',
-    ],
+    result: { ...again.result, additionalContext: [...(again.result.additionalContext ?? []), note] },
+    summary: choice === 'trust-domain' ? `you trusted ${offer.domain ?? 'the host'}` : 'you approved it once',
   }
 }
 
@@ -572,6 +592,8 @@ export const register: Register = on => {
     const info = await read($, sessionInfo)
     const caller = attribute(await read($, agents), callerOf.get(tool_use_id))
     let ours: PreToolUseResult
+    // When the mod's own dialog asked the user, what to record for the call.
+    let asked: PreToolUseResult | undefined
     if (info === null) {
       ours = {
         deny:
@@ -611,15 +633,18 @@ export const register: Register = on => {
       // A one-time bypass on offer: ask the user here, holding the call, where
       // someone can be asked; elsewhere the denial (with its model-driven
       // AskUserQuestion instructions) stands, as with the hook plugin.
-      ours =
-        answer.offer !== undefined && (await canAsk($))
-          ? await askForBypass($, input, answer.offer)
-          : answer.result
+      if (answer.offer !== undefined && (await canAsk($))) {
+        const outcome = await askForBypass($, input, answer.offer)
+        ours = outcome.result
+        asked = { ask: `[SASY] ${answer.offer.reason} — ${outcome.summary}` }
+      } else {
+        ours = answer.result
+      }
     }
     // Any other settings hooks run whatever SASY answered.
     const theirs = await next(e)
     const result = ours.deny !== undefined ? denyWith(ours, theirs) : combine(ours, theirs)
-    await recordSafely($, e, result)
+    await recordSafely($, e, asked ?? result)
     return result
   }).catch(($, e, next) =>
     next.called ? next(e) : { deny: '[SASY] security check failed inside sasy-guard-mod' },

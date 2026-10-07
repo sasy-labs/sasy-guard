@@ -33,6 +33,8 @@ export type BypassOffer = {
   labels: string[]
   /** The policy's reason as the user should read it. */
   reason: string
+  /** The policy's reason with its suggested fix, as the model should read it. */
+  policyReason: string
   /** The domain trust-domain would trust for the session, when offered. */
   domain?: string
 }
@@ -45,11 +47,12 @@ const OFFER_LABELS = ['approve', 'decline', 'trust-domain']
 /** The `sasyApproval` field of a daemon answer, or undefined when it is not one. */
 function offerOf(value: unknown): BypassOffer | undefined {
   if (!isRecord(value)) return undefined
-  const { question, labels, reason, domain, ...unknown } = value
+  const { question, labels, reason, policyReason, domain, ...unknown } = value
   const isValid =
     Object.keys(unknown).length === 0 &&
     typeof question === 'string' && question !== '' &&
     typeof reason === 'string' &&
+    typeof policyReason === 'string' &&
     Array.isArray(labels) &&
     labels.includes('approve') && labels.includes('decline') &&
     labels.every(label => OFFER_LABELS.includes(label as string)) &&
@@ -60,6 +63,7 @@ function offerOf(value: unknown): BypassOffer | undefined {
     question: question as string,
     labels: labels as string[],
     reason: reason as string,
+    policyReason: policyReason as string,
     ...(domain === undefined ? {} : { domain: domain as string }),
   }
 }

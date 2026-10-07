@@ -35,9 +35,9 @@ and shows the policy's question with **Approve once** and **Deny** (and, when
 the policy names a host, **Trust *host* for this session**). Your answer goes
 to the daemon (`/v1/approval`, bound to this call); on approval the mod checks
 the call again and the daemon lets it run once. Claude only learns the outcome.
-Where nothing can be asked (`claude -p`), or with a daemon that does not send
-the offer, the denial stands and Claude asks you through its own question tool,
-as with the hook plugin.
+With a daemon that does not send the offer, the denial stands and Claude asks
+you through its own question tool, as with the hook plugin. Where nobody can be
+asked at all (`claude -p`), the call stays refused.
 
 It fails closed. A call is denied when the daemon cannot be reached after one
 `sasy-watch ensure` (unless `SASY_FAIL_OPEN=true` and the daemon's hook-auth file

@@ -165,6 +165,7 @@ function world(on: On, options: WorldOptions = {}): World {
                   question: 'SASY blocked this Bash action — Piping a download into a shell. Approve a ONE-TIME bypass? [SASY-ALLOW:ab12]',
                   labels: ['approve', 'decline'],
                   reason: 'Piping a download into a shell',
+                  policyReason: '[SASY] Piping a download into a shell\nFix: download and read the script first',
                 },
               }
             : {}),
@@ -713,6 +714,7 @@ test('the mod asks the user itself and, on approval, runs the call once', async 
   // The dialog's own AskUserQuestion is not checked again by the mod.
   expect(w.checks).toHaveLength(2)
   expect(w.hookCalls.at(-1)).toBe(CURL_SH)
+  expect(w.lines.at(-1)).toBe('1 checked · 0 denied · 1 asked')
 })
 
 test('declining in the dialog keeps the call blocked and tells the model', async ($, on) => {
@@ -722,9 +724,12 @@ test('declining in the dialog keeps the call blocked and tells the model', async
   const call = await $.tool.call({ tool: 'Bash', command: CURL_SH })
 
   expect(call.deny ?? call.text).toContain('The user declined a one-time bypass')
+  expect(call.deny ?? call.text).toContain('Fix: download and read the script first')
   expect(call.deny ?? call.text).not.toContain('AskUserQuestion')
   expect(w.approvals[0]).toMatchObject({ choice: 'decline' })
   expect(w.checks).toHaveLength(1)
+  // Recorded as an ask, with what the user chose.
+  expect(w.lines.at(-1)).toBe('1 checked · 0 denied · 1 asked')
 })
 
 test('a dismissed dialog declines', async ($, on) => {
@@ -760,7 +765,12 @@ test('a daemon without the offer keeps the model-driven flow', async ($, on) => 
 
 test('only the daemon\'s own offer shape is a bypass offer', () => {
   const deny = { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: '[SASY] no' }
-  const offer = { question: 'Approve? [SASY-ALLOW:ab]', labels: ['approve', 'decline'], reason: 'no' }
+  const offer = {
+    question: 'Approve? [SASY-ALLOW:ab]',
+    labels: ['approve', 'decline'],
+    reason: 'no',
+    policyReason: '[SASY] no\nFix: do not',
+  }
   const answer = (o: unknown, hs: unknown = deny) =>
     parseAnswer(JSON.stringify({ hookSpecificOutput: hs, sasyApproval: o }))
   expect(answer(offer)?.offer).toEqual(offer)
@@ -770,6 +780,8 @@ test('only the daemon\'s own offer shape is a bypass offer', () => {
   expect(answer({ ...offer, labels: ['approve'] })).toBeUndefined()
   expect(answer({ ...offer, labels: ['approve', 'decline', 'trust-domain'] })).toBeUndefined()
   expect(answer({ ...offer, extra: 1 })).toBeUndefined()
+  const { policyReason: _dropped, ...withoutPolicy } = offer
+  expect(answer(withoutPolicy)).toBeUndefined()
   expect(answer(offer, { hookEventName: 'PreToolUse', updatedInput: { command: 'ls' } })).toBeUndefined()
   expect(parseAnswer(JSON.stringify({ sasyApproval: offer }))).toBeUndefined()
 })
