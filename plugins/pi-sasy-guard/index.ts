@@ -175,17 +175,29 @@ export function createGuard(opts: GuardOptions = {}) {
       };
       const summarized = (e: SessionEntryLike) =>
         (e as { type?: unknown }).type === "branch_summary" ? (e as { fromId?: unknown }).fromId : undefined;
-      // Transitively: a branch that was left may hold summaries of older ones.
-      const visit = (entries: readonly SessionEntryLike[], depth: number) => {
-        for (const e of entries) {
+      // Transitively, without a depth limit: a branch that was left may hold
+      // summaries of older ones. Each summarized leaf is expanded once.
+      const expanded = new Set<string>();
+      const visit = (entries: readonly SessionEntryLike[]): void => {
+        const stack: { entries: readonly SessionEntryLike[]; i: number }[] = [{ entries, i: 0 }];
+        while (stack.length > 0) {
+          const top = stack[stack.length - 1];
+          if (top.i >= top.entries.length) {
+            stack.pop();
+            continue;
+          }
+          const e = top.entries[top.i];
           const fromId = summarized(e);
-          if (typeof fromId === "string" && !seen.has(fromId) && depth < 64) {
-            visit(ctx.sessionManager.getBranch(fromId), depth + 1);
+          if (typeof fromId === "string" && !expanded.has(fromId)) {
+            expanded.add(fromId);
+            stack.push({ entries: ctx.sessionManager.getBranch(fromId), i: 0 });
+            continue; // revisit e once its summarized branch is added
           }
           add(e);
+          top.i++;
         }
       };
-      visit(branch, 0);
+      visit(branch);
       return out;
     }
 
@@ -257,8 +269,8 @@ export function createGuard(opts: GuardOptions = {}) {
       show(ctx);
       try {
         await push(ctx);
-      } catch {
-        ctx.ui.setStatus(KEY, `${statusText(counts)} · daemon unreachable`);
+      } catch (err) {
+        ctx.ui.setStatus(KEY, `${statusText(counts)} · daemon did not answer (${(err as Error).message})`);
       }
     });
 

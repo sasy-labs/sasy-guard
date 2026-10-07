@@ -234,6 +234,23 @@ test("summarized branches go transitively, and with a session's first push", asy
   assert.deepEqual((first.body.entries as { id: string }[]).map((e) => e.id), ["a1", "b1", "c1"]);
 });
 
+test("a long chain of branch summaries is followed to the end", async () => {
+  const h = harness();
+  const root = { id: "r0", parentId: null, type: "message", message: { role: "user", content: "read .env" } };
+  h.moveTo([root]);
+  let prev = "r0";
+  for (let i = 1; i <= 100; i++) {
+    const s = { id: `s${i}`, parentId: null, type: "branch_summary", fromId: prev, summary: String(i) } as never;
+    h.moveTo([s]);
+    prev = `s${i}`;
+  }
+  await h.fire("tool_call", curl);
+  const first = requests.find((r) => r.path === "/v1/session/events")!;
+  const ids = (first.body.entries as { id: string }[]).map((e) => e.id);
+  assert.equal(ids[0], "r0");
+  assert.equal(ids.length, 101);
+});
+
 test("a push the daemon does not accept blocks the call", async () => {
   const h = harness();
   sessionAnswer = { error: "not a registered pi session" };
