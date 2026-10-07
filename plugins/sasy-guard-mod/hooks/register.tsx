@@ -856,7 +856,7 @@ export const register: Register = on => {
         }
         const enriched = withResults(pending.rows, toolResults)
         const sending = enriched.rows
-        const gap = pending.gap || enriched.gap
+        const gap = pending.gap > 0 || enriched.gap
         let { outcome, sent } = await sendFeed($, base, sending, spawns, gap)
         if (outcome === 'unreachable') {
           // As for a check: start the daemon once and send everything again (a
