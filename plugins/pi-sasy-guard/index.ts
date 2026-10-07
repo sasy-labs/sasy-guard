@@ -52,7 +52,6 @@ export function createGuard(opts: GuardOptions = {}) {
     /** The daemon may hold part of the branch only (it restarted mid-resend):
      *  the next push resends the whole branch as a reset. */
     let resetOwed = false;
-    let rejected: string[] = [];
     let counts: Counts = { checked: 0, denied: 0, asked: 0 };
     let decisions: DecisionRecord[] = [];
     let pushChain: Promise<void> = Promise.resolve();
@@ -95,11 +94,12 @@ export function createGuard(opts: GuardOptions = {}) {
     }
 
     /**
-     * Records a call pi will not run: for the next push, and as a custom session
-     * entry (kept out of the model's context) so a resumed session still knows.
+     * Records a call pi will not run as a custom session entry (kept out of the
+     * model's context). pi writes it under the call's message, before the
+     * call's result, so it names that call; the next push carries it, and a
+     * resumed session still knows.
      */
     function reject(toolCallId: string): void {
-      rejected.push(toolCallId);
       pi.appendEntry(KEY, { rejected: [toolCallId] });
     }
 
@@ -136,7 +136,6 @@ export function createGuard(opts: GuardOptions = {}) {
           // the daemon has not seen, unless this is a reset that rebuilds it all).
           const base = jumped ? branch : branch.filter((e) => !sent.has(e.id));
           const toSend = withSummarizedBranches(ctx, base).filter((e) => jumped || !sent.has(e.id));
-          const reported = [...rejected];
           // Even with nothing new, the push goes: its answer shows whether the
           // daemon restarted (and lost the session) since the last one.
           const parts = batches(toSend.map(shrinkEntry));
@@ -151,7 +150,6 @@ export function createGuard(opts: GuardOptions = {}) {
                 seq: nextSeq(),
                 ...(generation ? { generation } : {}),
                 entries: part,
-                rejected_tool_call_ids: i === 0 ? reported : [],
                 reset: jumped && i === 0,
               })) || restarted;
             for (const e of part as { id: string }[]) sent.add(e.id);
@@ -159,7 +157,6 @@ export function createGuard(opts: GuardOptions = {}) {
           if (!restarted) {
             resetOwed = false;
             lastLeaf = leaf;
-            rejected = rejected.filter((id) => !reported.includes(id));
             return;
           }
           sent = new Set();
@@ -282,7 +279,6 @@ export function createGuard(opts: GuardOptions = {}) {
       sent = new Set();
       lastLeaf = null;
       generation = undefined;
-      rejected = [];
       counts = { checked: 0, denied: 0, asked: 0 };
       decisions = [];
       started = undefined;

@@ -122,6 +122,20 @@ function withoutImages(content: unknown): unknown {
   return content.filter((b) => !(b && typeof b === "object" && (b as { type?: unknown }).type === "image"));
 }
 
+/** Text kept from an entry too large to send whole (at most 4 bytes a char,
+ *  so well within a request). */
+const MAX_STUB_TEXT_CHARS = 2 * 1024 * 1024;
+
+/** The text in pi message content (a string, or text blocks). */
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((b) => (b && typeof b === "object" && (b as { type?: unknown }).type === "text" ? String((b as { text?: unknown }).text ?? "") : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
 /** The tool arguments policies read (paths, commands, patterns, URLs). */
 const POLICY_ARGS = ["command", "path", "file_path", "notebook_path", "pattern", "url"];
 /** Each policy argument's length in a stub that is still too large whole. */
@@ -143,9 +157,9 @@ function policyArgs(args: unknown, max = Infinity): Record<string, string> {
  * metadata (on the entry and its message, never inside tool arguments), and
  * less the data of other extensions' custom entries. An entry still larger
  * than a request can carry is sent as a stub that keeps its place in the tree,
- * its role, its tool calls' and results' ids and names, and the arguments
- * policies read (cut short only if still too large), so the push goes through
- * and provenance survives.
+ * its role, its text (cut short), its tool calls' and results' ids and names,
+ * and the arguments policies read (cut short only if still too large), so the
+ * push goes through and provenance survives.
  */
 export function shrinkEntry(entry: unknown): unknown {
   if (!entry || typeof entry !== "object") return entry;
@@ -158,9 +172,27 @@ export function shrinkEntry(entry: unknown): unknown {
     const { details: _details, ...m } = e.message as Record<string, unknown>;
     e.message = { ...m, content: withoutImages(m.content) };
   }
+  // A custom message and a context edit's replacement also carry content the
+  // model sees.
+  if ("content" in e) e.content = withoutImages(e.content);
+  if (e.replacement && typeof e.replacement === "object") {
+    const r = e.replacement as Record<string, unknown>;
+    e.replacement = { ...r, content: withoutImages(r.content) };
+  }
   if (Buffer.byteLength(JSON.stringify(e)) <= MAX_PUSH_BYTES - ENVELOPE_BYTES) return e;
   const m = (e.message ?? {}) as Record<string, unknown>;
   const note = { type: "text", text: "[sasy-guard: entry too large to send]" };
+  // The text the model sees goes too, cut to a size a request can carry.
+  const text = (content: unknown) => [note, { type: "text", text: textOf(content).slice(0, MAX_STUB_TEXT_CHARS) }];
+  const kept = {
+    ...("content" in e ? { content: text(e.content) } : {}),
+    ...(e.replacement && typeof e.replacement === "object"
+      ? { replacement: { content: text((e.replacement as Record<string, unknown>).content) } }
+      : {}),
+    ...(typeof e.summary === "string" ? { summary: e.summary.slice(0, MAX_STUB_TEXT_CHARS) } : {}),
+    ...(typeof e.customType === "string" ? { customType: e.customType } : {}),
+    ...(typeof e.fromId === "string" ? { fromId: e.fromId } : {}),
+  };
   // The policy arguments go whole when the stub then fits, else cut short.
   const stub = (max: number) => {
     const calls = Array.isArray(m.content)
@@ -175,8 +207,9 @@ export function shrinkEntry(entry: unknown): unknown {
       type: e.type,
       id: e.id,
       parentId: e.parentId,
+      ...kept,
       ...(e.message
-        ? { message: { role: m.role, toolCallId: m.toolCallId, toolName: m.toolName, content: [note, ...calls] } }
+        ? { message: { role: m.role, toolCallId: m.toolCallId, toolName: m.toolName, content: [...text(m.content), ...calls] } }
         : {}),
     };
   };

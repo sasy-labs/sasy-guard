@@ -101,7 +101,12 @@ function harness(opts: { hasUI?: boolean; confirm?: boolean; daemonPort?: number
   };
   const appended: { customType: string; data: unknown }[] = [];
   const pi = {
-    appendEntry: (customType: string, data: unknown) => appended.push({ customType, data }),
+    // As pi does: the entry joins the branch under its current last entry.
+    appendEntry: (customType: string, data: unknown) => {
+      appended.push({ customType, data });
+      const branchNow = branch();
+      branchNow.push({ id: `g${appended.length}`, parentId: branchNow.at(-1)?.id ?? null, type: "custom", customType, data } as never);
+    },
     on: (name: string, h: (event: unknown, ctx: unknown) => unknown) => handlers.set(name, h),
     registerCommand: (name: string, c: { handler: (args: string, ctx: unknown) => Promise<void> }) => commands.set(name, c),
   };
@@ -150,12 +155,13 @@ test("a denial blocks the call with the policy's reason and shows it", async () 
   assert.equal(requests[1].body.generation, "gen-1");
   // The blocked call is also recorded in the session, out of the model's context.
   assert.deepEqual(h.appended, [{ customType: "sasy-guard", data: { rejected: ["c2"] } }]);
-  // The blocked call is reported as never run on the next push; e1 is not re-sent.
+  // The next push carries that entry, which names the call as never run; e1 is
+  // not re-sent.
   answer = {};
   await h.fire("tool_call", readEnv);
   const push = requests.filter((r) => r.path === "/v1/session/events").at(-1)!;
-  assert.deepEqual(push.body.rejected_tool_call_ids, ["c2"]);
-  assert.deepEqual(push.body.entries, []);
+  assert.deepEqual(push.body.entries, [{ id: "g1", parentId: "e1", type: "custom", customType: "sasy-guard", data: { rejected: ["c2"] } }]);
+  assert.equal(push.body.rejected_tool_call_ids, undefined);
   // With nothing new the push still goes, so a daemon restart is noticed.
   const before = requests.filter((r) => r.path === "/v1/session/events").length;
   await h.fire("tool_call", readEnv);
@@ -207,7 +213,8 @@ test("a daemon that restarts again during the resend blocks the call", async () 
   await h.fire("tool_call", curl);
   const pushes = requests.filter((r) => r.path === "/v1/session/events");
   assert.equal(pushes[0].body.reset, true);
-  assert.deepEqual((pushes[0].body.entries as { id: string }[]).map((e) => e.id), ["e1", "e2"]);
+  // (g1 is the extension's record of the call it blocked.)
+  assert.deepEqual((pushes[0].body.entries as { id: string }[]).map((e) => e.id), ["e1", "e2", "g1"]);
 });
 
 test("a session answer without the registration's generation blocks the call", async () => {
@@ -443,20 +450,30 @@ test("pushed entries go whole, less media; only an oversized one becomes a stub"
     type: "message",
     id: "e7",
     parentId: "e6",
-    message: { role: "assistant", toolCallId: undefined, toolName: undefined, content: [{ type: "text", text: "[sasy-guard: entry too large to send]" }, { type: "toolCall", id: "t2", name: "write", arguments: { path: "a", command: "c".repeat(10_000) } }] },
+    message: { role: "assistant", toolCallId: undefined, toolName: undefined, content: [{ type: "text", text: "[sasy-guard: entry too large to send]" }, { type: "text", text: "" }, { type: "toolCall", id: "t2", name: "write", arguments: { path: "a", command: "c".repeat(10_000) } }] },
   });
   // Policy arguments too large even in a stub are cut short.
   const huger = { ...huge, message: { role: "assistant", content: [{ type: "toolCall", id: "t3", name: "bash", arguments: { command: "c".repeat(MAX_PUSH_BYTES) } }] } };
   const cut = shrinkEntry(huger) as { message: { content: { arguments?: { command?: string } }[] } };
-  assert.equal(cut.message.content[1].arguments?.command?.length, 4096);
-  // An entry larger than a request can carry is sent as a stub keeping its place.
+  assert.equal(cut.message.content[2].arguments?.command?.length, 4096);
+  // An entry larger than a request can carry is sent as a stub keeping its
+  // place and its text, cut short.
   const wide = { id: "e5", parentId: "e4", type: "message", message: { role: "toolResult", toolCallId: "t9", toolName: "read", content: [{ type: "text", text: "z".repeat(MAX_PUSH_BYTES) }] } };
-  assert.deepEqual(shrinkEntry(wide), {
-    type: "message",
-    id: "e5",
-    parentId: "e4",
-    message: { role: "toolResult", toolCallId: "t9", toolName: "read", content: [{ type: "text", text: "[sasy-guard: entry too large to send]" }] },
-  });
+  const wideStub = shrinkEntry(wide) as { message: { toolCallId: string; content: { text: string }[] } };
+  assert.equal(wideStub.message.toolCallId, "t9");
+  assert.equal(wideStub.message.content[0].text, "[sasy-guard: entry too large to send]");
+  assert.equal(wideStub.message.content[1].text, "z".repeat(2 * 1024 * 1024));
+  // A custom message's and a context edit's images are dropped too; their text
+  // is kept, in a stub as well.
+  const image = { type: "image", data: "i".repeat(MAX_PUSH_BYTES), mimeType: "image/png" };
+  const custom = { id: "c1", parentId: "e5", type: "custom_message", customType: "x", content: [{ type: "text", text: "secret from .env" }, image] };
+  assert.deepEqual(shrinkEntry(custom), { ...custom, content: [{ type: "text", text: "secret from .env" }] });
+  const edit = { id: "c2", parentId: "c1", type: "context_edit", replacement: { content: [{ type: "text", text: "kept" }, image] } };
+  assert.deepEqual(shrinkEntry(edit), { ...edit, replacement: { content: [{ type: "text", text: "kept" }] } });
+  const bigCustom = { ...custom, content: [{ type: "text", text: "secret from .env" }, { type: "text", text: "w".repeat(MAX_PUSH_BYTES) }] };
+  const customStub = shrinkEntry(bigCustom) as { customType: string; content: { text: string }[] };
+  assert.equal(customStub.customType, "x");
+  assert.ok(customStub.content[1].text.startsWith("secret from .env"));
   // Each request leaves room for its envelope: three ~60-byte entries under a
   // limit just above the envelope go one per batch.
   assert.equal(batches([1, 2, 3].map((n) => ({ n, pad: "y".repeat(40) })), 64 * 1024 + 100).length, 3);
