@@ -200,10 +200,14 @@ That happens when:
 - the daemon refuses authentication, or its answer is not one the mod knows;
 - the mod cannot tell who is making the call: a subagent that runs in a git
   worktree of its own, given one or entering one itself (its folder is not
-  visible to a mod), a subagent that
-  started before the mod loaded, or any call in a session the mod did not see
-  start (for example, after enabling the mod mid-session). Start a new session,
-  or use the sasy-guard plugin for workflows with worktree subagents;
+  visible to a mod), a subagent that started before the mod loaded, or any
+  call in a session the mod did not see start (for example, after enabling the
+  mod mid-session). Start a new session, or use the sasy-guard plugin for
+  workflows with worktree subagents. Claude Code's own background agents count
+  here too: when it previews a prompt it suggests (the dim text in the prompt
+  box), it may run that prompt's commands early, and the mod denies them. The
+  band can then show a denial for a command you did not ask for; that command
+  did not run, and sending the prompt checks it as usual;
 - Claude asks for a **remote** subagent (one that runs in a cloud session): its
   calls would run where neither the mod nor the daemon on your machine sees
   them. A subagent whose own definition makes it remote cannot be recognised

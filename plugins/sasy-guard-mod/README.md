@@ -51,7 +51,8 @@ is in place), when the daemon's answer is not one of its exact answer shapes or
 authentication is refused, and when the mod cannot name the call's caller: a
 subagent running in a git worktree of its own (given one, or entering one), a
 subagent that started before
-the mod loaded, or any call in a session the mod did not see start. An Agent
+the mod loaded, an agent Claude Code runs itself (such as a preview of a
+suggested prompt), or any call in a session the mod did not see start. An Agent
 call asking for a remote (cloud) subagent is refused too: that subagent's calls
 run where neither the mod nor the local daemon sees them. A subagent whose own
 definition forces remote isolation cannot be told apart at spawn time, and its
