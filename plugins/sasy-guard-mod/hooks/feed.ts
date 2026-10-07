@@ -89,6 +89,13 @@ export function enqueue(buffer: FeedBuffer, row: FeedRow): FeedBuffer {
   return { rows: buffer.rows, bytes, gap: buffer.gap }
 }
 
+/** How many rows from the front can be sent: those before the first that
+ *  reports a tool call still running (its result is not yet known). */
+export function readyRows(rows: FeedRow[], running: ReadonlySet<string>): number {
+  const held = rows.findIndex(row => resultIds(row).some(id => running.has(id)))
+  return held === -1 ? rows.length : held
+}
+
 /** The tool_use ids a row's tool results answer. */
 function resultIds(row: FeedRow): string[] {
   return row.message.content.flatMap(b => {
@@ -148,6 +155,8 @@ export function batches(rows: FeedRow[]): FeedRow[][] {
  * it is, marked lost.
  */
 export function afterPush(now: FeedBuffer, pending: FeedBuffer, sent: number, delivered: boolean): FeedBuffer {
+  // Pushes run one at a time, so `now` is `pending` plus rows kept since,
+  // unless the buffer was dropped meanwhile (it no longer starts with them).
   const stillQueued = pending.rows.every((row, i) => now.rows[i] === row)
   if (!stillQueued) return now
   const rows = now.rows.slice(sent)

@@ -22,17 +22,17 @@ import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
 import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
 import type { FeedBuffer, FeedRow } from './feed'
-import { MAX_RESULTS, afterPush, batches, emptyBuffer, enqueue, rowOf, withResults } from './feed'
+import { MAX_RESULTS, afterPush, batches, emptyBuffer, enqueue, readyRows, rowOf, withResults } from './feed'
 import type { BypassOffer, CheckAnswer, CheckInput, HostHeaders } from './enforce'
 import {
-  ENDPOINT,
-  FAIL_MODES,
   MARKER,
   SESSION_NOTE,
   choiceLabels,
   cleanOffer,
   cleanReason,
+  contextOf,
   decisionLines,
+  healthLine,
   shorten,
   statusText,
   targetOf,
@@ -136,43 +136,52 @@ async function postCheck(
   return { error: `sasy-watch answered HTTP ${status}`, kind }
 }
 
-/** Whether a shell test passes (`test -x path`, `command -v bun`). */
-async function passes($: EngineInterface, argv: string[]): Promise<boolean> {
+/** Whether `path` is a file (following a link). */
+async function isFile($: EngineInterface, path: string): Promise<boolean> {
   try {
-    return (await $.process.run(argv, { timeoutMs: 3000 })).exitCode === 0
+    return (await $.fs.stat(path)).kind === 'file'
   } catch {
     return false
   }
 }
 
 /**
- * The command that runs sasy-watch, chosen as the hook plugin's `lib.sh`
- * chooses it: an executable SASY_WATCH_BIN, else the installed binary, else a
- * development checkout's compiled binary, else bun running its source. The
- * first that qualifies is used, and its failure stands.
+ * The commands that may run sasy-watch, in the order the hook plugin's
+ * `lib.sh` tries them: SASY_WATCH_BIN, the installed binary, a development
+ * checkout's compiled binary, then bun running its source. Only files that
+ * exist are listed.
  */
-async function watchCommand($: EngineInterface): Promise<string[] | undefined> {
-  const isExecutable = (path: string) => passes($, ['test', '-x', path])
-  const explicit = await $.env.get('SASY_WATCH_BIN')
-  if (explicit && (await isExecutable(explicit))) return [explicit]
-  const installed = `${await sasyHome($)}/bin/sasy-watch`
-  if (await isExecutable(installed)) return [installed]
+async function watchCommands($: EngineInterface): Promise<string[][]> {
   const dev = `${$.plugin.root}/../../packages/claude-code`
-  if (await isExecutable(`${dev}/dist/sasy-watch`)) return [`${dev}/dist/sasy-watch`]
-  const hasSource = await passes($, ['test', '-f', `${dev}/src/main.ts`])
-  if (hasSource && (await passes($, ['sh', '-c', 'command -v bun']))) return ['bun', `${dev}/src/main.ts`]
-  return undefined
+  const candidates: [string, string[]][] = [
+    [`${await sasyHome($)}/bin/sasy-watch`, []],
+    [`${dev}/dist/sasy-watch`, []],
+    [`${dev}/src/main.ts`, ['bun']],
+  ]
+  const explicit = await $.env.get('SASY_WATCH_BIN')
+  if (explicit) candidates.unshift([explicit, []])
+  const found: string[][] = []
+  for (const [path, runner] of candidates) {
+    if (await isFile($, path)) found.push([...runner, path])
+  }
+  return found
 }
 
-/** Starts the daemon if it is down, as the settings hook's lib.sh does; with
- *  nothing to start, or a start that fails, the retry fails closed. */
+/**
+ * Starts the daemon if it is down, as the settings hook's lib.sh does: the
+ * first command that can be run at all is the one used, and if it runs and
+ * fails, that failure stands (the retry then fails closed). One that cannot
+ * be started (not executable, or bun missing) is passed over, as lib.sh
+ * passes over a binary that is not executable.
+ */
 async function ensureDaemon($: EngineInterface): Promise<void> {
-  const command = await watchCommand($)
-  if (command === undefined) return
-  try {
-    await $.process.run([...command, 'ensure', '--wait-ms', '6000'], { timeoutMs: ENSURE_TIMEOUT_MS })
-  } catch {
-    // It did not start: the retry then fails closed.
+  for (const command of await watchCommands($)) {
+    try {
+      await $.process.run([...command, 'ensure', '--wait-ms', '6000'], { timeoutMs: ENSURE_TIMEOUT_MS })
+      return
+    } catch {
+      // Could not be started at all: try the next.
+    }
   }
 }
 
@@ -388,32 +397,7 @@ async function daemonHealth($: EngineInterface): Promise<string> {
     return `daemon: could not run curl to reach ${url}`
   }
   if (ran.exitCode !== 0) return `daemon: unreachable at ${url} (curl exit ${ran.exitCode})`
-  const cut = ran.stdout.lastIndexOf('\n')
-  const status = ran.stdout.slice(cut + 1)
-  if (!/^[0-9]{3}$/.test(status)) return `daemon: ${url} gave no HTTP status`
-  if (status !== '200') return `daemon: ${url} answered HTTP ${status}`
-  let h: unknown
-  try {
-    h = JSON.parse(ran.stdout.slice(0, Math.max(cut, 0)))
-  } catch {
-    return `daemon: ${url} answered with a body that is not JSON`
-  }
-  const r = (typeof h === 'object' && h !== null ? h : {}) as Record<string, unknown>
-  const isDaemon =
-    r.ok === true &&
-    typeof r.ready === 'boolean' &&
-    typeof r.endpoint === 'string' &&
-    ENDPOINT.test(r.endpoint) &&
-    typeof r.failMode === 'string' &&
-    FAIL_MODES.includes(r.failMode) &&
-    Number.isInteger(r.sessions) &&
-    (r.sessions as number) >= 0
-  if (!isDaemon) return `daemon: ${url} answered, but not as the sasy-watch daemon`
-  const state = r.ready ? 'up, policy engine ready' : 'up, policy engine not ready'
-  return (
-    `daemon: ${state} · endpoint ${r.endpoint} · ` +
-    `fail mode ${r.failMode} · ${r.sessions} session(s)`
-  )
+  return healthLine(url, ran.stdout)
 }
 
 /** What the mod's own dialog came to, for the record: the offer the user
@@ -495,9 +479,16 @@ async function sendFeed(
     if (ran.exitCode !== 0) {
       return { outcome: UNREACHABLE_CURL_EXITS.includes(ran.exitCode) ? 'unreachable' : 'failed', sent }
     }
-    const { status } = splitStatus(ran.stdout)
+    const { body, status } = splitStatus(ran.stdout)
     if (status === '404') return { outcome: 'unsupported', sent }
-    if (status !== '200') return { outcome: 'failed', sent }
+    // Only the daemon's own acknowledgement counts as delivered.
+    let isAcknowledged = false
+    try {
+      isAcknowledged = status === '200' && (JSON.parse(body) as { ok?: unknown }).ok === true
+    } catch {
+      // Not the daemon's answer.
+    }
+    if (!isAcknowledged) return { outcome: 'failed', sent }
     sent += batch.length
   }
   return { outcome: 'sent', sent }
@@ -531,17 +522,6 @@ async function postBestEffort(
   }
 }
 
-/** The `additionalContext` a daemon answer carries, if any. */
-function contextOf(answer: string | undefined): string[] {
-  if (answer === undefined) return []
-  try {
-    const out = JSON.parse(answer) as { hookSpecificOutput?: { additionalContext?: unknown } }
-    const note = out.hookSpecificOutput?.additionalContext
-    return typeof note === 'string' && note !== '' ? [note] : []
-  } catch {
-    return []
-  }
-}
 
 /** Marks the mod's values and reads them, just before compaction. */
 async function snapshot($: EngineInterface): Promise<Carried> {
@@ -605,6 +585,10 @@ export const register: Register = on => {
   let feed: FeedBuffer = emptyBuffer()
   let feedSupported = true
   const toolResults = new Map<string, unknown>()
+  // Tool calls started and not yet finished, by tool_use_id.
+  const running = new Set<string>()
+  // The history push in flight, which the next check waits for.
+  let pushInFlight: Promise<void> | undefined
   const spawns: Record<string, { toolUseId: string; agentType: string }> = {}
   // The totals and decisions as they stood before the last compaction, put
   // back by classic.SessionStart if compaction cleared them.
@@ -761,7 +745,7 @@ export const register: Register = on => {
 
   // The tool's structured result, for the history row that reports it.
   const noteResult = (id: string, result: { result?: unknown }): void => {
-    if (!feedSupported || result.result === undefined) return
+    if (!feedSupported || result.result === undefined || result.result === null) return
     toolResults.set(id, result.result)
     if (toolResults.size > MAX_RESULTS) toolResults.delete(toolResults.keys().next().value!)
   }
@@ -770,12 +754,18 @@ export const register: Register = on => {
     const isIsolatedAgent =
       e.tool === 'Agent' && (e as { isolation?: unknown }).isolation === 'worktree'
     if (!isIsolatedAgent && e.agentId === undefined) {
-      const result = await next(e)
-      noteResult(e.tool_use_id, result)
-      return result
+      running.add(e.tool_use_id)
+      try {
+        const result = await next(e)
+        noteResult(e.tool_use_id, result)
+        return result
+      } finally {
+        running.delete(e.tool_use_id)
+      }
     }
     if (isIsolatedAgent) isolatedCalls.add(e.tool_use_id)
     if (e.agentId !== undefined) callerOf.set(e.tool_use_id, e.agentId)
+    running.add(e.tool_use_id)
     try {
       const result = await next(e)
       noteResult(e.tool_use_id, result)
@@ -790,6 +780,7 @@ export const register: Register = on => {
       // The call is over: its spawn, if any, has been recorded.
       isolatedCalls.delete(e.tool_use_id)
       callerOf.delete(e.tool_use_id)
+      running.delete(e.tool_use_id)
     }
   })
 
@@ -847,30 +838,44 @@ export const register: Register = on => {
       // The daemon first gets every row kept since the last push, so the
       // check sees the whole history before it.
       let pushed: FeedOutcome = 'unsupported'
-      if (feedSupported) {
-        const pending = { ...feed, rows: [...feed.rows] }
-        const base = {
-          session_id: input.session_id,
-          cwd: sessionCwd,
-          ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
+      // One push at a time: a check waits for one in flight, then sends what
+      // is left (so two never deliver, or count, the same rows).
+      while (pushInFlight !== undefined) await pushInFlight
+      let release = (): void => {}
+      pushInFlight = new Promise<void>(resolve => (release = resolve))
+      try {
+        if (feedSupported) {
+          // Rows up to the first that reports a tool call still running: its
+          // structured result is not known yet, and no call checked meanwhile
+          // can have seen that row.
+          const ready = readyRows(feed.rows, running)
+          const pending = { ...feed, rows: feed.rows.slice(0, ready) }
+          const base = {
+            session_id: input.session_id,
+            cwd: sessionCwd,
+            ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
+          }
+          const enriched = withResults(pending.rows, toolResults)
+          const sending = enriched.rows
+          const gap = pending.gap > 0 || enriched.gap
+          let { outcome, sent } = await sendFeed($, base, sending, spawns, gap)
+          if (outcome === 'unreachable') {
+            // As for a check: start the daemon once and send everything again (a
+            // new daemon may hold none of it; the daemon skips rows it has).
+            await ensureDaemon($)
+            ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap))
+          }
+          pushed = outcome
+          if (outcome === 'unsupported') {
+            feedSupported = false
+            feed = emptyBuffer()
+          } else {
+            feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
+          }
         }
-        const enriched = withResults(pending.rows, toolResults)
-        const sending = enriched.rows
-        const gap = pending.gap > 0 || enriched.gap
-        let { outcome, sent } = await sendFeed($, base, sending, spawns, gap)
-        if (outcome === 'unreachable') {
-          // As for a check: start the daemon once and send everything again (a
-          // new daemon may hold none of it; the daemon skips rows it has).
-          await ensureDaemon($)
-          ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap))
-        }
-        pushed = outcome
-        if (outcome === 'unsupported') {
-          feedSupported = false
-          feed = emptyBuffer()
-        } else {
-          feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
-        }
+      } finally {
+        pushInFlight = undefined
+        release()
       }
       // Undelivered history is never checked around: the daemon would decide
       // without it. Only an unreachable daemon may fail open, as for a check.

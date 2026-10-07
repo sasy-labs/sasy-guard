@@ -108,9 +108,11 @@ type WorldOptions = {
   health?: { exitCode: number; body: string; status?: string }
   /** Whether a hook-auth header file exists. */
   hasAuthFile?: boolean
-  /** Path endings of the sasy-watch binaries (executable) and sources that
-   *  exist (by default the installed binary). */
+  /** Path endings of the sasy-watch binaries and sources that exist (by
+   *  default the installed binary). */
   watchFiles?: string[]
+  /** Path endings of those that cannot be started (not executable). */
+  notExecutable?: string[]
   /** The HTTP status the daemon answers history pushes with (404 unless
    *  given: a released daemon, which has no such route). */
   feedStatus?: string
@@ -231,10 +233,12 @@ function world(on: On, options: WorldOptions = {}): World {
       const h = options.health ?? { exitCode: 0, body: JSON.stringify(HEALTH) }
       return h.exitCode === 0 ? ran(0, `${h.body}\n${h.status ?? '200'}`) : ran(h.exitCode, '')
     }
-    // `test -x` / `test -f` on the files that exist; bun is on PATH.
-    if (argv[0] === 'test') return ran(files.some(f => (argv[2] ?? '').endsWith(f)) ? 0 : 1, '')
-    if (argv[0] === 'sh') return ran(0, '/usr/bin/bun')
-    return ran(1, '') // sasy-watch ensure: the daemon does not start in the test
+    // sasy-watch ensure: a binary named as not executable cannot be started
+    // at all; any other runs, and the daemon does not start in the test.
+    if (argv.includes('ensure') && (options.notExecutable ?? []).some(f => (argv[0] ?? '').endsWith(f))) {
+      return { deny: 'permission denied' }
+    }
+    return ran(1, '')
   })
   on('classic.SessionStart', () => ({}))
   on('classic.PostToolUse', () => ({}))
@@ -916,8 +920,13 @@ test('the daemon is chosen as lib.sh chooses it, and its failure stands', async 
 })
 
 test('a SASY_WATCH_BIN that is not executable is passed over', async ($, on) => {
-  const w = world(on, { lifecycleExit: 7, env: { SASY_WATCH_BIN: '/opt/stale/sasy-watch' } })
+  const w = world(on, {
+    lifecycleExit: 7,
+    env: { SASY_WATCH_BIN: '/opt/stale/sasy-watch' },
+    watchFiles: ['/opt/stale/sasy-watch', '/.sasy/bin/sasy-watch'],
+    notExecutable: ['/opt/stale/sasy-watch'],
+  })
   await $.classic.SessionStart({ source: 'startup' })
   const tried = w.argvs.filter(a => a.includes('ensure')).map(a => a[0])
-  expect(tried).toEqual([expect.stringMatching(/\/\.sasy\/bin\/sasy-watch$/)])
+  expect(tried).toEqual(['/opt/stale/sasy-watch', expect.stringMatching(/\/\.sasy\/bin\/sasy-watch$/)])
 })
