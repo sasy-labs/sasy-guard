@@ -56,8 +56,10 @@ calls are not checked (as with the hook plugin).
 - Claude Code v2.1.289 or later. The status entry, band and `/guard` output are
   drawn in the terminal and the Desktop Code tab; the VS Code chat panel and
   `claude -p` draw nothing, but the mod still checks every call there.
-- Where mods are blocked (`allowManagedModsOnly`, `disableAllHooks`) the mod does
-  not load and nothing is checked: use the `sasy-guard` plugin there.
+- Where an organization allows only its own mods (`allowManagedModsOnly`) the
+  mod does not load and nothing is checked: use the `sasy-guard` plugin there.
+  `disableAllHooks` turns off mods and settings hooks alike, so neither plugin
+  checks anything under it.
 - The mod talks to the daemon with `curl`, which must be on `PATH`.
 
 ## Develop

@@ -20,7 +20,7 @@ import type { GuardCounts, GuardDecision, GuardSessionInfo, GuardVerdict } from 
 import type { AgentTable } from './agents'
 import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
-import { MAX_DECISIONS, addCounts, joinDecisions, wasReset } from './carry'
+import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
 import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
 import {
   CHECK_TIMEOUT_MS,
@@ -53,6 +53,7 @@ const counts = atom({ plugin: 'sasy-guard-mod', key: 'counts' } as const, {
 })
 const decisions = atom({ plugin: 'sasy-guard-mod', key: 'decisions' } as const, [])
 const dismissedSeq = atom({ plugin: 'sasy-guard-mod', key: 'dismissedSeq' } as const, 0)
+const compactMark = atom({ plugin: 'sasy-guard-mod', key: 'compactMark' } as const, 0)
 const sessionInfo = atom(
   { plugin: 'sasy-guard-mod', key: 'sessionInfo' } as const,
   null as GuardSessionInfo | null,
@@ -67,12 +68,13 @@ const SESSION_NOTE =
 /** The tool-call fields that name what a call acts on, in order of preference. */
 const TARGET_FIELDS = ['command', 'file_path', 'notebook_path', 'url', 'path', 'pattern']
 
-/** C0 and C1 control characters other than newline and tab, and the
- *  invisible or reordering marks (soft hyphen, zero-width, bidirectional,
- *  variation selectors, tags) that could make a drawn command or path look
- *  like a different one. */
+/** Control and format characters (C0 and C1 controls other than newline and
+ *  tab, bidirectional marks, tags), every default-ignorable code point (zero-
+ *  width characters, variation selectors, fillers that draw as nothing), and
+ *  the blank Braille pattern: whatever could make a drawn command or path look
+ *  like a different one or hide it. */
 const CONTROL =
-  /[\u0000-\u0008\u000b-\u001f\u007f\u0080-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu
+  /(?![\n\t])[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu
 
 function shorten(text: string, max: number): string {
   const flat = text.replace(/\s+/g, ' ').replace(CONTROL, '').trim()
@@ -325,6 +327,14 @@ async function askAbout(
     }
     if (again.offer !== undefined) {
       // It changed again: stop asking, keep the call blocked, and say why.
+      // The newest offer is declined at the daemon, so no later question can
+      // approve it.
+      await postBestEffort(
+        $,
+        '/v1/approval',
+        { session_id: input.session_id, tool_use_id: input.tool_use_id, choice: 'decline' },
+        5,
+      )
       const changed = cleanOffer(again.offer)
       const fix = changed.policyReason.replace(MARKER, '').trim()
       return {
@@ -510,12 +520,15 @@ function contextOf(answer: string | undefined): string[] {
   }
 }
 
-/** The values compaction may clear, read just before it. */
+/** Marks the mod's values and reads them, just before compaction. */
 async function snapshot($: EngineInterface): Promise<Carried> {
+  const mark = await $.clock.now()
+  await update($, compactMark, () => mark)
   return {
     counts: await read($, counts),
     decisions: await read($, decisions),
     dismissedSeq: await read($, dismissedSeq),
+    mark,
   }
 }
 
@@ -525,7 +538,8 @@ async function snapshot($: EngineInterface): Promise<Carried> {
  * kept. Nothing happens when the values were not cleared.
  */
 async function restore($: EngineInterface, kept: Carried): Promise<void> {
-  if (!wasReset(kept.counts, await read($, counts))) return
+  // The mark is still there: compaction left the values alone.
+  if ((await read($, compactMark)) === kept.mark) return
   const total = await update($, counts, now => addCounts(kept.counts, now))
   await update($, decisions, now => joinDecisions(kept.decisions, now))
   await update($, dismissedSeq, now => Math.max(now, kept.dismissedSeq))

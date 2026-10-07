@@ -36,6 +36,9 @@ declare module 'claude-code' {
        *  can rebuild the session) and the agent type of a session started with
        *  --agent. The mod checks a call only once it knows these. */
       sessionInfo: GuardSessionInfo | null
+      /** Written just before compaction; still there after it unless the
+       *  compaction cleared the mod's values. 0 until the first compaction. */
+      compactMark: number
     }
   }
 }

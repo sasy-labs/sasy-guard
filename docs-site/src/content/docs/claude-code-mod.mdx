@@ -144,9 +144,11 @@ That happens when:
 <Aside>
 The status entry, band and `/guard` output are drawn in the terminal and in the
 Code tab of the Desktop app. The VS Code chat panel and `claude -p` draw
-nothing; the mod still checks every call there. Where mods cannot run (an
-organization's `allowManagedModsOnly` setting, or `disableAllHooks`), the mod
-does not load and nothing is checked, so use the sasy-guard plugin.
+nothing; the mod still checks every call there. Where an organization allows
+only its own mods (its `allowManagedModsOnly` setting), the mod does not load
+and nothing is checked, so use the sasy-guard plugin. The `disableAllHooks`
+setting turns off mods and settings hooks alike, so neither plugin checks
+anything under it.
 </Aside>
 
 ## Try it with the bundled demo

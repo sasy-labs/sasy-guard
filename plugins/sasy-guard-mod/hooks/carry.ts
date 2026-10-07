@@ -8,19 +8,13 @@ import type { GuardCounts, GuardDecision } from '../types'
 /** The most decisions the mod keeps. */
 export const MAX_DECISIONS = 50
 
-/** The mod's $.state values that compaction may clear. */
+/** The mod's $.state values that compaction may clear, and the mark written
+ *  with them, whose absence afterwards says they were cleared. */
 export type Carried = {
   counts: GuardCounts
   decisions: GuardDecision[]
   dismissedSeq: number
-}
-
-/**
- * Whether the values now held are a reset's: the totals only grow, so totals
- * below those read before compaction mean they were cleared.
- */
-export function wasReset(kept: GuardCounts, now: GuardCounts): boolean {
-  return now.checked < kept.checked
+  mark: number
 }
 
 /** The totals before the reset plus those recorded since. */
