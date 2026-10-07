@@ -127,9 +127,10 @@ make claude-code-guard-mod-demo                     # toxic_flow
 make claude-code-guard-mod-demo GROUP=agent_redirect
 ```
 
-It creates a throwaway project under `output/mod-demo` with the files the
-scenarios need (including a fake `.env`); with `PROJECT=/path/to/project` it
-uses that directory and writes no files. Run the printed commands in a second terminal,
+Each run creates a fresh throwaway project under `output/` (named
+`mod-demo.` plus a random suffix) with the files the scenarios need, including a
+fake `.env`; with `PROJECT=/path/to/project` it uses that directory and writes no
+files. Run the printed commands in a second terminal,
 answer **Yes** to the mock API key, and type any prompt. When the scripted call
 is denied, the band names the call and the policy's reason, the status entry
 counts it, and `/guard` lists it. If the sasy-guard plugin is installed, disable
