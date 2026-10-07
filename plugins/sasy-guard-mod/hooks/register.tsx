@@ -18,7 +18,9 @@ import type { EngineInterface, PreToolUseResult, Register } from 'claude-code'
 
 import type { GuardCounts, GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
 import type { AgentTable } from './agents'
+import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, worktreeOwner } from './agents'
+import { MAX_EARLY, carryOver } from './carry'
 import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
 import {
   CHECK_TIMEOUT_MS,
@@ -68,10 +70,11 @@ const SESSION_NOTE =
 const TARGET_FIELDS = ['command', 'file_path', 'notebook_path', 'url', 'path', 'pattern']
 
 /** C0 and C1 control characters other than newline and tab, and the
- *  invisible or reordering marks (zero-width, bidirectional) that could make a
- *  drawn command or path look like a different one. */
+ *  invisible or reordering marks (soft hyphen, zero-width, bidirectional,
+ *  variation selectors, tags) that could make a drawn command or path look
+ *  like a different one. */
 const CONTROL =
-  /[\u0000-\u0008\u000b-\u001f\u007f\u0080-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g
+  /[\u0000-\u0008\u000b-\u001f\u007f\u0080-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu
 
 function shorten(text: string, max: number): string {
   const flat = text.replace(/\s+/g, ' ').replace(CONTROL, '').trim()
@@ -477,6 +480,27 @@ function contextOf(answer: string | undefined): string[] {
   }
 }
 
+/** The values a reset would clear, read just before it. */
+async function snapshot($: EngineInterface): Promise<Carried> {
+  return {
+    agents: await read($, agents),
+    isolatedEarly: await read($, isolatedEarly),
+    counts: await read($, counts),
+    decisions: await read($, decisions),
+    dismissedSeq: await read($, dismissedSeq),
+  }
+}
+
+/** Puts back what a reset cleared (carry.ts says what comes back). */
+async function restore($: EngineInterface, kept: Carried, source: unknown): Promise<void> {
+  const next = carryOver(kept, await snapshot($), source)
+  await update($, agents, () => next.agents)
+  await update($, isolatedEarly, () => next.isolatedEarly)
+  await update($, counts, () => next.counts)
+  await update($, decisions, () => next.decisions)
+  await update($, dismissedSeq, () => next.dismissedSeq)
+}
+
 export const register: Register = on => {
   // Hooks that only observe carry no .catch: one that fails before next is
   // skipped, and one that fails after next leaves next's result standing.
@@ -487,6 +511,9 @@ export const register: Register = on => {
   // worktree of their own, by tool_use_id, until their spawn is recorded.
   const callerOf = new Map<string, string>()
   const isolatedCalls = new Set<string>()
+  // $.state as it stood before the last compaction or session end, put back
+  // by classic.SessionStart.
+  let carried: Carried | undefined
 
   on('session.start', async ($, e, next) => {
     $.ui.status(statusText(await read($, counts)))
@@ -508,9 +535,18 @@ export const register: Register = on => {
   // Fires at startup and after /clear, /resume, /branch and compaction: as the
   // hook plugin's session-start script, start the daemon if needed and
   // register the session (a fresh registration after /clear). The resets also
-  // clear $.state without a new session.start: re-pin the status line and keep
-  // what each check needs to say about the session.
+  // clear $.state without a new session.start: put back what was carried,
+  // re-pin the status line and keep what each check needs to say about the
+  // session.
   on('classic.SessionStart', async ($, e, next) => {
+    if (carried !== undefined) {
+      try {
+        await restore($, carried, e.source)
+      } catch {
+        // A subagent left unrecorded is denied, as one started before the mod.
+      }
+      carried = undefined
+    }
     const path = typeof e.transcript_path === 'string' ? e.transcript_path : ''
     const type = typeof e.agent_type === 'string' ? e.agent_type : ''
     await update($, sessionInfo, () => ({
@@ -546,7 +582,13 @@ export const register: Register = on => {
     return { ...result, additionalContext: [...(result.additionalContext ?? []), ...context] }
   })
 
+  on('classic.PreCompact', async ($, e, next) => {
+    carried = await snapshot($).catch(() => carried)
+    return next(e)
+  })
+
   on('classic.SessionEnd', async ($, e, next) => {
+    carried = await snapshot($).catch(() => carried)
     await postBestEffort($, '/v1/session/end', { session_id: e.session_id }, 1)
     return next(e)
   })
@@ -589,7 +631,7 @@ export const register: Register = on => {
     if (agentId !== undefined) {
       const known = (await read($, agents))[agentId] !== undefined
       if (known) await update($, agents, table => markUnattributable(table, agentId))
-      else await update($, isolatedEarly, ids => [...ids, agentId].slice(-200))
+      else await update($, isolatedEarly, ids => [...ids, agentId].slice(-MAX_EARLY))
     }
     return next(e)
   })
