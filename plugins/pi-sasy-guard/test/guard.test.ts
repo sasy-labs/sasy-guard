@@ -472,6 +472,8 @@ test("user ! commands are checked too; a denial replaces their result", async ()
   const check = requests.find((r) => r.path === "/v1/pretooluse")!;
   assert.equal(check.body.tool_name, "bash");
   assert.match(String(check.body.tool_use_id), /^user-bash-/);
+  // A denied command is recorded as never run, by its check's id.
+  assert.deepEqual(h.appended, [{ customType: "sasy-guard", data: { rejected: [check.body.tool_use_id] } }]);
   // A denied command is not reported as having gone ahead.
   assert.equal(requests.filter((r) => r.path === "/v1/posttooluse").length, 0);
   answer = {};

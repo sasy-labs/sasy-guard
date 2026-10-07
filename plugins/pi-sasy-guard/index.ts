@@ -332,10 +332,10 @@ export function createGuard(opts: GuardOptions = {}) {
         const settled = await settleAsk(ctx, d, "bash", input);
         blocked = !settled.approved;
         outcome = settled.outcome;
-        // Recorded like a declined tool call, by the check's id, so the daemon
-        // knows the approval it asked for was refused.
-        if (blocked) reject(id);
       }
+      // A command that does not run is recorded like a declined tool call, by
+      // the check's id, whether it was denied or its approval was refused.
+      if (blocked) reject(id);
       record(ctx, d, "bash", input, outcome);
       if (!blocked) {
         // pi runs the command itself and emits no tool_result for it, so the
