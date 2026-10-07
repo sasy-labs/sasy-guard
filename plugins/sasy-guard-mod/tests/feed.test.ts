@@ -10,17 +10,20 @@ test('the feed buffer: bounded, split into pushes, and kept across a push', () =
   // Past its bound the buffer is dropped and says rows were lost.
   let full = emptyBuffer()
   for (let i = 0; i <= MAX_BUFFER_ROWS; i++) full = enqueue(full, row(`f${i}`, 1))
-  expect(full).toEqual({ rows: [], bytes: 0, gap: true })
+  expect(full).toEqual({ rows: [], bytes: 0, gap: 1 })
   // Pushes hold at most 1000 rows and about 3 MB each, in order.
   expect(batches(Array.from({ length: 2500 }, (_, i) => row(`b${i}`, 1))).map(b => b.length)).toEqual([1000, 1000, 500])
   expect(batches([row('big1', 2_000_000), row('big2', 2_000_000)]).map(b => b.length)).toEqual([1, 1])
   // Rows kept while a push ran stay; the delivered ones go, and so does the gap.
-  const pending = { ...buffer, rows: [...buffer.rows], gap: true }
+  const pending = { ...buffer, rows: [...buffer.rows], gap: 1 }
   const now = enqueue({ ...pending, rows: [...pending.rows] }, row('r3'))
-  expect(afterPush(now, pending, 2, true)).toMatchObject({ rows: [{ uuid: 'r2' }, { uuid: 'r3' }], gap: false })
-  expect(afterPush(now, pending, 0, false).gap).toBe(true)
+  expect(afterPush(now, pending, 2, true)).toMatchObject({ rows: [{ uuid: 'r2' }, { uuid: 'r3' }], gap: 0 })
+  expect(afterPush(now, pending, 0, false).gap).toBe(1)
+  // A loss while the push ran stays to be told, though the push went through.
+  const lostDuring = { ...now, gap: now.gap + 1 }
+  expect(afterPush(lostDuring, pending, 2, true).gap).toBe(1)
   // A buffer dropped while the push ran stays dropped.
-  expect(afterPush({ rows: [], bytes: 0, gap: true }, pending, 2, true)).toEqual({ rows: [], bytes: 0, gap: true })
+  expect(afterPush({ rows: [], bytes: 0, gap: 2 }, pending, 2, true)).toEqual({ rows: [], bytes: 0, gap: 2 })
   // A tool result row picks up the call's structured result.
   const result = { uuid: 'x', message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: 't1' }] } }
   expect(withResults([result], new Map([['t1', { exitCode: 0 }]])).rows[0]?.toolUseResult).toEqual({ exitCode: 0 })
@@ -45,5 +48,5 @@ test('sizes are UTF-8 bytes, as the daemon counts a request body', () => {
   const huge = { uuid: 'h', message: { type: 'user', content: [{ type: 'text', text: '漢'.repeat(1_100_000) }] } }
   const kept = enqueue(enqueue(emptyBuffer(), wide('w1')), huge)
   expect(kept.rows.map(r => r.uuid)).toEqual(['w1'])
-  expect(kept.gap).toBe(true)
+  expect(kept.gap).toBe(1)
 })

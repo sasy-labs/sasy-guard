@@ -15,8 +15,10 @@ export type FeedRow = {
   toolUseResult?: unknown
 }
 
-/** Rows waiting to be sent, their serialized size, and whether rows were lost. */
-export type FeedBuffer = { rows: FeedRow[]; bytes: number; gap: boolean }
+/** Rows waiting to be sent, their serialized size, and how many losses of
+ *  rows the daemon has not yet been told of (a count, so a loss during a push
+ *  is not cleared by that push's delivery). */
+export type FeedBuffer = { rows: FeedRow[]; bytes: number; gap: number }
 
 /** At most this many rows, or serialized bytes, in one push (the daemon takes
  *  2000 rows and a 4 MiB body). */
@@ -29,7 +31,7 @@ export const MAX_BUFFER_BYTES = 32_000_000
 /** Tool results remembered for the rows that report them. */
 export const MAX_RESULTS = 500
 
-export const emptyBuffer = (): FeedBuffer => ({ rows: [], bytes: 0, gap: false })
+export const emptyBuffer = (): FeedBuffer => ({ rows: [], bytes: 0, gap: 0 })
 
 /** The UTF-8 size of a string, as the daemon counts a request body. */
 export function utf8Length(text: string): number {
@@ -78,9 +80,11 @@ export function rowOf(
  *  marked lost instead, so the daemon reads it from the transcript. */
 export function enqueue(buffer: FeedBuffer, row: FeedRow): FeedBuffer {
   const size = sizeOf(row)
-  if (size > MAX_BATCH_BYTES) return { ...buffer, gap: true }
+  if (size > MAX_BATCH_BYTES) return { ...buffer, gap: buffer.gap + 1 }
   const bytes = buffer.bytes + size
-  if (buffer.rows.length >= MAX_BUFFER_ROWS || bytes > MAX_BUFFER_BYTES) return { rows: [], bytes: 0, gap: true }
+  if (buffer.rows.length >= MAX_BUFFER_ROWS || bytes > MAX_BUFFER_BYTES) {
+    return { rows: [], bytes: 0, gap: buffer.gap + 1 }
+  }
   buffer.rows.push(row)
   return { rows: buffer.rows, bytes, gap: buffer.gap }
 }
@@ -139,8 +143,8 @@ export function batches(rows: FeedRow[]): FeedRow[][] {
 /**
  * The buffer after a push of `pending` (a copy of the buffer taken when the
  * push began) delivered its first `sent` rows. Rows kept while the push ran stay.
- * `delivered`: the first push went through, so the daemon also learned of any
- * lost rows. A buffer dropped while the push ran (too much history) stays as
+ * `delivered`: the first push went through, so the daemon also learned of the
+ * losses `pending` held; any since stay counted. A buffer dropped while the push ran (too much history) stays as
  * it is, marked lost.
  */
 export function afterPush(now: FeedBuffer, pending: FeedBuffer, sent: number, delivered: boolean): FeedBuffer {
@@ -150,6 +154,6 @@ export function afterPush(now: FeedBuffer, pending: FeedBuffer, sent: number, de
   return {
     rows,
     bytes: rows.reduce((n, row) => n + sizeOf(row), 0),
-    gap: delivered ? false : now.gap,
+    gap: delivered ? now.gap - pending.gap : now.gap,
   }
 }
