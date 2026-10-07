@@ -323,6 +323,8 @@ test("a dialog that fails blocks the call and records it as never run", async ()
   answer = ask("[SASY] needs review");
   const out = (await h.fire("tool_call", curl)) as { block?: boolean };
   assert.equal(out.block, true);
+  assert.match((out as { reason: string }).reason, /approval dialog failed/);
+  assert.match(h.ui.widget?.[0] ?? "", /\(ui-error\)/);
   assert.deepEqual(h.appended, [{ customType: "sasy-guard", data: { rejected: ["c2"] } }]);
 });
 

@@ -16,7 +16,7 @@ export interface DecisionRecord {
   kind: "deny" | "ask";
   reason: string;
   /** For an ask: what the user chose. */
-  outcome?: "approved" | "declined" | "no-ui";
+  outcome?: "approved" | "declined" | "no-ui" | "ui-error";
 }
 
 export interface Counts {

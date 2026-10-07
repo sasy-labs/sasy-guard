@@ -144,11 +144,6 @@ def main(argv: list[str] | None = None) -> int:
         default="toxic_flow",
         help="rule group to script (--list to see all)",
     )
-    parser.add_argument(
-        "--project",
-        default=None,
-        help="project directory (default: a new one under output/pi-demo)",
-    )
     parser.add_argument("--list", action="store_true", help="list scenarios and exit")
     args = parser.parse_args(argv)
     if args.list:
@@ -161,14 +156,11 @@ def main(argv: list[str] | None = None) -> int:
             f"error: unknown scenario {args.scenario!r} (try --list)", file=sys.stderr
         )
         return 1
-    if args.project is None:
-        # A new directory each run, so a scenario never acts on files left behind.
-        base = Path("output/pi-demo")
-        base.mkdir(parents=True, exist_ok=True)
-        proj = Path(tempfile.mkdtemp(prefix=f"{scenario.group}-", dir=base)).resolve()
-    else:
-        proj = Path(args.project).resolve()
-    proj.mkdir(parents=True, exist_ok=True)
+    # Always a new directory, so a scenario (some delete files) never acts on a
+    # real project or on files an earlier run left behind.
+    base = Path("output/pi-demo")
+    base.mkdir(parents=True, exist_ok=True)
+    proj = Path(tempfile.mkdtemp(prefix=f"{scenario.group}-", dir=base)).resolve()
     created = _setup_project(proj)
 
     mock = MockAnthropic()

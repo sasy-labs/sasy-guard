@@ -263,7 +263,8 @@ export function createGuard(opts: GuardOptions = {}) {
           `sasy-guard: ${tool} needs your approval\n\n${target ? `${target}\n\n` : ""}${displayReason(d.reason)}`,
           [BLOCK_CHOICE, RUN_CHOICE],
         )
-        .catch(() => undefined);
+        .catch(() => null);
+      if (choice === null) return { approved: false, outcome: "ui-error" as const };
       const approved = choice === RUN_CHOICE;
       return { approved, outcome: approved ? ("approved" as const) : ("declined" as const) };
     }
@@ -296,7 +297,8 @@ export function createGuard(opts: GuardOptions = {}) {
         record(ctx, d, event.toolName, event.input, outcome);
         if (approved) return undefined;
         reject(event.toolCallId);
-        return { block: true, reason: outcome === "no-ui" ? `${d.reason}\n(no UI to approve it, so it was blocked)` : `${d.reason}\n(the user declined)` };
+        const why = { "no-ui": "no UI to approve it, so it was blocked", "ui-error": "the approval dialog failed, so it was blocked", approved: "", declined: "the user declined" }[outcome];
+        return { block: true, reason: `${d.reason}\n(${why})` };
       }
       record(ctx, d, event.toolName, event.input);
       reject(event.toolCallId);
