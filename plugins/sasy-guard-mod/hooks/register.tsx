@@ -16,7 +16,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PreToolUseResult, Register } from 'claude-code'
 
-import type { GuardDecision, GuardSessionInfo } from '../types'
+import type { GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
 import type { AgentTable } from './agents'
 import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
