@@ -43,7 +43,7 @@ import {
   bandLines,
   cleanReason,
   contextOf,
-  decisionLines,
+  guardText,
   healthLine,
   shorten,
   statusText,
@@ -66,7 +66,6 @@ import {
 
 const PLUGIN = 'sasy-guard'
 const COMMAND = 'guard'
-const RECENT_IN_COMMAND = 5
 /** The most worktree ids seen before their spawn that the mod remembers. */
 const MAX_EARLY = 200
 const HEALTH_TIMEOUT_MS = 3000
@@ -74,6 +73,8 @@ const HEALTH_TIMEOUT_MS = 3000
 const RESULT_WAIT_MS = 5000
 /** A command whose run fails sooner than this never started. */
 const SPAWN_FAILURE_MS = 2000
+/** Pushes before a check: the first, then rounds for rows kept meanwhile. */
+const MAX_PUSH_ROUNDS = 3
 
 const counts = atom({ plugin: 'sasy-guard-mod', key: 'counts' } as const, {
   checked: 0,
@@ -576,6 +577,9 @@ export const register: Register = on => {
   // The session the buffered rows belong to: /clear, /resume and /branch move
   // to another, whose history starts afresh.
   let feedSession: string | undefined
+  // Bumped with each new session, so a push in flight across the change
+  // leaves the new buffer alone.
+  let feedGeneration = 0
   let feed: FeedBuffer = emptyBuffer()
   let feedSupported = true
   const toolResults = new ResultTable()
@@ -627,6 +631,7 @@ export const register: Register = on => {
       feed = emptyBuffer()
       feedSupported = true
       toolResults.clear()
+      feedGeneration++
     }
     feedSession = e.session_id
     const kept = carried
@@ -853,7 +858,11 @@ export const register: Register = on => {
         let release = (): void => {}
         pushInFlight = new Promise<void>(resolve => (release = resolve))
         try {
-          if (feedSupported) {
+          // Rows kept while a push ran go out before the check too (a few
+          // rounds at most); a session change while a push ran ends it.
+          const generation = feedGeneration
+          for (let round = 0; round < MAX_PUSH_ROUNDS && feedSupported; round++) {
+            if (round > 0 && (pushed !== 'sent' || feed.rows.length === 0)) break
             // A row reporting a tool call still running waits, briefly, for
             // the call to finish and its structured result to be known.
             const waits = reportedCalls(feed.rows).flatMap(id => {
@@ -881,9 +890,11 @@ export const register: Register = on => {
               ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap))
             }
             pushed = outcome
+            if (generation !== feedGeneration) break // another session's buffer now
             if (outcome === 'unsupported') {
               feedSupported = false
               feed = emptyBuffer()
+              toolResults.clear()
             } else {
               feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
               // The results those rows carried are delivered: no longer needed.
@@ -933,21 +944,7 @@ export const register: Register = on => {
 
   on('command.run', { command: COMMAND }, async ($, e, next) => {
     if (!ownsCommand) return next(e)
-    const c = await read($, counts)
-    const recent = (await read($, decisions)).slice(-RECENT_IN_COMMAND).reverse()
-    const lines = [
-      await daemonHealth($),
-      `this session: ${c.checked} checked · ${c.denied} denied · ${c.asked} asked`,
-    ]
-    if (recent.length === 0) {
-      lines.push('no denials or approval requests yet')
-    } else {
-      lines.push(
-        'recent decisions (newest first):',
-        ...recent.flatMap((d, i) => decisionLines(d, i === 0)),
-      )
-    }
-    return { text: lines.join('\n') }
+    return { text: guardText(await daemonHealth($), await read($, counts), await read($, decisions)) }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

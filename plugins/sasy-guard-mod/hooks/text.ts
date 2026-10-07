@@ -190,3 +190,16 @@ export function bandLines(
   if (reason.length > room) shown.push('… full text: /guard')
   return { verb, color, shown }
 }
+
+/** The decisions /guard lists, newest first. */
+const RECENT_IN_COMMAND = 5
+
+/** What /guard prints: the daemon's health line, this session's totals, and
+ *  the most recent decisions, the newest in full. */
+export function guardText(health: string, c: GuardCounts, decisions: GuardDecision[]): string {
+  const recent = decisions.slice(-RECENT_IN_COMMAND).reverse()
+  const lines = [health, `this session: ${c.checked} checked · ${c.denied} denied · ${c.asked} asked`]
+  if (recent.length === 0) lines.push('no denials or approval requests yet')
+  else lines.push('recent decisions (newest first):', ...recent.flatMap((d, i) => decisionLines(d, i === 0)))
+  return lines.join('\n')
+}
