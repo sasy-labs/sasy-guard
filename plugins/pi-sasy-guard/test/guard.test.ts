@@ -414,8 +414,16 @@ test("user ! commands are checked too; a denial replaces their result", async ()
   const check = requests.find((r) => r.path === "/v1/pretooluse")!;
   assert.equal(check.body.tool_name, "bash");
   assert.match(String(check.body.tool_use_id), /^user-bash-/);
+  // A denied command is not reported as having gone ahead.
+  assert.equal(requests.filter((r) => r.path === "/v1/posttooluse").length, 0);
   answer = {};
+  requests = [];
   assert.equal(await h.fire("user_bash", { type: "user_bash", command: "ls", excludeFromContext: false, cwd: "/w" }), undefined);
+  // An allowed one is: pi runs it with no tool_result, so the daemon hears here.
+  const allowedCheck = requests.find((r) => r.path === "/v1/pretooluse")!;
+  const done = requests.find((r) => r.path === "/v1/posttooluse")!;
+  assert.equal(done.body.tool_use_id, allowedCheck.body.tool_use_id);
+  assert.equal(done.body.generation, "gen-1");
 });
 
 test("/guard reports daemon health, totals and recent decisions", async () => {

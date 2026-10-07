@@ -314,7 +314,8 @@ export function createGuard(opts: GuardOptions = {}) {
     // `!` commands the user types run outside tool_call; check them too.
     pi.on("user_bash", async (event, ctx) => {
       const input = { command: event.command };
-      const d = await decide(ctx, "bash", input, `user-bash-${randomUUID()}`);
+      const id = `user-bash-${randomUUID()}`;
+      const d = await decide(ctx, "bash", input, id);
       let blocked = d.kind === "deny";
       let outcome: DecisionRecord["outcome"];
       if (d.kind === "ask") {
@@ -323,7 +324,15 @@ export function createGuard(opts: GuardOptions = {}) {
         outcome = settled.outcome;
       }
       record(ctx, d, "bash", input, outcome);
-      if (!blocked) return undefined;
+      if (!blocked) {
+        // pi runs the command itself and emits no tool_result for it, so the
+        // daemon is told here that the checked command goes ahead (an approval
+        // it gated on is then recorded); a failure does not stop the command.
+        await client
+          .post("/v1/posttooluse", { session_id: sessionId(ctx), tool_use_id: id, tool_name: "bash", generation }, 3_000)
+          .catch(() => {});
+        return undefined;
+      }
       return { result: { output: `${d.kind === "allow" ? "" : d.reason}\n`, exitCode: 1, cancelled: false, truncated: false } };
     });
 

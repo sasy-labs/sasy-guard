@@ -188,6 +188,11 @@ extension tries to start the daemon instead.
   still change a tool call's arguments after sasy-guard has checked them, and
   any extension can run code of its own outside tool calls. Install only
   extensions you trust.
+- **Extensions that run `!` commands themselves.** pi hands a `!` command to its
+  extensions in load order and stops at the first one that runs it. An
+  extension loaded before sasy-guard that runs `!` commands itself (for
+  example, one that runs them over SSH or in a sandbox) does so without
+  sasy-guard seeing them. Tool calls the model makes are not affected.
 - **No approval without a terminal.** In pi's print (`-p`) and JSON modes there
   is nobody to ask, so an "ask" blocks the call.
 - **Shell rules are written for `bash`.** pi's `powershell` tool is checked
