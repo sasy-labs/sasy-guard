@@ -23,7 +23,9 @@ daemon answers in one of three ways:
   and suggested fix as the tool's result.
 - **ask**: pi shows you a dialog with the reason. Its default choice blocks the
   call, so pressing Enter never runs it; you choose "Yes, run it once" to let it
-  through. If the dialog cannot be shown or fails, the call is blocked.
+  through. If the dialog cannot be shown or fails, the call is blocked. Your
+  answer covers that one call: when an ask is about hidden instructions in some
+  content, a later call that depends on the same content asks again.
 
 The daemon judges a call by what happened earlier in the session as well as by
 the call itself. For example, a `curl` that sends a file to the network is
