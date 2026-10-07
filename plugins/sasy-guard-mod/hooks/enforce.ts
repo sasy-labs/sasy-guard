@@ -33,9 +33,16 @@ export function postArgv(
   authFile: string | undefined,
   route: string,
   maxSeconds: number,
+  retries = 0,
 ): string[] {
+  // Retries, when asked for, also cover HTTP errors (a daemon whose policy
+  // engine is still starting answers 400), one a second.
+  const retry =
+    retries === 0
+      ? []
+      : ['--fail', '--retry', String(retries), '--retry-delay', '1', '--retry-all-errors']
   return [
-    'curl', '-sS', '--noproxy', '*', '--max-time', String(maxSeconds),
+    'curl', '-sS', '--noproxy', '*', '--max-time', String(maxSeconds), ...retry,
     '--max-filesize', '1048576', '-X', 'POST', '-H', 'content-type: application/json',
     '-H', 'x-claude-code-entrypoint: sasy-guard-mod',
     ...(authFile === undefined ? [] : ['-H', `@${authFile}`]),

@@ -569,6 +569,9 @@ test('SessionStart starts the daemon when registration fails, and says so if it 
   await $.classic.SessionStart({ source: 'startup' })
 
   expect(w.argvs.some(a => a[1] === 'ensure')).toBe(true)
+  // After starting the daemon it retries while the policy engine starts.
+  const retried = w.argvs.filter(a => a.at(-1)?.endsWith('/v1/session/start') && a.includes('--retry'))
+  expect(retried).toHaveLength(1)
   expect(w.lines.some(line => line.startsWith('toast: sasy-guard: the SASY daemon did not start'))).toBe(true)
 })
 

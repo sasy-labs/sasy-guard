@@ -333,14 +333,15 @@ async function postBestEffort(
   route: string,
   body: unknown,
   maxSeconds: number,
+  retries = 0,
 ): Promise<string | undefined> {
   try {
     const port = await daemonPort($)
     if (port === undefined) return undefined
-    const argv = postArgv(port, await authHeaderFile($, port), route, maxSeconds)
+    const argv = postArgv(port, await authHeaderFile($, port), route, maxSeconds, retries)
     const ran = await $.process.run(argv, {
       stdin: JSON.stringify(body),
-      timeoutMs: (maxSeconds + 2) * 1000,
+      timeoutMs: ((maxSeconds + 1) * (retries + 1) + 2) * 1000,
     })
     if (ran.exitCode !== 0) return undefined
     const { body: answer, status } = splitStatus(ran.stdout)
@@ -405,8 +406,10 @@ export const register: Register = on => {
     $.ui.status(statusText(await read($, counts)))
     let isRegistered = (await postBestEffort($, '/v1/session/start', e, 60)) !== undefined
     if (!isRegistered) {
+      // A daemon just started answers before its policy engine is ready:
+      // retry the registration for up to 20 seconds while the engine starts.
       await ensureDaemon($)
-      isRegistered = (await postBestEffort($, '/v1/session/start', e, 60)) !== undefined
+      isRegistered = (await postBestEffort($, '/v1/session/start', e, 5, 20)) !== undefined
     }
     if (!isRegistered) {
       $.ui.toast('sasy-guard: the SASY daemon did not start; tool calls will be blocked')
