@@ -19,7 +19,7 @@ import type { EngineInterface, PreToolUseResult, Register } from 'claude-code'
 import type { GuardCounts, GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
 import type { AgentTable } from './agents'
 import type { Carried } from './carry'
-import { addSpawn, attribute, markUnattributable, worktreeOwner } from './agents'
+import { WORKTREE_WHY, addSpawn, attribute, markUnattributable, worktreeOwner } from './agents'
 import { MAX_EARLY, carryOver } from './carry'
 import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
 import {
@@ -328,9 +328,10 @@ async function askForBypass(
 }
 
 /** The /healthz fields /guard prints, each held to the shape the daemon sends. */
-/** An endpoint /guard may print: a loopback name or an IP address and a port.
- *  Anything else (a host name is free text) is not printed. */
-const ENDPOINT = /^(localhost|\d{1,3}(\.\d{1,3}){3}|\[[0-9a-fA-F:]{2,39}\]):\d{1,5}$/
+/** An endpoint /guard may print: a DNS host name, an IPv4 address or a
+ *  bracketed IPv6 address, and a port. Anything else is not printed. */
+const ENDPOINT =
+  /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,62}\.){0,8}[A-Za-z0-9-]{1,63}|\[[0-9a-fA-F:]{2,39}\]):\d{1,5}$/
 const FAIL_MODES = ['open', 'closed']
 
 /**
@@ -511,6 +512,9 @@ export const register: Register = on => {
   // worktree of their own, by tool_use_id, until their spawn is recorded.
   const callerOf = new Map<string, string>()
   const isolatedCalls = new Set<string>()
+  // Subagents seen at WorktreeCreate, held here too so a failed state write
+  // cannot leave one attributed to its old folder.
+  const inWorktree = new Set<string>()
   // $.state as it stood before the last compaction or session end, put back
   // by classic.SessionStart.
   let carried: Carried | undefined
@@ -599,6 +603,9 @@ export const register: Register = on => {
     const started = await next(e)
     if (started.agentId === undefined) return started
     const agentId = started.agentId
+    // A top-level subagent that names no folder runs in the session's folder
+    // as it was at the spawn, not as it is when the subagent later calls.
+    const cwd = e.cwd ?? (e.parentAgentId === undefined ? await $.session.cwd() : undefined)
     const early = await read($, isolatedEarly)
     const isIsolated = isolatedCalls.has(e.tool_use_id) || early.includes(agentId)
     isolatedCalls.delete(e.tool_use_id)
@@ -608,7 +615,7 @@ export const register: Register = on => {
         {
           agentId,
           subagentType: e.subagentType,
-          ...(e.cwd === undefined ? {} : { cwd: e.cwd }),
+          ...(cwd === undefined ? {} : { cwd }),
           ...(e.parentAgentId === undefined ? {} : { parentAgentId: e.parentAgentId }),
           ...(e.isTeammate === true ? { isTeammate: true } : {}),
           // A teammate's settings-hook events name it by its team name
@@ -629,6 +636,7 @@ export const register: Register = on => {
     // Either way that subagent now runs in a folder no mod event gives.
     const agentId = worktreeOwner(e)
     if (agentId !== undefined) {
+      inWorktree.add(agentId)
       const known = (await read($, agents))[agentId] !== undefined
       if (known) await update($, agents, table => markUnattributable(table, agentId))
       else await update($, isolatedEarly, ids => [...ids, agentId].slice(-MAX_EARLY))
@@ -659,7 +667,11 @@ export const register: Register = on => {
       tool_use_id: string
     }
     const info = await read($, sessionInfo)
-    const caller = attribute(await read($, agents), callerOf.get(tool_use_id))
+    const callerId = callerOf.get(tool_use_id)
+    const caller =
+      callerId !== undefined && inWorktree.has(callerId)
+        ? { kind: 'unknown' as const, why: WORKTREE_WHY }
+        : attribute(await read($, agents), callerId)
     let ours: PreToolUseResult
     // When the mod's own dialog asked the user, what to record for the call.
     let dialog: DialogRecord | undefined
