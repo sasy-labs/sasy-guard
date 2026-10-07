@@ -866,6 +866,8 @@ export const register: Register = on => {
               feed = emptyBuffer()
             } else {
               feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
+              // The results those rows carried are delivered: no longer needed.
+              for (const id of reportedCalls(sending.slice(0, sent))) toolResults.delete(id)
             }
           }
         } finally {
