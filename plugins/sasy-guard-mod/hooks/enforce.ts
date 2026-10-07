@@ -53,8 +53,12 @@ const isExactly = (labels: unknown[], expected: string[]): boolean =>
 const DOMAIN = /^(?=.{3,253}$)[a-z0-9-]+(\.[a-z0-9-]+)+$/
 /** The daemon's routing tag, which ends every question it asks. */
 const ROUTING_TAG = /\[SASY-ALLOW:[0-9a-f]+\]$/
+/** What the dialog removes before drawing a question (invisible and control
+ *  characters, as register.tsx's CONTROL). */
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu
 /** Whether a question says something the user can read besides its tag. */
-const isReadable = (question: string): boolean => /[\p{L}\p{N}]/u.test(question.replace(ROUTING_TAG, ''))
+const isReadable = (question: string): boolean =>
+  /[\p{L}\p{N}]/u.test(question.replace(ROUTING_TAG, '').replace(HIDDEN, ''))
 
 /** The `sasyApproval` field of a daemon answer, or undefined when it is not one. */
 function offerOf(value: unknown): BypassOffer | undefined {
