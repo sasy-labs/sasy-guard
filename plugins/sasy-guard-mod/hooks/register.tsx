@@ -317,8 +317,7 @@ async function record(
 
 /**
  * record(), never throwing: it runs after `next`, where a failure would hand
- * the call to the .catch handler, which replays only the downstream result and
- * would lose this mod's own decision.
+ * the call to the .catch handler, which denies it.
  */
 async function recordSafely(
   $: EngineInterface,
@@ -613,8 +612,11 @@ export const register: Register = on => {
     // What SASY decided, not what another hook made of the call.
     await recordSafely($, e, ours)
     return result
-  }).catch(($, e, next) =>
-    next.called ? next(e) : { deny: '[SASY] security check failed inside sasy-guard-mod' },
+  }).catch(() =>
+    // Any failure denies, also after `next`: the engine refusing this mod's
+    // answer (an input rewrite its tool does not accept) must not let the
+    // call run as the other hooks left it.
+    ({ deny: '[SASY] security check failed inside sasy-guard-mod' }),
   )
 
   on('command.run', { command: COMMAND }, async ($, e, next) => {
