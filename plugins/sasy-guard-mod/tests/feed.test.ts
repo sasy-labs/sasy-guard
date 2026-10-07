@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { MAX_BUFFER_ROWS, MAX_RESULTS, ResultTable, TOO_LARGE, afterPush, batches, emptyBuffer, enqueue, reportedCalls, utf8Length, withResults } from '../hooks/feed'
+import { MAX_BUFFER_ROWS, MAX_DEPTH, depthOf, MAX_RESULTS, ResultTable, TOO_LARGE, afterPush, batches, emptyBuffer, enqueue, reportedCalls, utf8Length, withResults } from '../hooks/feed'
 
 test('the feed buffer: bounded, split into pushes, and kept across a push', () => {
   const row = (uuid: string, size = 10) => ({ uuid, message: { type: 'user', content: [{ type: 'text', text: 'x'.repeat(size) }] } })
@@ -82,4 +82,16 @@ test('the result table is bounded and says how many it dropped', () => {
   expect(table.get('huge')).toBe(TOO_LARGE)
   table.forget(['huge', 'extra'])
   expect(table.get('huge')).toBeUndefined()
+})
+
+test('rows and results nested deeper than the daemon parses are left to the transcript', () => {
+  const nest = (n: number): unknown => (n === 0 ? 'x' : { a: nest(n - 1) })
+  expect(depthOf(nest(3))).toBe(3)
+  const deep = { uuid: 'd', message: { type: 'user', content: [{ type: 'text', text: 'x', extra: nest(MAX_DEPTH) }] } }
+  const kept = enqueue(emptyBuffer(), deep)
+  expect(kept.rows).toHaveLength(0)
+  expect(kept.gap).toBe(1)
+  const table = new ResultTable()
+  table.note('t1', nest(MAX_DEPTH))
+  expect(table.get('t1')).toBe(TOO_LARGE)
 })

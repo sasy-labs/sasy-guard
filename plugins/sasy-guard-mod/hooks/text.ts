@@ -123,3 +123,40 @@ export function decisionLines(d: GuardDecision, isWhole: boolean): string[] {
   const body = isWhole ? reason : reason.slice(0, 1).map(line => shorten(line, 120))
   return [head.trimEnd(), ...body.map(line => `            ${line}`)]
 }
+
+/** The band shows the policy's reason and fix; /guard has the rest. */
+const BAND_REASON_LINES = 3
+
+/** How the band draws a decision: its verb and colour, and the reason lines
+ *  that fit (the heading, a possible overflow line and the button take the
+ *  other rows). */
+export function bandLines(
+  d: GuardDecision,
+  maxRows: number,
+): { verb: string; color: string; shown: string[] } {
+  const verb = {
+    deny: 'denied',
+    ask: 'needs approval for',
+    approved: 'asked you, and you allowed',
+    declined: 'asked you, and blocked',
+  }[d.verdict]
+  const color = { deny: 'red', ask: 'yellow', approved: 'green', declined: 'red' }[d.verdict]
+  const room = Math.max(1, Math.min(BAND_REASON_LINES, maxRows - 3))
+  const reason = d.reason.split('\n').filter(line => line.trim() !== '')
+  const shown = reason.slice(0, room)
+  if (reason.length > room) shown.push('… full text: /guard')
+  return { verb, color, shown }
+}
+
+/** The decisions /guard lists, newest first. */
+const RECENT_IN_COMMAND = 5
+
+/** What /guard prints: the daemon's health line, this session's totals, and
+ *  the most recent decisions, the newest in full. */
+export function guardText(health: string, c: GuardCounts, decisions: GuardDecision[]): string {
+  const recent = decisions.slice(-RECENT_IN_COMMAND).reverse()
+  const lines = [health, `this session: ${c.checked} checked · ${c.denied} denied · ${c.asked} asked`]
+  if (recent.length === 0) lines.push('no denials or approval requests yet')
+  else lines.push('recent decisions (newest first):', ...recent.flatMap((d, i) => decisionLines(d, i === 0)))
+  return lines.join('\n')
+}

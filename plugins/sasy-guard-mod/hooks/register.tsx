@@ -22,7 +22,18 @@ import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
 import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
 import type { FeedBuffer, FeedRow } from './feed'
-import { ResultTable, afterPush, batches, emptyBuffer, enqueue, reportedCalls, rowOf, withResults } from './feed'
+import {
+  ResultTable,
+  afterPush,
+  agentsOf,
+  batches,
+  emptyBuffer,
+  enqueue,
+  isAcknowledged,
+  reportedCalls,
+  rowOf,
+  withResults,
+} from './feed'
 import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
 import {
   ENDPOINT,
@@ -31,8 +42,9 @@ import {
   SESSION_NOTE,
   choiceLabels,
   cleanOffer,
+  bandLines,
   cleanReason,
-  decisionLines,
+  guardText,
   shorten,
   statusText,
   targetOf,
@@ -52,16 +64,15 @@ import {
 
 const PLUGIN = 'sasy-guard'
 const COMMAND = 'guard'
-const RECENT_IN_COMMAND = 5
 /** The most worktree ids seen before their spawn that the mod remembers. */
 const MAX_EARLY = 200
-/** The band shows the policy's reason and fix; /guard has the rest. */
-const BAND_REASON_LINES = 3
 const HEALTH_TIMEOUT_MS = 3000
 /** How long a history push waits for a reported tool call to finish. */
 const RESULT_WAIT_MS = 5000
 /** Pushes before a check: the first, then rounds for rows kept meanwhile. */
 const MAX_PUSH_ROUNDS = 3
+/** The most time a check spends sending history, all rounds included. */
+const PUSH_DEADLINE_MS = 20_000
 
 const counts = atom({ plugin: 'sasy-guard-mod', key: 'counts' } as const, {
   checked: 0,
@@ -450,19 +461,18 @@ async function sendFeed(
   rows: FeedRow[],
   agents: Record<string, { toolUseId: string; agentType: string }>,
   gap: boolean,
+  deadline: number,
 ): Promise<{ outcome: FeedOutcome; sent: number }> {
   const port = await daemonPort($)
   if (port === undefined) return { outcome: 'failed', sent: 0 }
   const auth = await authHeaderFile($, port)
   let sent = 0
   for (const batch of batches(rows).concat(rows.length === 0 && gap ? [[]] : [])) {
-    const used = Object.fromEntries(
-      [...new Set(batch.flatMap(r => (r.agentId === undefined ? [] : [r.agentId])))]
-        .filter(id => agents[id] !== undefined)
-        .map(id => [id, agents[id]]),
-    )
+    // One deadline for all of a check's pushing: a slow port holder cannot
+    // hold the call for longer.
+    if ((await $.clock.now()) > deadline) return { outcome: 'failed', sent }
     const ran = await $.process.run(postArgv(port, auth, '/v1/session/append', 10), {
-      stdin: JSON.stringify({ ...base, rows: batch, agents: used, gap: gap && sent === 0 }),
+      stdin: JSON.stringify({ ...base, rows: batch, agents: agentsOf(batch, agents), gap: gap && sent === 0 }),
       timeoutMs: 13_000,
     })
     if (ran.exitCode !== 0) {
@@ -470,14 +480,7 @@ async function sendFeed(
     }
     const { body, status } = splitStatus(ran.stdout)
     if (status === '404') return { outcome: 'unsupported', sent }
-    // Only the daemon's own acknowledgement counts as delivered.
-    let isAcknowledged = false
-    try {
-      isAcknowledged = status === '200' && (JSON.parse(body) as { ok?: unknown }).ok === true
-    } catch {
-      // Not the daemon's answer.
-    }
-    if (!isAcknowledged) return { outcome: 'failed', sent }
+    if (!isAcknowledged(status, body)) return { outcome: 'failed', sent }
     sent += batch.length
   }
   return { outcome: 'sent', sent }
@@ -577,6 +580,8 @@ export const register: Register = on => {
   // leaves the new buffer alone.
   let feedGeneration = 0
   let feed: FeedBuffer = emptyBuffer()
+  // The session's folder as last read (at session start and each check).
+  let knownCwd: string | undefined
   let feedSupported = true
   const toolResults = new ResultTable()
   // Tool calls started and not yet finished, by tool_use_id, each with what
@@ -633,6 +638,7 @@ export const register: Register = on => {
       feedGeneration++
     }
     feedSession = e.session_id
+    if (typeof e.cwd === 'string' && e.cwd !== '') knownCwd = e.cwd
     const kept = carried
     carried = undefined
     if (kept !== undefined && e.source === 'compact') {
@@ -737,7 +743,9 @@ export const register: Register = on => {
   on('session.append', async ($, e, next) => {
     const stored = await next(e)
     if (!feedSupported) return stored
-    const cwd = e.agentId === undefined ? await $.session.cwd() : agentTable[e.agentId]?.cwd
+    // Queued at once (no await between storing and queueing), with the folder
+    // last seen for the session or the subagent's recorded one.
+    const cwd = e.agentId === undefined ? knownCwd : agentTable[e.agentId]?.cwd
     feed = enqueue(feed, rowOf({ ...e, message: stored.message ?? e.message }, cwd))
     return stored
   })
@@ -824,6 +832,7 @@ export const register: Register = on => {
       }
     } else {
       const sessionCwd = await $.session.cwd()
+      knownCwd = sessionCwd
       const cwd = caller.kind === 'agent' ? caller.cwd ?? sessionCwd : sessionCwd
       const agentType = caller.kind === 'agent' ? caller.type : info.agentType
       const input: CheckInput = {
@@ -850,6 +859,7 @@ export const register: Register = on => {
           // Rows kept while a push ran go out before the check too (a few
           // rounds at most); a session change while a push ran ends it.
           const generation = feedGeneration
+          const deadline = (await $.clock.now()) + PUSH_DEADLINE_MS
           for (let round = 0; round < MAX_PUSH_ROUNDS && feedSupported; round++) {
             if (round > 0 && (pushed !== 'sent' || feed.rows.length === 0)) break
             // A row reporting a tool call still running waits, briefly, for
@@ -871,12 +881,12 @@ export const register: Register = on => {
             // reads it from the transcript first.
             const isMissing = reportedCalls(sending).some(id => running.has(id))
             const gap = pending.gap > 0 || enriched.gap || isMissing
-            let { outcome, sent } = await sendFeed($, base, sending, spawns, gap)
+            let { outcome, sent } = await sendFeed($, base, sending, spawns, gap, deadline)
             if (outcome === 'unreachable') {
               // As for a check: start the daemon once and send everything again
               // (a new daemon may hold none of it; it skips rows it has).
               await ensureDaemon($)
-              ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap))
+              ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap, deadline))
             }
             pushed = outcome
             if (generation !== feedGeneration) break // another session's buffer now
@@ -935,21 +945,7 @@ export const register: Register = on => {
 
   on('command.run', { command: COMMAND }, async ($, e, next) => {
     if (!ownsCommand) return next(e)
-    const c = await read($, counts)
-    const recent = (await read($, decisions)).slice(-RECENT_IN_COMMAND).reverse()
-    const lines = [
-      await daemonHealth($),
-      `this session: ${c.checked} checked · ${c.denied} denied · ${c.asked} asked`,
-    ]
-    if (recent.length === 0) {
-      lines.push('no denials or approval requests yet')
-    } else {
-      lines.push(
-        'recent decisions (newest first):',
-        ...recent.flatMap((d, i) => decisionLines(d, i === 0)),
-      )
-    }
-    return { text: lines.join('\n') }
+    return { text: guardText(await daemonHealth($), await read($, counts), await read($, decisions)) }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -958,18 +954,7 @@ export const register: Register = on => {
     if (latest.seq <= (await read($, dismissedSeq))) return next(e)
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    const verb = {
-      deny: 'denied',
-      ask: 'needs approval for',
-      approved: 'asked you, and you allowed',
-      declined: 'asked you, and blocked',
-    }[latest.verdict]
-    const color = { deny: 'red', ask: 'yellow', approved: 'green', declined: 'red' }[latest.verdict]
-    // Rows besides the reason: the heading, a possible overflow line, the button.
-    const room = Math.max(1, Math.min(BAND_REASON_LINES, e.props.maxRows - 3))
-    const reason = latest.reason.split('\n').filter(line => line.trim() !== '')
-    const shown = reason.slice(0, room)
-    if (reason.length > room) shown.push('… full text: /guard')
+    const { verb, color, shown } = bandLines(latest, e.props.maxRows)
 
     // Later mods share the band: keep what they draw below ours.
     const theirs = await next(e)
