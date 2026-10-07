@@ -246,6 +246,14 @@ test("a restart seen mid-push leads to a full resend even if a later batch fails
   const first = requests.find((r) => r.path === "/v1/session/events")!;
   assert.equal(first.body.reset, true);
   assert.deepEqual((first.body.entries as { id: string }[]).map((e) => e.id), ["e1"]);
+  // Every request of that resend is marked as history, not just the first.
+  const resend = requests.filter((r) => r.path === "/v1/session/events");
+  assert.ok(resend.length >= 2 && resend.every((r) => r.body.replay === true));
+  // A later push of new entries is not.
+  h.entries.push({ id: "e4", parentId: "g1", type: "message", message: { role: "user", content: "next" } } as never);
+  requests = [];
+  await h.fire("tool_call", readEnv);
+  assert.equal(requests.find((r) => r.path === "/v1/session/events")!.body.replay, undefined);
 });
 
 test("a session answer without the registration's generation blocks the call", async () => {

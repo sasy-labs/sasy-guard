@@ -139,6 +139,9 @@ export function createGuard(opts: GuardOptions = {}) {
           const toSend = withSummarizedBranches(ctx, base).filter((e) => jumped || !sent.has(e.id));
           // Even with nothing new, the push goes: its answer shows whether the
           // daemon restarted (and lost the session) since the last one.
+          // The whole branch goes (the session's first push, or a reset): every
+          // request of it is history to the daemon, not activity.
+          const replay = jumped || sent.size === 0;
           const parts = batches(toSend.map(shrinkEntry));
           if (parts.length === 0) parts.push([]);
           let restarted = false;
@@ -153,6 +156,7 @@ export function createGuard(opts: GuardOptions = {}) {
                 ...(generation ? { generation } : {}),
                 entries: part,
                 reset: jumped && i === 0,
+                ...(replay ? { replay: true } : {}),
               })) {
               restarted = true;
               resetOwed = true;
