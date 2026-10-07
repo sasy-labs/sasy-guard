@@ -18,7 +18,7 @@ import type { EngineInterface, PreToolUseResult, Register } from 'claude-code'
 
 import type { GuardCounts, GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
 import type { AgentTable } from './agents'
-import { addSpawn, attribute, markUnattributable, worktreeAgentId } from './agents'
+import { addSpawn, attribute, markUnattributable, worktreeOwner } from './agents'
 import type { CheckInput } from './enforce'
 import {
   CHECK_TIMEOUT_MS,
@@ -465,7 +465,10 @@ export const register: Register = on => {
   })
 
   on('classic.WorktreeCreate', async ($, e, next) => {
-    const agentId = worktreeAgentId(String(e.name))
+    // A worktree created for an isolated subagent is named `agent-<id>`; one a
+    // subagent enters itself (EnterWorktree) carries that subagent's agent_id.
+    // Either way that subagent now runs in a folder no mod event gives.
+    const agentId = worktreeOwner(e)
     if (agentId !== undefined) {
       const known = (await read($, agents))[agentId] !== undefined
       if (known) await update($, agents, table => markUnattributable(table, agentId))

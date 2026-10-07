@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 
-import { addSpawn, attribute, markUnattributable, worktreeAgentId } from '../hooks/agents'
+import { addSpawn, attribute, markUnattributable, worktreeAgentId, worktreeOwner } from '../hooks/agents'
 import { combine, denyWith, toResult } from '../hooks/enforce'
 
 const DENY_REASON =
@@ -643,4 +643,12 @@ test('an Agent call asking for a remote (cloud) subagent is refused', async ($, 
 
   expect(call.deny ?? call.text).toContain('remote (cloud) subagent')
   expect(w.checks).toHaveLength(0)
+})
+
+test('a worktree belongs to the subagent that entered it, or the one it was made for', () => {
+  expect(worktreeOwner({ name: 'scratch', agent_id: 'a1' })).toBe('a1')
+  expect(worktreeOwner({ name: 'agent-adf75aa4c2affa6f1' })).toBe('adf75aa4c2affa6f1')
+  expect(worktreeOwner({ name: 'agent-adf75aa4c2affa6f1', agent_id: 'a9' })).toBe('a9')
+  // The main thread's own worktree: the session's folder follows it.
+  expect(worktreeOwner({ name: 'scratch' })).toBeUndefined()
 })
