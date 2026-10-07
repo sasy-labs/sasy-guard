@@ -170,6 +170,11 @@ extension tries to start the daemon instead.
 
 ## Limitations
 
+- **macOS and Linux only.** The sasy-guard runtime (the daemon and the policy
+  engine) is published for macOS and Linux; Windows is not supported, and on
+  Windows the extension blocks every call because it cannot verify the daemon's
+  access token.
+
 - **Calls in one turn are checked before any of them runs.** When the model asks
   for several tools in one message, pi checks them all, then runs them
   together. The daemon judges each call by what the model had seen when it

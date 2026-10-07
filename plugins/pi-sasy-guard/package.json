@@ -10,7 +10,7 @@
   },
   "files": ["index.ts", "core.ts", "daemon.ts", "README.md"],
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
