@@ -10,7 +10,9 @@ export type FeedRow = {
   message: { type: string; name?: string; role?: string; content: unknown[] }
   cwd?: string
   model?: string
-  toolUseResult?: Record<string, unknown>
+  /** The tool's structured result: an object when it ran, a string when it
+   *  errored or was refused (the transcript's `toolUseResult`). */
+  toolUseResult?: unknown
 }
 
 /** Rows waiting to be sent, their serialized size, and whether rows were lost. */
@@ -91,14 +93,27 @@ function resultIds(row: FeedRow): string[] {
   })
 }
 
-/** Each row with the structured result of the tool call it reports, when the
- *  mod saw that call finish (the transcript's `toolUseResult`). */
-export function withResults(rows: FeedRow[], results: ReadonlyMap<string, Record<string, unknown>>): FeedRow[] {
-  return rows.map(row => {
+/**
+ * Each row with the structured result of the tool call it reports, when the
+ * mod saw that call finish (the transcript's `toolUseResult`). A result that
+ * would make its row too large for a push is left off and `gap` set: the
+ * daemon then reads that row, result and all, from the transcript first.
+ */
+export function withResults(
+  rows: FeedRow[],
+  results: ReadonlyMap<string, unknown>,
+): { rows: FeedRow[]; gap: boolean } {
+  let gap = false
+  const out = rows.map(row => {
     if (row.toolUseResult !== undefined) return row
     const found = resultIds(row).map(id => results.get(id)).find(r => r !== undefined)
-    return found === undefined ? row : { ...row, toolUseResult: found }
+    if (found === undefined) return row
+    const enriched = { ...row, toolUseResult: found }
+    if (sizeOf(enriched) <= MAX_BATCH_BYTES) return enriched
+    gap = true
+    return row
   })
+  return { rows: out, gap }
 }
 
 /** The rows split into pushes the daemon takes, in order (no row is larger
