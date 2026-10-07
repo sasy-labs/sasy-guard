@@ -152,7 +152,10 @@ row: the folder it ran in and the full result of the tool call it reports.
   history than the mod keeps, is left to the transcript: the mod tells the
   daemon rows were lost, and the daemon reads them from the file.
 - After `/clear`, `/resume` or `/branch`, the mod starts collecting afresh for
-  the new session.
+  the new session. A call still being checked when the session changes is
+  blocked, so it is never decided on the other session's history.
+- When the mod is reloaded mid-session, the rows it held are gone, so it tells
+  the daemon rows were lost and the daemon reads them from the transcript.
 - The daemon still reads the transcript once when a session starts, after
   `--resume` and after the daemon restarts: those load earlier history rather
   than add to it.
