@@ -505,6 +505,14 @@ export const register: Register = on => {
           '[SASY] security check unavailable: sasy-guard-mod has not seen this session ' +
           'start (it was enabled mid-session); start a new session',
       }
+    } else if (String(tool) === 'Agent' && args.isolation === 'remote') {
+      // A remote (cloud) subagent's tool calls run where neither this mod nor
+      // the local daemon sees them, so its spawn would be an unchecked channel.
+      ours = {
+        deny:
+          '[SASY] sasy-guard-mod cannot check the tool calls of a remote (cloud) subagent; ' +
+          'run the agent locally instead',
+      }
     } else if (caller.kind === 'unknown') {
       ours = {
         deny:

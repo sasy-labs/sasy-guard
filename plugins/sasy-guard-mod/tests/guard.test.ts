@@ -628,3 +628,19 @@ test('subagents the mod cannot place are unattributable', () => {
   expect(worktreeAgentId('agent-adf75aa4c2affa6f1')).toBe('adf75aa4c2affa6f1')
   expect(worktreeAgentId('my-branch')).toBeUndefined()
 })
+
+test('an Agent call asking for a remote (cloud) subagent is refused', async ($, on) => {
+  const w = world(on)
+  await started($)
+
+  const call = await $.tool.call({
+    tool: 'Agent',
+    description: 'remote work',
+    prompt: 'do it',
+    subagent_type: 'general-purpose',
+    isolation: 'remote',
+  } as never)
+
+  expect(call.deny ?? call.text).toContain('remote (cloud) subagent')
+  expect(w.checks).toHaveLength(0)
+})

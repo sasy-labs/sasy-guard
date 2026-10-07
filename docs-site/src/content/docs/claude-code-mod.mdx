@@ -94,7 +94,12 @@ That happens when:
   worktree of its own (its folder is not visible to a mod), a subagent that
   started before the mod loaded, or any call in a session the mod did not see
   start (for example, after enabling the mod mid-session). Start a new session,
-  or use the sasy-guard plugin for workflows with worktree subagents.
+  or use the sasy-guard plugin for workflows with worktree subagents;
+- Claude asks for a **remote** subagent (one that runs in a cloud session): its
+  calls would run where neither the mod nor the daemon on your machine sees
+  them. A subagent whose own definition makes it remote cannot be recognised
+  when it starts, and its calls are not checked; the same holds for the
+  sasy-guard plugin.
 
 ## Choosing between the two plugins
 
