@@ -820,6 +820,8 @@ test('only the daemon\'s own offer shape is a bypass offer', () => {
   // A question without the daemon's routing tag at its end is not one it asked.
   expect(answer({ ...offer, question: 'Approve?' })).toBeUndefined()
   expect(answer({ ...offer, question: 'Approve? [SASY-ALLOW:ab] now' })).toBeUndefined()
+  // Nor is one with nothing readable besides the tag.
+  expect(answer({ ...offer, question: '\u200b [SASY-ALLOW:ab]' })).toBeUndefined()
   // Only the daemon's two exact choice lists, never a repeated or reordered one.
   expect(answer({ ...offer, labels: Array(1000).fill('approve').concat('decline') })).toBeUndefined()
   expect(answer({ ...offer, labels: ['decline', 'approve'] })).toBeUndefined()

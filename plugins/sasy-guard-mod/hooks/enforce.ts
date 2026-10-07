@@ -53,6 +53,8 @@ const isExactly = (labels: unknown[], expected: string[]): boolean =>
 const DOMAIN = /^(?=.{3,253}$)[a-z0-9-]+(\.[a-z0-9-]+)+$/
 /** The daemon's routing tag, which ends every question it asks. */
 const ROUTING_TAG = /\[SASY-ALLOW:[0-9a-f]+\]$/
+/** Whether a question says something the user can read besides its tag. */
+const isReadable = (question: string): boolean => /[\p{L}\p{N}]/u.test(question.replace(ROUTING_TAG, ''))
 
 /** The `sasyApproval` field of a daemon answer, or undefined when it is not one. */
 function offerOf(value: unknown): BypassOffer | undefined {
@@ -60,7 +62,7 @@ function offerOf(value: unknown): BypassOffer | undefined {
   const { question, labels, reason, policyReason, domain, ...unknown } = value
   const isValid =
     Object.keys(unknown).length === 0 &&
-    typeof question === 'string' && ROUTING_TAG.test(question) &&
+    typeof question === 'string' && ROUTING_TAG.test(question) && isReadable(question) &&
     typeof reason === 'string' &&
     typeof policyReason === 'string' &&
     Array.isArray(labels) &&
