@@ -218,6 +218,12 @@ export class ResultTable {
     return this.lost.has(id) ? TOO_LARGE : this.values.get(id)
   }
 
+  /** A call whose structured result the mod does not have (refused, or
+   *  failed): its row is left to the transcript, which records it. */
+  unknown(id: string): void {
+    this.markLost(id)
+  }
+
   /** Keeps one result, dropping the oldest to stay in bounds. */
   note(id: string, value: unknown): void {
     const size = resultSize(value)
