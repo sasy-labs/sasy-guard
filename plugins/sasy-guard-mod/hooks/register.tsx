@@ -21,7 +21,7 @@ import type { AgentTable } from './agents'
 import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
 import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
-import type { CheckInput } from './enforce'
+import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
 import {
   CHECK_TIMEOUT_MS,
   DEFAULT_PORT,
@@ -29,9 +29,9 @@ import {
   checkArgv,
   combine,
   denyWith,
+  parseAnswer,
   postArgv,
   splitStatus,
-  toResult,
 } from './enforce'
 
 const PLUGIN = 'sasy-guard'
@@ -196,7 +196,7 @@ async function ensureDaemon($: EngineInterface): Promise<void> {
  * reached after one attempt to start it, the call is denied, unless
  * SASY_FAIL_OPEN=true, as for the settings hook.
  */
-async function checkCall($: EngineInterface, input: CheckInput): Promise<PreToolUseResult> {
+async function checkCall($: EngineInterface, input: CheckInput): Promise<CheckAnswer> {
   // Mirrors the hook plugin's pretooluse.sh, which this mod replaces.
   const port = await daemonPort($)
   let answer: CheckReply =
@@ -207,8 +207,8 @@ async function checkCall($: EngineInterface, input: CheckInput): Promise<PreTool
     await ensureDaemon($)
     answer = await postCheck($, port, input)
   }
-  const result = 'body' in answer ? toResult(answer.body) : undefined
-  if (result !== undefined) return result
+  const parsed = 'body' in answer ? parseAnswer(answer.body) : undefined
+  if (parsed !== undefined) return parsed
   // SASY_FAIL_OPEN covers an unreachable daemon only, and, as in the hook,
   // only with the daemon's hook-auth file in place: never a refused or missing
   // authentication, nor an answer that is no decision.
@@ -219,10 +219,195 @@ async function checkCall($: EngineInterface, input: CheckInput): Promise<PreTool
     (await $.env.get('SASY_FAIL_OPEN')) === 'true' &&
     (await authHeaderFile($, port)) !== undefined
   ) {
-    return {}
+    return { result: {} }
   }
   const why = 'error' in answer ? answer.error : 'sasy-watch gave an answer that is not a decision'
-  return { deny: `[SASY] security check unavailable (${why})` }
+  return { result: { deny: `[SASY] security check unavailable (${why})` } }
+}
+
+/** What the dialog's buttons say, by the daemon's canonical choice. */
+function choiceLabels(offer: BypassOffer): Record<string, string> {
+  return {
+    approve: 'Approve once',
+    decline: 'Deny',
+    ...(offer.domain === undefined ? {} : { 'trust-domain': `Trust ${offer.domain} for this session` }),
+  }
+}
+
+/** Whether a person can be asked: some surface draws the session. */
+async function canAsk($: EngineInterface): Promise<boolean> {
+  return (await $.session.surfaces()).length > 0
+}
+
+/** What became of one approval dialog: the call's result and what to record. */
+/** `record` is absent when the outcome is an ordinary SASY denial. */
+type DialogOutcome = { result: PreToolUseResult; record?: DialogRecord }
+
+/**
+ * The mod's own approval dialog for a one-time bypass the daemon offered. It
+ * holds the call while it asks, records the answer with the daemon
+ * (/v1/approval, bound to this call's tool_use_id and offer), and on approval
+ * checks the call again: the daemon then allows it once, unless what the
+ * decision rested on changed, in which case the new offer is shown once more.
+ * A dismissed dialog declines. Replaces the model-driven AskUserQuestion round
+ * trip; the model reads only the outcome.
+ */
+async function askForBypass(
+  $: EngineInterface,
+  input: CheckInput,
+  offer: BypassOffer,
+  attemptsLeft = 1,
+): Promise<DialogOutcome> {
+  return askAbout($, input, cleanOffer(offer), attemptsLeft)
+}
+
+/**
+ * Text that must keep its end: the question ends with what is being approved
+ * (`Attempted: ...`) and the policy reason with its fix. Control characters
+ * are removed as for every reason; past REASON_CHARS the middle goes.
+ */
+function cleanKeepingEnd(text: string): string {
+  const clean = text.replace(CONTROL, '').trim()
+  if (clean.length <= REASON_CHARS) return clean
+  const tail = Math.floor(REASON_CHARS * 0.6)
+  return `${clean.slice(0, REASON_CHARS - tail - 3)} … ${clean.slice(-tail)}`
+}
+
+/** The offer's daemon-authored texts as the mod draws every reason. */
+function cleanOffer(offer: BypassOffer): BypassOffer {
+  return {
+    ...offer,
+    question: cleanKeepingEnd(offer.question),
+    reason: cleanReason(offer.reason),
+    policyReason: cleanKeepingEnd(offer.policyReason),
+  }
+}
+
+async function askAbout(
+  $: EngineInterface,
+  input: CheckInput,
+  offer: BypassOffer,
+  attemptsLeft: number,
+): Promise<DialogOutcome> {
+  const labels = choiceLabels(offer)
+  const question = offer.question.replace(/\s*\[SASY-ALLOW:[0-9a-f]+\]\s*$/, '')
+  let answer = labels.decline ?? 'Deny'
+  try {
+    answer = await $.ui.ask(question, {
+      header: 'SASY',
+      options: offer.labels.map(label => labels[label] ?? label),
+    })
+  } catch {
+    // Dismissed: the call stays blocked.
+  }
+  const choice =
+    Object.entries(labels).find(([, label]) => label === answer)?.[0] ?? 'decline'
+  const recorded = await postBestEffort(
+    $,
+    '/v1/approval',
+    { session_id: input.session_id, tool_use_id: input.tool_use_id, choice },
+    5,
+  )
+  let isRecorded = false
+  try {
+    isRecorded = recorded !== undefined && (JSON.parse(recorded) as { ok?: unknown }).ok === true
+  } catch {
+    // Not the daemon's answer: nothing was recorded.
+  }
+  const policy = offer.policyReason.replace(MARKER, '').trim()
+  if (choice === 'decline') {
+    return {
+      result: {
+        deny:
+          '[SASY] The user declined a one-time bypass of this check. Follow the ' +
+          `suggested fix instead of retrying the same action.\n\n${policy}`,
+      },
+      record: { verdict: 'declined', reason: `${offer.reason} — you denied it` },
+    }
+  }
+  if (!isRecorded) {
+    // No answer is not proof that nothing changed: the daemon may have applied
+    // the choice before the connection failed, so say both.
+    const maybeTrusted =
+      choice === 'trust-domain'
+        ? [`The SASY daemon may have recorded the user's choice to trust ${offer.domain ?? 'this host'} for this session.`]
+        : []
+    return {
+      result: {
+        deny: `[SASY] The approval could not be confirmed, so the action stays blocked.\n\n${policy}`,
+        ...(maybeTrusted.length === 0 ? {} : { additionalContext: maybeTrusted }),
+      },
+      record: { verdict: 'declined', reason: `${offer.reason} — your choice could not be confirmed (it may still have taken effect)` },
+    }
+  }
+  // What the user chose here, kept in the record whatever follows: a trusted
+  // host stays trusted for the session even if the call is then blocked.
+  const chosen =
+    choice === 'trust-domain'
+      ? `${offer.reason} — you trusted ${offer.domain ?? 'the host'} for this session`
+      : `${offer.reason} — you approved it once`
+  const trustNote =
+    choice === 'trust-domain'
+      ? `The user chose in the SASY dialog to trust ${offer.domain ?? 'this host'} for the rest ` +
+        'of this session.'
+      : undefined
+  const again = await checkCall($, input)
+  // The re-check's own verdict (a new ask, or a plain denial on new evidence),
+  // recorded after what the user chose, which the model is also told of.
+  const after = (verdict: GuardVerdict, text: string): DialogOutcome => ({
+    result: trustNote
+      ? { ...again.result, additionalContext: [...(again.result.additionalContext ?? []), trustNote] }
+      : again.result,
+    record: { verdict, reason: `${chosen}; then ${cleanReason(text.slice(Math.max(text.indexOf(MARKER), 0)).replace(MARKER, ''))}` },
+  })
+  // A new approval requirement: Claude Code asks the user, as for any ask.
+  if (again.result.ask !== undefined) return after('ask', again.result.ask)
+  if (again.result.deny !== undefined) {
+    // The decision's grounds changed since the question: ask about the new one.
+    if (again.offer !== undefined && attemptsLeft > 0) {
+      const later = await askForBypass($, input, again.offer, attemptsLeft - 1)
+      const context = [...(later.result.additionalContext ?? []), ...(trustNote ? [trustNote] : [])]
+      const laterReason = later.record?.reason ?? `blocked: ${cleanReason(later.result.deny ?? '')}`
+      return {
+        result: context.length === 0 ? later.result : { ...later.result, additionalContext: context },
+        record: { verdict: later.record?.verdict ?? 'declined', reason: `${chosen}; then ${laterReason}` },
+      }
+    }
+    if (again.offer !== undefined) {
+      // It changed again: stop asking, keep the call blocked, and say why.
+      // The newest offer is declined at the daemon, so no later question can
+      // approve it.
+      await postBestEffort(
+        $,
+        '/v1/approval',
+        { session_id: input.session_id, tool_use_id: input.tool_use_id, choice: 'decline' },
+        5,
+      )
+      const changed = cleanOffer(again.offer)
+      const fix = changed.policyReason.replace(MARKER, '').trim()
+      return {
+        result: {
+          deny:
+            '[SASY] The decision changed again after the user approved it, so the action ' +
+            `stays blocked.\n\n${fix}`,
+          ...(trustNote ? { additionalContext: [trustNote] } : {}),
+        },
+        record: {
+          verdict: 'declined',
+          reason: `${chosen}; then ${changed.reason} — changed again after your approval`,
+        },
+      }
+    }
+    // A plain denial now (new evidence): recorded as the denial it is.
+    return after('deny', again.result.deny)
+  }
+  const note = trustNote
+    ? `${trustNote} This action may proceed.`
+    : 'The user approved a one-time bypass of a SASY check for this action in the SASY dialog.'
+  return {
+    result: { ...again.result, additionalContext: [...(again.result.additionalContext ?? []), note] },
+    record: { verdict: 'approved', reason: chosen },
+  }
 }
 
 /** The /healthz fields /guard prints, each held to the shape the daemon sends. */
@@ -287,23 +472,29 @@ async function daemonHealth($: EngineInterface): Promise<string> {
 
 /** One decision for /guard: a heading, then its reason, whole or first line. */
 function decisionLines(d: GuardDecision, isWhole: boolean): string[] {
-  const head = `  ${clockTime(d.at)}  ${d.verdict.padEnd(4)}  ${d.tool}  ${d.target}`
+  const head = `  ${clockTime(d.at)}  ${d.verdict.padEnd(8)}  ${d.tool}  ${d.target}`
   const reason = d.reason.split('\n').filter(line => line.trim() !== '')
   const body = isWhole ? reason : reason.slice(0, 1).map(line => shorten(line, 120))
   return [head.trimEnd(), ...body.map(line => `            ${line}`)]
 }
 
-/** Counts one checked call and keeps it when it carries a [SASY] verdict. */
+/** What the mod's own dialog came to, for the record: the offer the user
+ *  answered (its reason) and whether they approved. */
+type DialogRecord = { verdict: GuardVerdict; reason: string }
+
+/** Counts one checked call and keeps it when it carries a [SASY] verdict, or
+ *  when the mod's own dialog asked the user about it. */
 async function record(
   $: EngineInterface,
   e: Readonly<Record<string, unknown>>,
   result: PreToolUseResult,
+  dialog?: DialogRecord,
 ): Promise<void> {
-  const found = verdictOf(result)
+  const found = dialog ?? verdictOf(result)
   const total = await update($, counts, c => ({
     checked: c.checked + 1,
     denied: c.denied + (found?.verdict === 'deny' ? 1 : 0),
-    asked: c.asked + (found?.verdict === 'ask' ? 1 : 0),
+    asked: c.asked + (found?.verdict === 'ask' || dialog !== undefined ? 1 : 0),
   }))
   $.ui.status(statusText(total))
   if (found === null) return
@@ -323,9 +514,10 @@ async function recordSafely(
   $: EngineInterface,
   e: unknown,
   result: PreToolUseResult,
+  dialog?: DialogRecord,
 ): Promise<void> {
   try {
-    await record($, e as Readonly<Record<string, unknown>>, result)
+    await record($, e as Readonly<Record<string, unknown>>, result, dialog)
   } catch {
     // The counts and the band miss one call; the decision stands.
   }
@@ -571,6 +763,8 @@ export const register: Register = on => {
     const info = await read($, sessionInfo)
     const caller = attribute(agentTable, callerOf.get(tool_use_id))
     let ours: PreToolUseResult
+    // When the mod's own dialog asked the user, what to record for the call.
+    let dialog: DialogRecord | undefined
     if (info === null) {
       ours = {
         deny:
@@ -595,7 +789,7 @@ export const register: Register = on => {
       const sessionCwd = await $.session.cwd()
       const cwd = caller.kind === 'agent' ? caller.cwd ?? sessionCwd : sessionCwd
       const agentType = caller.kind === 'agent' ? caller.type : info.agentType
-      ours = await checkCall($, {
+      const input: CheckInput = {
         session_id: await $.session.id(),
         tool_name: String(tool),
         tool_input: args,
@@ -604,13 +798,25 @@ export const register: Register = on => {
         ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
         ...(caller.kind === 'agent' ? { agent_id: caller.agentId } : {}),
         ...(agentType === null ? {} : { agent_type: agentType }),
-      })
+        sasy_mod: true,
+      }
+      const answer = await checkCall($, input)
+      // A one-time bypass on offer: ask the user here, holding the call, where
+      // someone can be asked; elsewhere the denial (with its model-driven
+      // AskUserQuestion instructions) stands, as with the hook plugin.
+      if (answer.offer !== undefined && (await canAsk($))) {
+        const outcome = await askForBypass($, input, answer.offer)
+        ours = outcome.result
+        dialog = outcome.record
+      } else {
+        ours = answer.result
+      }
     }
     // Any other settings hooks run whatever SASY answered.
     const theirs = await next(e)
     const result = ours.deny !== undefined ? denyWith(ours, theirs) : combine(ours, theirs)
     // What SASY decided, not what another hook made of the call.
-    await recordSafely($, e, ours)
+    await recordSafely($, e, ours, dialog)
     return result
   }).catch(() =>
     // Any failure denies, also after `next`: the engine refusing this mod's
@@ -644,8 +850,13 @@ export const register: Register = on => {
     if (latest.seq <= (await read($, dismissedSeq))) return next(e)
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    const verb = latest.verdict === 'deny' ? 'denied' : 'needs approval for'
-    const color = latest.verdict === 'deny' ? 'red' : 'yellow'
+    const verb = {
+      deny: 'denied',
+      ask: 'needs approval for',
+      approved: 'asked you, and you allowed',
+      declined: 'asked you, and blocked',
+    }[latest.verdict]
+    const color = { deny: 'red', ask: 'yellow', approved: 'green', declined: 'red' }[latest.verdict]
     // Rows besides the reason: the heading, a possible overflow line, the button.
     const room = Math.max(1, Math.min(BAND_REASON_LINES, e.props.maxRows - 3))
     const reason = latest.reason.split('\n').filter(line => line.trim() !== '')
