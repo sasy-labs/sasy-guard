@@ -71,16 +71,19 @@ claude --dangerously-skip-permissions
 ```
 
 The last line starts Claude Code with its own permission checks turned off
-(no permission prompts, no auto mode). Use this only for the test, in this
-throwaway folder. With Claude Code's checks on, it may stop or ask about a
-risky command before the guard ever sees it, and then you are testing Claude
-Code rather than the guard. For everyday work, start Claude Code the way you
-normally do.
+(no permission prompts, no auto mode). With those checks on, Claude Code may
+stop or ask about a risky command before the guard ever sees it, and then you
+are testing Claude Code rather than the guard.
 
-If your own user settings (`~/.claude/settings.json`) have hooks that block
-commands such as `rm` or reading `.env`, they can get in the way in the same
-way. Add `--setting-sources project,local` to the command so that Claude Code
-skips your user settings for this test and only the guard decides.
+Turning the checks off is a real risk: the folder is not a sandbox, so the
+session can still reach your other files and the network, and the guard is the
+only thing checking each command. Use it only for the prompts below, and quit
+the session (`/exit`) when you are done. For everyday work, start Claude Code
+the way you normally do.
+
+Your own hooks still run in this session. If one of yours blocks commands such
+as `rm` or reading `.env`, it may answer before the guard does, and that row
+then shows your hook's message instead of the guard's.
 
 Then type these prompts. Each denial shows in the band and the status entry,
 and `/guard` lists it. For `curl_sh`, the denial carries a one-time bypass:
