@@ -104,6 +104,11 @@ with the hook plugin. Where nobody can be asked (such as `claude -p`), the call
 stays refused. The status entry and `/guard` count the call as an ask, with what
 you chose.
 
+The dialog covers the one-time bypass offer only. When a call is held because
+an earlier source hid text in invisible Unicode characters, the policy asks
+whether that source is benign or malicious; that question still reaches you
+through Claude's question tool, as with the hook plugin.
+
 ## When it refuses a call
 
 The mod **fails closed**: when it cannot get a decision, the call does not run.
