@@ -564,9 +564,8 @@ export const register: Register = on => {
   // them), what each subagent's spawn said, and whether the daemon takes the
   // feed at all (a released daemon does not; it reads the transcript).
   // Each caller's permission mode ("" = the main thread, else the subagent's
-  // id), from the latest classic event that gives it (SessionStart,
-  // SubagentStart, UserPromptSubmit, PostToolUse): PreToolUse does not. A subagent's own
-  // definition may set another mode than the session's.
+  // id), from the latest classic event that gives it (PreToolUse does not); a
+  // subagent's definition may set another mode than the session's.
   const modes = new Map<string, string>()
   const noteMode = (e: { permission_mode?: unknown; agent_id?: unknown }): void => {
     if (typeof e.permission_mode !== 'string' || e.permission_mode === '') return
@@ -581,8 +580,7 @@ export const register: Register = on => {
   // Until a session's start says otherwise, rows may have been lost (the mod
   // reloaded mid-session): the first push then asks the daemon to catch up.
   let feed: FeedBuffer = { ...emptyBuffer(), gap: 1 }
-  // The session's folder as last read (at session start, each check and
-  // after each main-thread tool call).
+  // The session's folder as last read (session start, checks, tool calls).
   let knownCwd: string | undefined
   let feedSupported = true
   const toolResults = new ResultTable()
@@ -618,7 +616,6 @@ export const register: Register = on => {
   // what was carried, re-pin the status line and keep what each check needs
   // to say about the session.
   on('classic.SessionStart', async ($, e, next) => {
-    noteMode(e)
     // Another session's rows: after /clear, /resume or /branch, also when the
     // mod first saw this one start there (it was enabled mid-session).
     const isOther =
@@ -629,7 +626,9 @@ export const register: Register = on => {
       feedSupported = true
       toolResults.clear()
       feedGeneration++
+      modes.clear() // the modes were the ended session's
     }
+    noteMode(e)
     feedSession = e.session_id
     if (typeof e.cwd === 'string' && e.cwd !== '') knownCwd = e.cwd
     const kept = carried
