@@ -906,7 +906,9 @@ export const register: Register = on => {
           release()
         }
         // Undelivered history is never checked around: the daemon would decide
-        // without it. Only an unreachable daemon may fail open, as for a check.
+        // without it (also rows still arriving after the last round). Only an
+        // unreachable daemon may fail open, as for a check.
+        if (pushed === 'sent' && feedSupported && feed.rows.length > 0) pushed = 'failed'
         if (pushed === 'sent' || pushed === 'unsupported') return checkCall($, checked)
         if (pushed === 'unreachable' && (await failsOpen($))) return { result: {} }
         return {
