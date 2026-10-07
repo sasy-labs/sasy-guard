@@ -19,8 +19,8 @@ import type { EngineInterface, PreToolUseResult, Register } from 'claude-code'
 import type { GuardCounts, GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
 import type { AgentTable } from './agents'
 import type { Carried } from './carry'
-import { WORKTREE_WHY, addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
-import { MAX_EARLY, carryOver } from './carry'
+import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
+import { MAX_DECISIONS, addCounts, joinDecisions, wasReset } from './carry'
 import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
 import {
   CHECK_TIMEOUT_MS,
@@ -36,8 +36,9 @@ import {
 
 const PLUGIN = 'sasy-guard'
 const COMMAND = 'guard'
-const MAX_DECISIONS = 50
 const RECENT_IN_COMMAND = 5
+/** The most worktree ids seen before their spawn that the mod remembers. */
+const MAX_EARLY = 200
 /** The band shows the policy's reason and fix; /guard has the rest. */
 const BAND_REASON_LINES = 3
 const TARGET_CHARS = 80
@@ -56,9 +57,6 @@ const sessionInfo = atom(
   { plugin: 'sasy-guard-mod', key: 'sessionInfo' } as const,
   null as GuardSessionInfo | null,
 )
-const agents = atom({ plugin: 'sasy-guard-mod', key: 'agents' } as const, {} as AgentTable)
-/** Agent ids whose worktree appeared before their spawn finished. */
-const isolatedEarly = atom({ plugin: 'sasy-guard-mod', key: 'isolatedEarly' } as const, [] as string[])
 
 /** What the model is told at SessionStart, as the hook plugin's script says it. */
 const SESSION_NOTE =
@@ -512,25 +510,26 @@ function contextOf(answer: string | undefined): string[] {
   }
 }
 
-/** The values a reset would clear, read just before it. */
+/** The values compaction may clear, read just before it. */
 async function snapshot($: EngineInterface): Promise<Carried> {
   return {
-    agents: await read($, agents),
-    isolatedEarly: await read($, isolatedEarly),
     counts: await read($, counts),
     decisions: await read($, decisions),
     dismissedSeq: await read($, dismissedSeq),
   }
 }
 
-/** Puts back what a reset cleared (carry.ts says what comes back). */
-async function restore($: EngineInterface, kept: Carried, source: unknown): Promise<void> {
-  const next = carryOver(kept, await snapshot($), source)
-  await update($, agents, () => next.agents)
-  await update($, isolatedEarly, () => next.isolatedEarly)
-  await update($, counts, () => next.counts)
-  await update($, decisions, () => next.decisions)
-  await update($, dismissedSeq, () => next.dismissedSeq)
+/**
+ * Puts back what compaction cleared, merged with anything recorded since: each
+ * write applies to the value as it then stands, so a concurrent record is
+ * kept. Nothing happens when the values were not cleared.
+ */
+async function restore($: EngineInterface, kept: Carried): Promise<void> {
+  if (!wasReset(kept.counts, await read($, counts))) return
+  const total = await update($, counts, now => addCounts(kept.counts, now))
+  await update($, decisions, now => joinDecisions(kept.decisions, now))
+  await update($, dismissedSeq, now => Math.max(now, kept.dismissedSeq))
+  $.ui.status(statusText(total))
 }
 
 export const register: Register = on => {
@@ -543,11 +542,15 @@ export const register: Register = on => {
   // worktree of their own, by tool_use_id, until their spawn is recorded.
   const callerOf = new Map<string, string>()
   const isolatedCalls = new Set<string>()
-  // Subagents now in a worktree, held here too so a failed state write cannot
-  // leave one attributed to its old folder.
-  const inWorktree = new Set<string>()
-  // $.state as it stood before the last compaction or session end, put back
-  // by classic.SessionStart.
+  // The subagents seen this session (agents.ts), and the ids whose worktree
+  // appeared before their spawn finished. Held in this module's memory, which
+  // /clear, /resume and compaction leave alone (only a reload of the mod
+  // clears it, after which running subagents are denied as unknown), and
+  // written synchronously, so no other event can interleave with a write.
+  let agentTable: AgentTable = {}
+  let earlyWorktrees: string[] = []
+  // The totals and decisions as they stood before the last compaction, put
+  // back by classic.SessionStart if compaction cleared them.
   let carried: Carried | undefined
 
   on('session.start', async ($, e, next) => {
@@ -570,17 +573,18 @@ export const register: Register = on => {
   // Fires at startup and after /clear, /resume, /branch and compaction: as the
   // hook plugin's session-start script, start the daemon if needed and
   // register the session (a fresh registration after /clear). The resets also
-  // clear $.state without a new session.start: put back what was carried,
-  // re-pin the status line and keep what each check needs to say about the
-  // session.
+  // clear $.state without a new session.start: after compaction put back
+  // what was carried, re-pin the status line and keep what each check needs
+  // to say about the session.
   on('classic.SessionStart', async ($, e, next) => {
-    if (carried !== undefined) {
+    const kept = carried
+    carried = undefined
+    if (kept !== undefined && e.source === 'compact') {
       try {
-        await restore($, carried, e.source)
+        await restore($, kept)
       } catch {
-        // A subagent left unrecorded is denied, as one started before the mod.
+        // The totals and the band start over; enforcement is unaffected.
       }
-      carried = undefined
     }
     const path = typeof e.transcript_path === 'string' ? e.transcript_path : ''
     const type = typeof e.agent_type === 'string' ? e.agent_type : ''
@@ -623,7 +627,6 @@ export const register: Register = on => {
   })
 
   on('classic.SessionEnd', async ($, e, next) => {
-    carried = await snapshot($).catch(() => carried)
     await postBestEffort($, '/v1/session/end', { session_id: e.session_id }, 1)
     return next(e)
   })
@@ -631,32 +634,30 @@ export const register: Register = on => {
   // Subagents: their type and folder when they start, and whether they run in
   // a worktree of their own (asked by the Agent call, or seen at WorktreeCreate).
   on('agent.spawn', async ($, e, next) => {
+    // A top-level subagent that names no folder runs in the session's folder
+    // as it is at the spawn, not as it is when the subagent later calls.
+    const cwd = e.cwd ?? (e.parentAgentId === undefined ? await $.session.cwd() : undefined)
     const started = await next(e)
     if (started.agentId === undefined) return started
+    // Recorded before anything else is awaited: the subagent has started.
     const agentId = started.agentId
-    // A top-level subagent that names no folder runs in the session's folder
-    // as it was at the spawn, not as it is when the subagent later calls.
-    const cwd = e.cwd ?? (e.parentAgentId === undefined ? await $.session.cwd() : undefined)
-    const early = await read($, isolatedEarly)
-    const isIsolated = isolatedCalls.has(e.tool_use_id) || early.includes(agentId)
+    const isIsolated = isolatedCalls.has(e.tool_use_id) || earlyWorktrees.includes(agentId)
     isolatedCalls.delete(e.tool_use_id)
-    await update($, agents, table =>
-      addSpawn(
-        table,
-        {
-          agentId,
-          subagentType: e.subagentType,
-          ...(cwd === undefined ? {} : { cwd }),
-          ...(e.parentAgentId === undefined ? {} : { parentAgentId: e.parentAgentId }),
-          ...(e.isTeammate === true ? { isTeammate: true } : {}),
-          // A teammate's settings-hook events name it by its team name
-          // (`<name>` of `<name>@<team>`), not by its subagent type.
-          ...(started.teammateId === undefined
-            ? {}
-            : { teammateName: started.teammateId.split('@')[0] ?? started.teammateId }),
-        },
-        isIsolated,
-      ),
+    agentTable = addSpawn(
+      agentTable,
+      {
+        agentId,
+        subagentType: e.subagentType,
+        ...(cwd === undefined ? {} : { cwd }),
+        ...(e.parentAgentId === undefined ? {} : { parentAgentId: e.parentAgentId }),
+        ...(e.isTeammate === true ? { isTeammate: true } : {}),
+        // A teammate's settings-hook events name it by its team name
+        // (`<name>` of `<name>@<team>`), not by its subagent type.
+        ...(started.teammateId === undefined
+          ? {}
+          : { teammateName: started.teammateId.split('@')[0] ?? started.teammateId }),
+      },
+      isIsolated,
     )
     return started
   })
@@ -667,10 +668,8 @@ export const register: Register = on => {
     // the subagent does not start.
     const agentId = isolatedWorktreeAgent(e)
     if (agentId !== undefined) {
-      inWorktree.add(agentId)
-      const known = (await read($, agents))[agentId] !== undefined
-      if (known) await update($, agents, table => markUnattributable(table, agentId))
-      else await update($, isolatedEarly, ids => [...ids, agentId].slice(-MAX_EARLY))
+      if (agentTable[agentId] !== undefined) agentTable = markUnattributable(agentTable, agentId)
+      else earlyWorktrees = [...earlyWorktrees, agentId].slice(-MAX_EARLY)
     }
     return next(e)
   })
@@ -688,14 +687,7 @@ export const register: Register = on => {
       const agentId = e.agentId
       const hasEntered =
         e.tool === 'EnterWorktree' && result.deny === undefined && result.isError !== true
-      if (agentId !== undefined && hasEntered) {
-        inWorktree.add(agentId)
-        try {
-          await update($, agents, table => markUnattributable(table, agentId))
-        } catch {
-          // inWorktree still denies its calls.
-        }
-      }
+      if (agentId !== undefined && hasEntered) agentTable = markUnattributable(agentTable, agentId)
       return result
     } finally {
       // The call is over: its spawn, if any, has been recorded.
@@ -712,11 +704,7 @@ export const register: Register = on => {
       tool_use_id: string
     }
     const info = await read($, sessionInfo)
-    const callerId = callerOf.get(tool_use_id)
-    const caller =
-      callerId !== undefined && inWorktree.has(callerId)
-        ? { kind: 'unknown' as const, why: WORKTREE_WHY }
-        : attribute(await read($, agents), callerId)
+    const caller = attribute(agentTable, callerOf.get(tool_use_id))
     let ours: PreToolUseResult
     // When the mod's own dialog asked the user, what to record for the call.
     let dialog: DialogRecord | undefined
