@@ -71,8 +71,9 @@ const HEALTH_TIMEOUT_MS = 3000
 const RESULT_WAIT_MS = 5000
 /** Pushes before a check: the first, then rounds for rows kept meanwhile. */
 const MAX_PUSH_ROUNDS = 3
-/** The most time a check spends sending history, all rounds included. */
-const PUSH_DEADLINE_MS = 20_000
+/** The most time a check spends sending history, all rounds included: room
+ *  for one timed-out request, one daemon start, and a retry. */
+const PUSH_DEADLINE_MS = 30_000
 
 const counts = atom({ plugin: 'sasy-guard-mod', key: 'counts' } as const, {
   checked: 0,
@@ -863,7 +864,7 @@ export const register: Register = on => {
           const generation = feedGeneration
           const deadline = (await $.clock.now()) + PUSH_DEADLINE_MS
           for (let round = 0; round < MAX_PUSH_ROUNDS && feedSupported; round++) {
-            if (round > 0 && (pushed !== 'sent' || feed.rows.length === 0)) break
+            if (round > 0 && (pushed !== 'sent' || (feed.rows.length === 0 && feed.gap === 0))) break
             // A row reporting a tool call still running waits, briefly, for
             // the call to finish and its structured result to be known.
             const waits = reportedCalls(feed.rows).flatMap(id => {
@@ -882,7 +883,7 @@ export const register: Register = on => {
             const sending = withResults(pending.rows, toolResults, id => running.has(id))
             const gap = pending.gap > 0
             let { outcome, sent } = await sendFeed($, base, sending, spawns, gap, deadline)
-            if (outcome === 'unreachable' && deadline - (await $.clock.now()) > ENSURE_TIMEOUT_MS) {
+            if (outcome === 'unreachable' && deadline - (await $.clock.now()) > ENSURE_TIMEOUT_MS + 1000) {
               // As for a check: start the daemon once and send everything again
               // (a new daemon may hold none of it; it skips rows it has).
               await ensureDaemon($)
@@ -907,7 +908,7 @@ export const register: Register = on => {
         // Undelivered history is never checked around: the daemon would decide
         // without it (also rows still arriving after the last round). Only an
         // unreachable daemon may fail open, as for a check.
-        if (pushed === 'sent' && feedSupported && feed.rows.length > 0) pushed = 'failed'
+        if (pushed === 'sent' && feedSupported && (feed.rows.length > 0 || feed.gap > 0)) pushed = 'failed'
         if (pushed === 'sent' || pushed === 'unsupported') return checkCall($, checked)
         if (pushed === 'unreachable' && (await failsOpen($))) return { result: {} }
         return {
