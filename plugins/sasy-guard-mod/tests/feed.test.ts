@@ -23,7 +23,13 @@ test('the feed buffer: bounded, split into pushes, and kept across a push', () =
   expect(afterPush({ rows: [], bytes: 0, gap: true }, pending, 2, true)).toEqual({ rows: [], bytes: 0, gap: true })
   // A tool result row picks up the call's structured result.
   const result = { uuid: 'x', message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: 't1' }] } }
-  expect(withResults([result], new Map([['t1', { exitCode: 0 }]]))[0]?.toolUseResult).toEqual({ exitCode: 0 })
+  expect(withResults([result], new Map([['t1', { exitCode: 0 }]])).rows[0]?.toolUseResult).toEqual({ exitCode: 0 })
+  // An errored call's result is a string, and is sent as one.
+  expect(withResults([result], new Map([['t1', 'Error: refused']])).rows[0]?.toolUseResult).toBe('Error: refused')
+  // A result too large for a push is left to the transcript.
+  const big = withResults([result], new Map([['t1', { out: '漢'.repeat(1_100_000) }]]))
+  expect(big.rows[0]?.toolUseResult).toBeUndefined()
+  expect(big.gap).toBe(true)
 })
 
 test('sizes are UTF-8 bytes, as the daemon counts a request body', () => {

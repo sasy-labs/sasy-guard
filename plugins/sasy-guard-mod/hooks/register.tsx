@@ -561,7 +561,7 @@ export const register: Register = on => {
   let feedSession: string | undefined
   let feed: FeedBuffer = emptyBuffer()
   let feedSupported = true
-  const toolResults = new Map<string, Record<string, unknown>>()
+  const toolResults = new Map<string, unknown>()
   const spawns: Record<string, { toolUseId: string; agentType: string }> = {}
   // The totals and decisions as they stood before the last compaction, put
   // back by classic.SessionStart if compaction cleared them.
@@ -706,8 +706,8 @@ export const register: Register = on => {
 
   // The tool's structured result, for the history row that reports it.
   const noteResult = (id: string, result: { result?: unknown }): void => {
-    if (!feedSupported || result.result === null || typeof result.result !== 'object') return
-    toolResults.set(id, result.result as Record<string, unknown>)
+    if (!feedSupported || result.result === undefined) return
+    toolResults.set(id, result.result)
     if (toolResults.size > MAX_RESULTS) toolResults.delete(toolResults.keys().next().value!)
   }
 
@@ -795,14 +795,15 @@ export const register: Register = on => {
           cwd: sessionCwd,
           ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
         }
-        const sending = withResults(pending.rows, toolResults)
-        let { outcome, sent } = await sendFeed($, base, sending, spawns, pending.gap)
+        const enriched = withResults(pending.rows, toolResults)
+        const sending = enriched.rows
+        const gap = pending.gap || enriched.gap
+        let { outcome, sent } = await sendFeed($, base, sending, spawns, gap)
         if (outcome === 'unreachable') {
-          // As for a check: start the daemon once and send again.
+          // As for a check: start the daemon once and send everything again (a
+          // new daemon may hold none of it; the daemon skips rows it has).
           await ensureDaemon($)
-          const retried = await sendFeed($, base, sending.slice(sent), spawns, pending.gap && sent === 0)
-          outcome = retried.outcome
-          sent += retried.sent
+          ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap))
         }
         pushed = outcome
         if (outcome === 'unsupported') {
