@@ -601,13 +601,18 @@ test('a subagent runs where its spawn said, else its parent\'s folder, else the 
   let table = addSpawn({}, { agentId: 'a1', subagentType: 'general-purpose' }, false)
   table = addSpawn(table, { agentId: 'a2', subagentType: 'Explore', cwd: '/repo/sub' }, false)
   table = addSpawn(table, { agentId: 'a3', subagentType: 'fork', parentAgentId: 'a2' }, false)
-  table = addSpawn(table, { agentId: 'a4', subagentType: 'scout', cwd: '/x', isTeammate: true }, false)
+  table = addSpawn(
+    table,
+    { agentId: 'a4', subagentType: 'general-purpose', cwd: '/x', isTeammate: true, teammateName: 'scout-2' },
+    false,
+  )
 
   expect(attribute(table, undefined)).toEqual({ kind: 'main' })
   expect(attribute(table, 'a1')).toEqual({ kind: 'agent', agentId: 'a1', type: 'general-purpose', cwd: null })
   expect(attribute(table, 'a2')).toEqual({ kind: 'agent', agentId: 'a2', type: 'Explore', cwd: '/repo/sub' })
   expect(attribute(table, 'a3')).toEqual({ kind: 'agent', agentId: 'a3', type: 'fork', cwd: '/repo/sub' })
-  expect(attribute(table, 'a4')).toEqual({ kind: 'agent', agentId: 'a4', type: 'scout', cwd: null })
+  // A teammate is named as its hook payloads name it, and runs in the session's folder.
+  expect(attribute(table, 'a4')).toEqual({ kind: 'agent', agentId: 'a4', type: 'scout-2', cwd: null })
 })
 
 test('subagents the mod cannot place are unattributable', () => {

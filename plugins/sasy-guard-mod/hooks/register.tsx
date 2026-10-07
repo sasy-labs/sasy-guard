@@ -333,15 +333,15 @@ async function postBestEffort(
   route: string,
   body: unknown,
   maxSeconds: number,
-  retries = 0,
+  retrySeconds = 0,
 ): Promise<string | undefined> {
   try {
     const port = await daemonPort($)
     if (port === undefined) return undefined
-    const argv = postArgv(port, await authHeaderFile($, port), route, maxSeconds, retries)
+    const argv = postArgv(port, await authHeaderFile($, port), route, maxSeconds, retrySeconds)
     const ran = await $.process.run(argv, {
       stdin: JSON.stringify(body),
-      timeoutMs: ((maxSeconds + 1) * (retries + 1) + 2) * 1000,
+      timeoutMs: (maxSeconds + retrySeconds + 3) * 1000,
     })
     if (ran.exitCode !== 0) return undefined
     const { body: answer, status } = splitStatus(ran.stdout)
@@ -404,10 +404,12 @@ export const register: Register = on => {
       agentType: type === '' ? null : type,
     }))
     $.ui.status(statusText(await read($, counts)))
-    let isRegistered = (await postBestEffort($, '/v1/session/start', e, 60)) !== undefined
+    let isRegistered = (await postBestEffort($, '/v1/session/start', e, 10)) !== undefined
     if (!isRegistered) {
       // A daemon just started answers before its policy engine is ready:
       // retry the registration for up to 20 seconds while the engine starts.
+      // Bounded so a port holder that never answers delays the start by at
+      // most about 45 seconds (10 + the daemon start + 20 + one attempt).
       await ensureDaemon($)
       isRegistered = (await postBestEffort($, '/v1/session/start', e, 5, 20)) !== undefined
     }
@@ -450,6 +452,11 @@ export const register: Register = on => {
           ...(e.cwd === undefined ? {} : { cwd: e.cwd }),
           ...(e.parentAgentId === undefined ? {} : { parentAgentId: e.parentAgentId }),
           ...(e.isTeammate === true ? { isTeammate: true } : {}),
+          // A teammate's settings-hook events name it by its team name
+          // (`<name>` of `<name>@<team>`), not by its subagent type.
+          ...(started.teammateId === undefined
+            ? {}
+            : { teammateName: started.teammateId.split('@')[0] ?? started.teammateId }),
         },
         isIsolated,
       ),
@@ -470,6 +477,12 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     if (e.tool === 'Agent' && (e as { isolation?: unknown }).isolation === 'worktree') {
       isolatedCalls.add(e.tool_use_id)
+      try {
+        return await next(e)
+      } finally {
+        // Its spawn has been recorded (or never happened, the call refused).
+        isolatedCalls.delete(e.tool_use_id)
+      }
     }
     if (e.agentId === undefined) return next(e)
     callerOf.set(e.tool_use_id, e.agentId)

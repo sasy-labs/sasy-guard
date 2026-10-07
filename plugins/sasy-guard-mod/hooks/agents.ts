@@ -29,6 +29,8 @@ export type Spawn = {
   cwd?: string
   parentAgentId?: string
   isTeammate?: boolean
+  /** A teammate's name in its team, which its hook payloads give as `agent_type`. */
+  teammateName?: string
 }
 
 /** The caller of one tool call, or why the mod cannot name it. */
@@ -55,7 +57,7 @@ export function addSpawn(table: AgentTable, spawn: Spawn, isIsolated: boolean): 
   const inherited = parent?.cwd ?? null
   const cwd = spawn.isTeammate === true ? null : spawn.cwd ?? inherited
   const record: AgentRecord = {
-    type: spawn.subagentType,
+    type: spawn.teammateName ?? spawn.subagentType,
     cwd,
     isUnattributable: isIsolated || isParentUnknown,
   }

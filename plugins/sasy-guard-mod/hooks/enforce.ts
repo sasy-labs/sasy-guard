@@ -33,14 +33,18 @@ export function postArgv(
   authFile: string | undefined,
   route: string,
   maxSeconds: number,
-  retries = 0,
+  retrySeconds = 0,
 ): string[] {
   // Retries, when asked for, also cover HTTP errors (a daemon whose policy
-  // engine is still starting answers 400), one a second.
+  // engine is still starting answers 400), one a second, for at most
+  // retrySeconds in all (curl restarts --max-time for each attempt).
   const retry =
-    retries === 0
+    retrySeconds === 0
       ? []
-      : ['--fail', '--retry', String(retries), '--retry-delay', '1', '--retry-all-errors']
+      : [
+          '--fail', '--retry', String(retrySeconds), '--retry-delay', '1',
+          '--retry-max-time', String(retrySeconds), '--retry-all-errors',
+        ]
   return [
     'curl', '-sS', '--noproxy', '*', '--max-time', String(maxSeconds), ...retry,
     '--max-filesize', '1048576', '-X', 'POST', '-H', 'content-type: application/json',
