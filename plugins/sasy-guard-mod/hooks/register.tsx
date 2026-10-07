@@ -475,20 +475,16 @@ export const register: Register = on => {
   })
 
   on('tool.call', async ($, e, next) => {
-    if (e.tool === 'Agent' && (e as { isolation?: unknown }).isolation === 'worktree') {
-      isolatedCalls.add(e.tool_use_id)
-      try {
-        return await next(e)
-      } finally {
-        // Its spawn has been recorded (or never happened, the call refused).
-        isolatedCalls.delete(e.tool_use_id)
-      }
-    }
-    if (e.agentId === undefined) return next(e)
-    callerOf.set(e.tool_use_id, e.agentId)
+    const isIsolatedAgent =
+      e.tool === 'Agent' && (e as { isolation?: unknown }).isolation === 'worktree'
+    if (!isIsolatedAgent && e.agentId === undefined) return next(e)
+    if (isIsolatedAgent) isolatedCalls.add(e.tool_use_id)
+    if (e.agentId !== undefined) callerOf.set(e.tool_use_id, e.agentId)
     try {
       return await next(e)
     } finally {
+      // The call is over: its spawn, if any, has been recorded.
+      isolatedCalls.delete(e.tool_use_id)
       callerOf.delete(e.tool_use_id)
     }
   })
