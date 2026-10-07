@@ -29,6 +29,9 @@ import {
 import { DaemonClient } from "./daemon.ts";
 
 const KEY = "sasy-guard";
+
+/** What the extension reads of a pi session entry. */
+type SessionEntryLike = { id: string; parentId: string | null };
 const MAX_DECISIONS = 50;
 const RECENT_IN_REPORT = 5;
 const BLOCK_CHOICE = "No, block it";
@@ -114,9 +117,11 @@ export function createGuard(opts: GuardOptions = {}) {
           // pi moved to another branch of its session tree (navigating back, or
           // continuing from an earlier entry): resend the whole branch as a reset,
           // so the daemon judges the next call by this branch's history.
+          // On the second pass the daemon is a new run: resend everything as a reset.
           const jumped =
-            lastLeaf !== null && (firstFresh ? (firstFresh.parentId ?? null) !== lastLeaf : leaf !== lastLeaf);
-          const toSend = jumped ? branch : branch.filter((e) => !sent.has(e.id));
+            pass === 1 ||
+            (lastLeaf !== null && (firstFresh ? (firstFresh.parentId ?? null) !== lastLeaf : leaf !== lastLeaf));
+          const toSend = jumped ? withSummarizedBranches(ctx, branch) : branch.filter((e) => !sent.has(e.id));
           const reported = [...rejected];
           // Even with nothing new, the push goes: its answer shows whether the
           // daemon restarted (and lost the session) since the last one.
@@ -136,9 +141,11 @@ export function createGuard(opts: GuardOptions = {}) {
               })) || restarted;
             for (const e of part as { id: string }[]) sent.add(e.id);
           }
-          lastLeaf = leaf;
-          rejected = rejected.filter((id) => !reported.includes(id));
-          if (!restarted) return;
+          if (!restarted) {
+            lastLeaf = leaf;
+            rejected = rejected.filter((id) => !reported.includes(id));
+            return;
+          }
           sent = new Set();
           lastLeaf = null;
         }
@@ -147,6 +154,28 @@ export function createGuard(opts: GuardOptions = {}) {
       });
       pushChain = run.catch(() => {});
       return run;
+    }
+
+    /**
+     * A branch to send whole (a reset), preceded by the branches its branch
+     * summaries describe: a summary depends on the branch pi left, so the
+     * daemon needs that branch's entries to link the summary to them.
+     */
+    function withSummarizedBranches(ctx: ExtensionContext, branch: readonly SessionEntryLike[]): SessionEntryLike[] {
+      const out: SessionEntryLike[] = [];
+      const seen = new Set<string>();
+      const add = (e: SessionEntryLike) => {
+        if (!seen.has(e.id)) {
+          seen.add(e.id);
+          out.push(e);
+        }
+      };
+      for (const e of branch) {
+        const fromId = (e as { type?: unknown; fromId?: unknown }).type === "branch_summary" ? (e as { fromId?: unknown }).fromId : undefined;
+        if (typeof fromId === "string") for (const left of ctx.sessionManager.getBranch(fromId)) add(left);
+      }
+      for (const e of branch) add(e);
+      return out;
     }
 
     function show(ctx: ExtensionContext, latest?: DecisionRecord): void {

@@ -71,13 +71,21 @@ function harness(opts: { hasUI?: boolean; confirm?: boolean; daemonPort?: number
   // The branch pi is on: the entries, unless a test moves to another one.
   let branchOverride: typeof entries | undefined;
   const branch = () => branchOverride ?? entries;
+  // Every entry any test branch has held, to walk from one back to the root.
+  const known = new Map<string, (typeof entries)[number]>();
+  const pathTo = (id: string) => {
+    for (const e of [...entries, ...(branchOverride ?? [])]) known.set(e.id, e);
+    const path: typeof entries = [];
+    for (let e = known.get(id); e; e = e.parentId ? known.get(e.parentId) : undefined) path.unshift(e);
+    return path;
+  };
   const ctx = {
     hasUI: opts.hasUI ?? true,
     cwd: "/work/project",
     sessionManager: {
       getSessionId: () => "pi-session-1",
       getSessionFile: () => "/home/u/.pi/agent/sessions/x/1_pi-session-1.jsonl",
-      getBranch: () => branch(),
+      getBranch: (fromId?: string) => (fromId ? pathTo(fromId) : branch()),
     },
     ui: {
       setStatus: (_k: string, t: string | undefined) => ui.status.push(t),
@@ -101,7 +109,10 @@ function harness(opts: { hasUI?: boolean; confirm?: boolean; daemonPort?: number
   });
   createGuard({ client, now: () => 0 })(pi as never);
   const fire = (name: string, event: unknown) => handlers.get(name)!(event, ctx);
-  const moveTo = (b: typeof entries) => (branchOverride = b);
+  const moveTo = (b: typeof entries) => {
+    pathTo(""); // remember the branch being left
+    branchOverride = b;
+  };
   return { fire, ctx, ui, entries, commands, appended, moveTo };
 }
 
@@ -162,6 +173,8 @@ test("a daemon restart (new instance) makes the extension resend the whole branc
   await h.fire("tool_call", curl);
   const after = pushes().slice(1).map((r) => (r.body.entries as { id: string }[]).map((e) => e.id));
   assert.deepEqual(after, [["e2"], ["e1", "e2"]]);
+  // The resend is a reset, so the new daemon run rebuilds from the whole branch.
+  assert.equal(pushes().at(-1)!.body.reset, true);
   for (const r of pushes().slice(1)) seqs.push(r.body.seq as number);
   assert.ok(seqs.every((n, i) => i === 0 || n > seqs[i - 1]), "push sequence numbers increase");
 });
@@ -190,6 +203,21 @@ test("a session answer without the daemon's run id blocks the call", async () =>
   const out = (await h.fire("tool_call", readEnv)) as { block: boolean; reason: string };
   assert.equal(out.block, true);
   assert.match(out.reason, /did not name its run/);
+});
+
+test("a reset sends the branch a summary describes, so the summary can depend on it", async () => {
+  const h = harness();
+  const e1 = { id: "e1", parentId: null, type: "message", message: { role: "user", content: "a" } };
+  const e2 = { id: "e2", parentId: "e1", type: "message", message: { role: "user", content: "read .env" } };
+  h.entries.push(e1, e2);
+  await h.fire("tool_call", readEnv);
+  // pi goes back to e1 and records a summary of the branch it left (ending at e2).
+  const s1 = { id: "s1", parentId: "e1", type: "branch_summary", fromId: "e2", summary: "read .env" } as never;
+  h.moveTo([e1, s1]);
+  await h.fire("tool_call", curl);
+  const last = requests.filter((r) => r.path === "/v1/session/events").at(-1)!;
+  assert.equal(last.body.reset, true);
+  assert.deepEqual((last.body.entries as { id: string }[]).map((e) => e.id), ["e1", "e2", "s1"]);
 });
 
 test("a push the daemon does not accept blocks the call", async () => {
