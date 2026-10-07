@@ -184,7 +184,8 @@ through instead.
 - **Very large entries.** The extension sends each session entry whole, less
   images; the daemon shortens long text for the graph while keeping any hidden
   characters it carries. An entry over 24 MiB is sent without its content,
-  keeping its place in the session and its tool-call ids.
+  keeping its place in the session and its tool-call ids. A single tool call
+  whose input is over 4 MiB cannot be checked, so it is blocked.
 - **The system prompt is not traced.** As with Claude Code, the text of pi's
   system prompt (including project instruction files it loads) is not a node in
   the dependency graph.

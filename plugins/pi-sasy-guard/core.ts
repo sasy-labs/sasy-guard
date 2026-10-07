@@ -116,47 +116,45 @@ export function guardReport(health: string, c: Counts, recent: readonly Decision
  */
 export const MAX_PUSH_BYTES = 24 * 1024 * 1024;
 
-/** `value` without images and `details`, which the daemon does not read. */
-function withoutMedia(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value
-      .filter((v) => !(v && typeof v === "object" && (v as { type?: unknown }).type === "image"))
-      .map(withoutMedia);
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(([k]) => k !== "details")
-        .map(([k, v]) => [k, withoutMedia(v)]),
-    );
-  }
-  return value;
+/** A message's content without images, which the daemon does not read. */
+function withoutImages(content: unknown): unknown {
+  if (!Array.isArray(content)) return content;
+  return content.filter((b) => !(b && typeof b === "object" && (b as { type?: unknown }).type === "image"));
 }
 
 /**
- * A session entry as pushed: whole, less images, `details` and the data of
- * other extensions' custom entries. An entry still larger than a request can
- * carry is sent as a stub that keeps its place in the tree and its role and
- * tool-call ids, so the push goes through and a tool result keeps its
- * provenance.
+ * A session entry as pushed: whole, less images and pi's own `details`
+ * metadata (on the entry and its message, never inside tool arguments), and
+ * less the data of other extensions' custom entries. An entry still larger
+ * than a request can carry is sent as a stub that keeps its place in the tree,
+ * its role, and its tool calls' and results' ids and names, so the push goes
+ * through and provenance links survive.
  */
 export function shrinkEntry(entry: unknown): unknown {
   if (!entry || typeof entry !== "object") return entry;
-  const e = entry as Record<string, unknown>;
+  const { details: _entryDetails, ...e } = entry as Record<string, unknown>;
   if (e.type === "custom" && e.customType !== "sasy-guard") {
     const { data: _data, ...rest } = e;
     return rest;
   }
-  const out = withoutMedia(e) as Record<string, unknown>;
-  if (Buffer.byteLength(JSON.stringify(out)) <= MAX_PUSH_BYTES - ENVELOPE_BYTES) return out;
+  if (e.message && typeof e.message === "object") {
+    const { details: _details, ...m } = e.message as Record<string, unknown>;
+    e.message = { ...m, content: withoutImages(m.content) };
+  }
+  if (Buffer.byteLength(JSON.stringify(e)) <= MAX_PUSH_BYTES - ENVELOPE_BYTES) return e;
   const m = (e.message ?? {}) as Record<string, unknown>;
-  const note = "[sasy-guard: entry too large to send]";
+  const note = { type: "text", text: "[sasy-guard: entry too large to send]" };
+  const calls = Array.isArray(m.content)
+    ? m.content
+        .filter((b) => b && typeof b === "object" && (b as { type?: unknown }).type === "toolCall")
+        .map((b) => ({ type: "toolCall", id: (b as { id?: unknown }).id, name: (b as { name?: unknown }).name, arguments: {} }))
+    : [];
   return {
     type: e.type,
     id: e.id,
     parentId: e.parentId,
     ...(e.message
-      ? { message: { role: m.role, toolCallId: m.toolCallId, toolName: m.toolName, content: [{ type: "text", text: note }] } }
+      ? { message: { role: m.role, toolCallId: m.toolCallId, toolName: m.toolName, content: [note, ...calls] } }
       : {}),
   };
 }

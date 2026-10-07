@@ -315,6 +315,17 @@ test("pushed entries go whole, less media; only an oversized one becomes a stub"
   assert.equal(sent.message.content[0].text, long);
   assert.equal(sent.message.details, undefined);
   assert.deepEqual(shrinkEntry({ type: "custom", id: "c", parentId: null, customType: "other", data: { huge: 1 } }), { type: "custom", id: "c", parentId: null, customType: "other" });
+  // `details` inside tool arguments is the call's own data and is kept.
+  const call = { id: "e8", parentId: null, type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "x", arguments: { details: { source: ".env" } } }] } };
+  assert.deepEqual(shrinkEntry(call), call);
+  // An oversized assistant entry keeps its tool calls' ids and names.
+  const huge = { id: "e7", parentId: "e6", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "t2", name: "write", arguments: { path: "a", content: "q".repeat(MAX_PUSH_BYTES) } }] } };
+  assert.deepEqual(shrinkEntry(huge), {
+    type: "message",
+    id: "e7",
+    parentId: "e6",
+    message: { role: "assistant", toolCallId: undefined, toolName: undefined, content: [{ type: "text", text: "[sasy-guard: entry too large to send]" }, { type: "toolCall", id: "t2", name: "write", arguments: {} }] },
+  });
   // An entry larger than a request can carry is sent as a stub keeping its place.
   const wide = { id: "e5", parentId: "e4", type: "message", message: { role: "toolResult", toolCallId: "t9", toolName: "read", content: [{ type: "text", text: "z".repeat(MAX_PUSH_BYTES) }] } };
   assert.deepEqual(shrinkEntry(wide), {
