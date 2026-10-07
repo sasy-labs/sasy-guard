@@ -72,6 +72,6 @@ calls are not checked (as with the hook plugin).
 
 ```sh
 claude plugin validate plugins/sasy-guard-mod   # what the mod hooks and calls
-claude plugin test plugins/sasy-guard-mod       # tests/guard.test.ts
+claude plugin test plugins/sasy-guard-mod       # tests/*.test.ts
 claude --plugin-dir plugins/sasy-guard-mod      # load it from this checkout
 ```

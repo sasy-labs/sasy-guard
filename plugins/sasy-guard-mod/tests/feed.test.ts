@@ -70,12 +70,16 @@ test('a row reporting several tool calls, or a result too large, is left to the 
 
 test('the result table is bounded and says how many it dropped', () => {
   const table = new ResultTable()
-  for (let i = 0; i < MAX_RESULTS; i++) expect(table.note(`t${i}`, { i })).toBe(0)
-  expect(table.note('extra', { i: -1 })).toBe(1)
+  for (let i = 0; i < MAX_RESULTS; i++) table.note(`t${i}`, { i })
+  table.note('extra', { i: -1 })
+  // The oldest is dropped, and remembered: its row will go to the transcript.
   expect(table.values.has('t0')).toBe(false)
-  // One too large for a push is kept as a marker, not the value.
+  expect(table.get('t0')).toBe(TOO_LARGE)
+  expect(table.get('extra')).toEqual({ i: -1 })
+  // One too large for a push is remembered the same way, not kept.
   table.note('huge', { out: '漢'.repeat(1_100_000) })
-  expect(table.values.get('huge')).toBe(TOO_LARGE)
-  table.forget(['huge', 'extra'])
   expect(table.values.has('huge')).toBe(false)
+  expect(table.get('huge')).toBe(TOO_LARGE)
+  table.forget(['huge', 'extra'])
+  expect(table.get('huge')).toBeUndefined()
 })

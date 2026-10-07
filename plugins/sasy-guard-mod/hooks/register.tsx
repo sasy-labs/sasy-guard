@@ -741,10 +741,9 @@ export const register: Register = on => {
   // The tool's structured result, for the history row that reports it.
   const noteResult = (id: string, result: { result?: unknown }): void => {
     if (!feedSupported || result.result === undefined || result.result === null) return
-    // Each result dropped before its row went out: that row is read from the
-    // transcript instead.
-    const dropped = toolResults.note(id, result.result)
-    if (dropped > 0) feed = { ...feed, gap: feed.gap + dropped }
+    // A result too large or dropped is remembered by id: its row, whenever it
+    // comes, is read from the transcript instead.
+    toolResults.note(id, result.result)
   }
 
   on('tool.call', async ($, e, next) => {
@@ -856,7 +855,7 @@ export const register: Register = on => {
               cwd: sessionCwd,
               ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
             }
-            const enriched = withResults(pending.rows, toolResults.values)
+            const enriched = withResults(pending.rows, toolResults)
             const sending = enriched.rows
             // A result still unknown: its row goes without it, and the daemon
             // reads it from the transcript first.

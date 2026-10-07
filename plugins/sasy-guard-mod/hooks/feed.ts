@@ -32,6 +32,8 @@ export const MAX_BUFFER_BYTES = 32_000_000
  *  serialized size. */
 export const MAX_RESULTS = 500
 export const MAX_RESULT_BYTES = 32_000_000
+/** Ids of results dropped or too large, remembered for their rows. */
+const MAX_LOST = 10_000
 /** Kept in place of a result too large for any push. */
 export const TOO_LARGE: unique symbol = Symbol('too large')
 
@@ -117,7 +119,7 @@ function resultIds(row: FeedRow): string[] {
  */
 export function withResults(
   rows: FeedRow[],
-  results: ReadonlyMap<string, unknown>,
+  results: { get(id: string): unknown },
 ): { rows: FeedRow[]; gap: boolean } {
   let gap = false
   const out = rows.map(row => {
@@ -186,31 +188,45 @@ export function afterPush(now: FeedBuffer, pending: FeedBuffer, sent: number, de
 /**
  * The structured results of finished tool calls, kept until the rows that
  * report them are delivered: at most MAX_RESULTS of them and MAX_RESULT_BYTES
- * in all. One too large for any push is kept as TOO_LARGE, so its row is left
- * to the transcript.
+ * in all. A result too large for any push, or dropped to stay in bounds, is
+ * remembered by id as TOO_LARGE, so its row (whenever it comes) is left to the
+ * transcript.
  */
 export class ResultTable {
   readonly values = new Map<string, unknown>()
+  private readonly lost = new Set<string>()
   private bytes = 0
 
-  /** Keeps one result; returns how many older ones were dropped to stay in
-   *  bounds (each a row the daemon must read from the transcript). */
-  note(id: string, value: unknown): number {
+  /** The result for a tool call: its value, TOO_LARGE, or undefined. */
+  get(id: string): unknown {
+    return this.lost.has(id) ? TOO_LARGE : this.values.get(id)
+  }
+
+  /** Keeps one result, dropping the oldest to stay in bounds. */
+  note(id: string, value: unknown): void {
     const size = resultSize(value)
-    this.values.set(id, size > MAX_BATCH_BYTES ? TOO_LARGE : value)
-    if (size <= MAX_BATCH_BYTES) this.bytes += size
-    let dropped = 0
+    if (size > MAX_BATCH_BYTES) {
+      this.markLost(id)
+      return
+    }
+    this.values.set(id, value)
+    this.bytes += size
     while (this.values.size > MAX_RESULTS || this.bytes > MAX_RESULT_BYTES) {
       const [oldest] = this.values.keys()
       this.forget([oldest!])
-      dropped++
+      this.markLost(oldest!)
     }
-    return dropped
+  }
+
+  private markLost(id: string): void {
+    this.lost.add(id)
+    if (this.lost.size > MAX_LOST) this.lost.delete(this.lost.values().next().value!)
   }
 
   /** Lets go of every result (a new session). */
   clear(): void {
     this.values.clear()
+    this.lost.clear()
     this.bytes = 0
   }
 
@@ -218,8 +234,9 @@ export class ResultTable {
   forget(ids: string[]): void {
     for (const id of ids) {
       const value = this.values.get(id)
-      if (value !== undefined && value !== TOO_LARGE) this.bytes -= resultSize(value)
+      if (value !== undefined) this.bytes -= resultSize(value)
       this.values.delete(id)
+      this.lost.delete(id)
     }
   }
 }
