@@ -170,6 +170,15 @@ extension tries to start the daemon instead.
 
 ## Limitations
 
+- **Calls in one turn are checked before any of them runs.** When the model asks
+  for several tools in one message, pi checks them all, then runs them
+  together. The daemon judges each call by what the model had seen when it
+  issued it, which does not include the other calls' results. For example, a
+  `read .env` and a `curl -d @.env …` issued in the same message are each
+  judged as if the other had not run, so the `curl` is treated like the same
+  command in a fresh session. A `curl` issued after the read's result came back
+  is denied.
+
 - **The extension runs inside pi.** Another pi extension that loads after it can
   still change a tool call's arguments after sasy-guard has checked them, and
   any extension can run code of its own outside tool calls. Install only
