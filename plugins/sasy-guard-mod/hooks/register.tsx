@@ -21,6 +21,8 @@ import type { AgentTable } from './agents'
 import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
 import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
+import type { FeedBuffer, FeedRow } from './feed'
+import { MAX_RESULTS, afterPush, batches, emptyBuffer, enqueue, rowOf, withResults } from './feed'
 import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
 import {
   CHECK_TIMEOUT_MS,
@@ -480,6 +482,47 @@ async function recordSafely(
   }
 }
 
+/** What became of sending the session-history feed. */
+type FeedOutcome = 'sent' | 'unsupported' | 'unreachable' | 'failed'
+
+/**
+ * Sends buffered history rows to the daemon (/v1/session/append), in pushes it
+ * takes, in order. `unsupported`: the daemon has no such route (a released
+ * daemon, which reads the transcript instead). `sent` counts the rows that
+ * reached it, so a failed push leaves the rest buffered.
+ */
+async function sendFeed(
+  $: EngineInterface,
+  base: { session_id: string; transcript_path?: string; cwd: string },
+  rows: FeedRow[],
+  agents: Record<string, { toolUseId: string; agentType: string }>,
+  gap: boolean,
+): Promise<{ outcome: FeedOutcome; sent: number }> {
+  const port = await daemonPort($)
+  if (port === undefined) return { outcome: 'failed', sent: 0 }
+  const auth = await authHeaderFile($, port)
+  let sent = 0
+  for (const batch of batches(rows).concat(rows.length === 0 && gap ? [[]] : [])) {
+    const used = Object.fromEntries(
+      [...new Set(batch.flatMap(r => (r.agentId === undefined ? [] : [r.agentId])))]
+        .filter(id => agents[id] !== undefined)
+        .map(id => [id, agents[id]]),
+    )
+    const ran = await $.process.run(postArgv(port, auth, '/v1/session/append', 10), {
+      stdin: JSON.stringify({ ...base, rows: batch, agents: used, gap: gap && sent === 0 }),
+      timeoutMs: 13_000,
+    })
+    if (ran.exitCode !== 0) {
+      return { outcome: UNREACHABLE_CURL_EXITS.includes(ran.exitCode) ? 'unreachable' : 'failed', sent }
+    }
+    const { status } = splitStatus(ran.stdout)
+    if (status === '404') return { outcome: 'unsupported', sent }
+    if (status !== '200') return { outcome: 'failed', sent }
+    sent += batch.length
+  }
+  return { outcome: 'sent', sent }
+}
+
 /**
  * One best-effort POST to a daemon route (session start and end, the post-tool
  * signal), with the hook-auth header when the daemon wrote one. Resolves to the
@@ -563,6 +606,14 @@ export const register: Register = on => {
   // written synchronously, so no other event can interleave with a write.
   let agentTable: AgentTable = {}
   let earlyWorktrees: string[] = []
+  // The session-history feed: rows Claude Code kept since the last push, the
+  // structured results of finished tool calls (sent with the rows reporting
+  // them), what each subagent's spawn said, and whether the daemon takes the
+  // feed at all (a released daemon does not; it reads the transcript).
+  let feed: FeedBuffer = emptyBuffer()
+  let feedSupported = true
+  const toolResults = new Map<string, Record<string, unknown>>()
+  const spawns: Record<string, { toolUseId: string; agentType: string }> = {}
   // The totals and decisions as they stood before the last compaction, put
   // back by classic.SessionStart if compaction cleared them.
   let carried: Carried | undefined
@@ -657,6 +708,7 @@ export const register: Register = on => {
     const agentId = started.agentId
     const isIsolated = isolatedCalls.has(e.tool_use_id) || earlyWorktrees.includes(agentId)
     isolatedCalls.delete(e.tool_use_id)
+    spawns[agentId] = { toolUseId: e.tool_use_id, agentType: e.subagentType }
     agentTable = addSpawn(
       agentTable,
       {
@@ -688,10 +740,27 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // Each row Claude Code keeps, as stored, for the next push.
+  on('session.append', async ($, e, next) => {
+    const stored = await next(e)
+    if (!feedSupported) return stored
+    const cwd = e.agentId === undefined ? await $.session.cwd() : agentTable[e.agentId]?.cwd
+    feed = enqueue(feed, rowOf({ ...e, message: stored.message ?? e.message }, cwd))
+    return stored
+  })
+
   on('tool.call', async ($, e, next) => {
     const isIsolatedAgent =
       e.tool === 'Agent' && (e as { isolation?: unknown }).isolation === 'worktree'
-    if (!isIsolatedAgent && e.agentId === undefined) return next(e)
+    if (!isIsolatedAgent && e.agentId === undefined) {
+      const result = await next(e)
+      // The tool's structured result, for the history row that reports it.
+      if (feedSupported && result.result !== null && typeof result.result === 'object') {
+        toolResults.set(e.tool_use_id, result.result as Record<string, unknown>)
+        if (toolResults.size > MAX_RESULTS) toolResults.delete(toolResults.keys().next().value!)
+      }
+      return result
+    }
     if (isIsolatedAgent) isolatedCalls.add(e.tool_use_id)
     if (e.agentId !== undefined) callerOf.set(e.tool_use_id, e.agentId)
     try {
@@ -757,7 +826,36 @@ export const register: Register = on => {
         ...(agentType === null ? {} : { agent_type: agentType }),
         sasy_mod: true,
       }
-      const answer = await checkCall($, input)
+      // The daemon first gets every row kept since the last push, so the
+      // check sees the whole history before it.
+      let pushed: FeedOutcome = 'unsupported'
+      if (feedSupported) {
+        const pending = feed
+        const base = {
+          session_id: input.session_id,
+          cwd: sessionCwd,
+          ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
+        }
+        const sending = withResults(pending.rows, toolResults)
+        const { outcome, sent } = await sendFeed($, base, sending, spawns, pending.gap)
+        pushed = outcome
+        if (outcome === 'unsupported') {
+          feedSupported = false
+          feed = emptyBuffer()
+        } else {
+          feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
+        }
+      }
+      const answer: CheckAnswer =
+        pushed === 'failed'
+          ? {
+              result: {
+                deny:
+                  '[SASY] security check unavailable: the session history could not be sent ' +
+                  'to the sasy-watch daemon',
+              },
+            }
+          : await checkCall($, input)
       // A one-time bypass on offer: ask the user here, holding the call, where
       // someone can be asked; elsewhere the denial (with its model-driven
       // AskUserQuestion instructions) stands, as with the hook plugin.
