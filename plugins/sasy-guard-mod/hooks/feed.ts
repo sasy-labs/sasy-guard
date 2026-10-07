@@ -29,6 +29,27 @@ export const MAX_RESULTS = 500
 
 export const emptyBuffer = (): FeedBuffer => ({ rows: [], bytes: 0, gap: false })
 
+/** The UTF-8 size of a string, as the daemon counts a request body. */
+export function utf8Length(text: string): number {
+  let bytes = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c < 0x80) bytes += 1
+    else if (c < 0x800) bytes += 2
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4 // a surrogate pair: one code point
+        i++
+      } else bytes += 3
+    } else bytes += 3
+  }
+  return bytes
+}
+
+/** A row's size in a push. */
+const sizeOf = (row: FeedRow): number => utf8Length(JSON.stringify(row))
+
 /** The row for one `session.append` event, as stored. */
 export function rowOf(
   e: {
@@ -51,9 +72,12 @@ export function rowOf(
 }
 
 /** The buffer with one more row (appended in place); past its bounds, empty
- *  and marked lost. */
+ *  and marked lost. A row too large for any push is not kept: the buffer is
+ *  marked lost instead, so the daemon reads it from the transcript. */
 export function enqueue(buffer: FeedBuffer, row: FeedRow): FeedBuffer {
-  const bytes = buffer.bytes + JSON.stringify(row).length
+  const size = sizeOf(row)
+  if (size > MAX_BATCH_BYTES) return { ...buffer, gap: true }
+  const bytes = buffer.bytes + size
   if (buffer.rows.length >= MAX_BUFFER_ROWS || bytes > MAX_BUFFER_BYTES) return { rows: [], bytes: 0, gap: true }
   buffer.rows.push(row)
   return { rows: buffer.rows, bytes, gap: buffer.gap }
@@ -77,14 +101,14 @@ export function withResults(rows: FeedRow[], results: ReadonlyMap<string, Record
   })
 }
 
-/** The rows split into pushes the daemon takes, in order. A single row larger
- *  than a push goes alone (the daemon refuses it whole if too large). */
+/** The rows split into pushes the daemon takes, in order (no row is larger
+ *  than a push: enqueue keeps none). */
 export function batches(rows: FeedRow[]): FeedRow[][] {
   const out: FeedRow[][] = []
   let current: FeedRow[] = []
   let size = 0
   for (const row of rows) {
-    const n = JSON.stringify(row).length
+    const n = sizeOf(row)
     if (current.length > 0 && (current.length >= MAX_BATCH_ROWS || size + n > MAX_BATCH_BYTES)) {
       out.push(current)
       current = []
@@ -110,7 +134,7 @@ export function afterPush(now: FeedBuffer, pending: FeedBuffer, sent: number, de
   const rows = now.rows.slice(sent)
   return {
     rows,
-    bytes: rows.reduce((n, row) => n + JSON.stringify(row).length, 0),
+    bytes: rows.reduce((n, row) => n + sizeOf(row), 0),
     gap: delivered ? false : now.gap,
   }
 }

@@ -16,7 +16,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PreToolUseResult, Register } from 'claude-code'
 
-import type { GuardCounts, GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
+import type { GuardDecision, GuardSessionInfo } from '../types'
 import type { AgentTable } from './agents'
 import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
@@ -24,6 +24,20 @@ import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
 import type { FeedBuffer, FeedRow } from './feed'
 import { MAX_RESULTS, afterPush, batches, emptyBuffer, enqueue, rowOf, withResults } from './feed'
 import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
+import {
+  ENDPOINT,
+  FAIL_MODES,
+  MARKER,
+  SESSION_NOTE,
+  choiceLabels,
+  cleanOffer,
+  cleanReason,
+  decisionLines,
+  shorten,
+  statusText,
+  targetOf,
+  verdictOf,
+} from './text'
 import {
   CHECK_TIMEOUT_MS,
   DEFAULT_PORT,
@@ -43,10 +57,7 @@ const RECENT_IN_COMMAND = 5
 const MAX_EARLY = 200
 /** The band shows the policy's reason and fix; /guard has the rest. */
 const BAND_REASON_LINES = 3
-const TARGET_CHARS = 80
 const HEALTH_TIMEOUT_MS = 3000
-const MARKER = '[SASY]'
-const REASON_CHARS = 4000
 
 const counts = atom({ plugin: 'sasy-guard-mod', key: 'counts' } as const, {
   checked: 0,
@@ -60,72 +71,6 @@ const sessionInfo = atom(
   { plugin: 'sasy-guard-mod', key: 'sessionInfo' } as const,
   null as GuardSessionInfo | null,
 )
-
-/** What the model is told at SessionStart, as the hook plugin's script says it. */
-const SESSION_NOTE =
-  'SASY policy enforcement is active for this session. Tool calls are checked against ' +
-  'a security policy; denied calls return a [SASY] reason — relay it to the user and ' +
-  'follow its suggested fix rather than retrying or working around it.'
-
-/** The tool-call fields that name what a call acts on, in order of preference. */
-const TARGET_FIELDS = ['command', 'file_path', 'notebook_path', 'url', 'path', 'pattern']
-
-/** Control and format characters (C0 and C1 controls other than newline and
- *  tab, bidirectional marks, tags), every default-ignorable code point (zero-
- *  width characters, variation selectors, fillers that draw as nothing), and
- *  the blank Braille pattern: whatever could make a drawn command or path look
- *  like a different one or hide it. */
-const CONTROL =
-  /(?![\n\t])[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu
-
-function shorten(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, ' ').replace(CONTROL, '').trim()
-  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`
-}
-
-function targetOf(e: Readonly<Record<string, unknown>>): string {
-  for (const field of TARGET_FIELDS) {
-    const value = e[field]
-    if (typeof value === 'string' && value !== '') return shorten(value, TARGET_CHARS)
-  }
-  return ''
-}
-
-/**
- * A policy reason as the band and /guard show it: control characters other
- * than newline and tab removed, and held to REASON_CHARS. The model has already
- * read the same text as the call's result; this keeps the session's own copy
- * small and free of terminal escapes.
- */
-function cleanReason(text: string): string {
-  const clean = text.replace(CONTROL, '').trim()
-  return clean.length <= REASON_CHARS ? clean : `${clean.slice(0, REASON_CHARS - 1)}…`
-}
-
-/** The sasy-guard verdict in a PreToolUse result, or none for any other. */
-function verdictOf(result: PreToolUseResult): { verdict: GuardVerdict; reason: string } | null {
-  const pairs: [GuardVerdict, string | undefined][] = [
-    ['deny', result.deny],
-    ['ask', result.ask],
-  ]
-  for (const [verdict, text] of pairs) {
-    // The engine may wrap the hook's text (`PreToolUse:Bash hook error: ...`);
-    // the policy's own words start at the marker.
-    const at = text?.indexOf(MARKER) ?? -1
-    if (text !== undefined && at >= 0) {
-      return { verdict, reason: cleanReason(text.slice(at + MARKER.length)) }
-    }
-  }
-  return null
-}
-
-function statusText(c: GuardCounts): string {
-  return `${c.checked} checked · ${c.denied} denied · ${c.asked} asked`
-}
-
-function clockTime(ms: number): string {
-  return new Date(ms).toTimeString().slice(0, 8)
-}
 
 async function sasyHome($: EngineInterface): Promise<string> {
   return (await $.env.get('SASY_HOME')) || `${await $.env.get('HOME')}/.sasy`
@@ -198,6 +143,17 @@ async function ensureDaemon($: EngineInterface): Promise<void> {
  * reached after one attempt to start it, the call is denied, unless
  * SASY_FAIL_OPEN=true, as for the settings hook.
  */
+/** Whether an unreachable daemon lets calls through: SASY_FAIL_OPEN=true and,
+ *  as in the hook, the daemon's hook-auth file in place. */
+async function failsOpen($: EngineInterface): Promise<boolean> {
+  const port = await daemonPort($)
+  return (
+    port !== undefined &&
+    (await $.env.get('SASY_FAIL_OPEN')) === 'true' &&
+    (await authHeaderFile($, port)) !== undefined
+  )
+}
+
 async function checkCall($: EngineInterface, input: CheckInput): Promise<CheckAnswer> {
   // Mirrors the hook plugin's pretooluse.sh, which this mod replaces.
   const port = await daemonPort($)
@@ -215,25 +171,9 @@ async function checkCall($: EngineInterface, input: CheckInput): Promise<CheckAn
   // only with the daemon's hook-auth file in place: never a refused or missing
   // authentication, nor an answer that is no decision.
   const isDown = 'error' in answer && answer.kind === 'unreachable'
-  if (
-    isDown &&
-    port !== undefined &&
-    (await $.env.get('SASY_FAIL_OPEN')) === 'true' &&
-    (await authHeaderFile($, port)) !== undefined
-  ) {
-    return { result: {} }
-  }
+  if (isDown && (await failsOpen($))) return { result: {} }
   const why = 'error' in answer ? answer.error : 'sasy-watch gave an answer that is not a decision'
   return { result: { deny: `[SASY] security check unavailable (${why})` } }
-}
-
-/** What the dialog's buttons say, by the daemon's canonical choice. */
-function choiceLabels(offer: BypassOffer): Record<string, string> {
-  return {
-    approve: 'Approve once',
-    decline: 'Deny',
-    ...(offer.domain === undefined ? {} : { 'trust-domain': `Trust ${offer.domain} for this session` }),
-  }
 }
 
 /** Whether a person can be asked: some surface draws the session. */
@@ -261,16 +201,6 @@ async function askForBypass(
   attemptsLeft = 1,
 ): Promise<DialogOutcome> {
   return askAbout($, input, cleanOffer(offer), attemptsLeft)
-}
-
-/** The offer's daemon-authored texts as the mod draws every reason. */
-function cleanOffer(offer: BypassOffer): BypassOffer {
-  return {
-    ...offer,
-    question: cleanReason(offer.question),
-    reason: cleanReason(offer.reason),
-    policyReason: cleanReason(offer.policyReason),
-  }
 }
 
 async function askAbout(
@@ -383,13 +313,6 @@ async function askAbout(
   }
 }
 
-/** The /healthz fields /guard prints, each held to the shape the daemon sends. */
-/** An endpoint /guard may print: a DNS host name, an IPv4 address or a
- *  bracketed IPv6 address, and a port. Anything else is not printed. */
-const ENDPOINT =
-  /^(?=.{1,259}$)([A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})*|\[[0-9a-fA-F:]{2,39}\]):\d{1,5}$/
-const FAIL_MODES = ['open', 'closed']
-
 /**
  * One line on the sasy-watch daemon, from its /healthz route.
  *
@@ -441,14 +364,6 @@ async function daemonHealth($: EngineInterface): Promise<string> {
     `daemon: ${state} · endpoint ${r.endpoint} · ` +
     `fail mode ${r.failMode} · ${r.sessions} session(s)`
   )
-}
-
-/** One decision for /guard: a heading, then its reason, whole or first line. */
-function decisionLines(d: GuardDecision, isWhole: boolean): string[] {
-  const head = `  ${clockTime(d.at)}  ${d.verdict.padEnd(8)}  ${d.tool}  ${d.target}`
-  const reason = d.reason.split('\n').filter(line => line.trim() !== '')
-  const body = isWhole ? reason : reason.slice(0, 1).map(line => shorten(line, 120))
-  return [head.trimEnd(), ...body.map(line => `            ${line}`)]
 }
 
 /** What the mod's own dialog came to, for the record: the offer the user
@@ -624,6 +539,9 @@ export const register: Register = on => {
   // structured results of finished tool calls (sent with the rows reporting
   // them), what each subagent's spawn said, and whether the daemon takes the
   // feed at all (a released daemon does not; it reads the transcript).
+  // The session the buffered rows belong to: /clear, /resume and /branch move
+  // to another, whose history starts afresh.
+  let feedSession: string | undefined
   let feed: FeedBuffer = emptyBuffer()
   let feedSupported = true
   const toolResults = new Map<string, Record<string, unknown>>()
@@ -656,6 +574,12 @@ export const register: Register = on => {
   // what was carried, re-pin the status line and keep what each check needs
   // to say about the session.
   on('classic.SessionStart', async ($, e, next) => {
+    if (feedSession !== undefined && feedSession !== e.session_id) {
+      feed = emptyBuffer()
+      feedSupported = true
+      toolResults.clear()
+    }
+    feedSession = e.session_id
     const kept = carried
     carried = undefined
     if (kept !== undefined && e.source === 'compact') {
@@ -855,7 +779,14 @@ export const register: Register = on => {
           ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
         }
         const sending = withResults(pending.rows, toolResults)
-        const { outcome, sent } = await sendFeed($, base, sending, spawns, pending.gap)
+        let { outcome, sent } = await sendFeed($, base, sending, spawns, pending.gap)
+        if (outcome === 'unreachable') {
+          // As for a check: start the daemon once and send again.
+          await ensureDaemon($)
+          const retried = await sendFeed($, base, sending.slice(sent), spawns, pending.gap && sent === 0)
+          outcome = retried.outcome
+          sent += retried.sent
+        }
         pushed = outcome
         if (outcome === 'unsupported') {
           feedSupported = false
@@ -864,16 +795,20 @@ export const register: Register = on => {
           feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
         }
       }
-      const answer: CheckAnswer =
-        pushed === 'failed'
-          ? {
+      // Undelivered history is never checked around: the daemon would decide
+      // without it. Only an unreachable daemon may fail open, as for a check.
+      const delivered = pushed === 'sent' || pushed === 'unsupported'
+      const answer: CheckAnswer = delivered
+        ? await checkCall($, input)
+        : pushed === 'unreachable' && (await failsOpen($))
+          ? { result: {} }
+          : {
               result: {
                 deny:
                   '[SASY] security check unavailable: the session history could not be sent ' +
                   'to the sasy-watch daemon',
               },
             }
-          : await checkCall($, input)
       // A one-time bypass on offer: ask the user here, holding the call, where
       // someone can be asked; elsewhere the denial (with its model-driven
       // AskUserQuestion instructions) stands, as with the hook plugin.
