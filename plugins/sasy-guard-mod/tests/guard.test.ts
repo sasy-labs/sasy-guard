@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 
 import { addSpawn, attribute, markUnattributable, worktreeAgentId, isolatedWorktreeAgent } from '../hooks/agents'
-import { carryOver } from '../hooks/carry'
+import { addCounts, joinDecisions, wasReset } from '../hooks/carry'
 import { combine, denyWith, toResult } from '../hooks/enforce'
 
 const DENY_REASON =
@@ -698,27 +698,23 @@ test('invisible and reordering characters are not drawn', async ($, on) => {
   await ui.unmount()
 })
 
-test('a reset keeps subagents always, and the totals only after compaction', () => {
-  const spawned = addSpawn({}, { agentId: 'a1', subagentType: 'Explore', cwd: '/repo' }, false)
-  const decision = { seq: 1, at: 0, tool: 'Bash', target: 'rm -rf build', verdict: 'deny', reason: 'r' }
-  const kept = {
-    agents: spawned,
-    isolatedEarly: ['w1'],
-    counts: { checked: 3, denied: 1, asked: 0 },
-    decisions: [decision] as never,
-    dismissedSeq: 1,
-  }
-  const reset = { agents: {}, isolatedEarly: [], counts: { checked: 0, denied: 0, asked: 0 }, decisions: [], dismissedSeq: 0 }
-
-  expect(carryOver(kept, reset, 'compact')).toEqual(kept)
-  const cleared = carryOver(kept, reset, 'clear')
-  expect(cleared.agents).toEqual(spawned)
-  expect(cleared.isolatedEarly).toEqual(['w1'])
-  expect(cleared.counts).toEqual(reset.counts)
-  expect(cleared.decisions).toEqual([])
-  // Values recorded since the reset stand: newer agent records win, totals stay.
-  const since = { ...reset, agents: addSpawn({}, { agentId: 'a1', subagentType: 'Plan' }, false), counts: { checked: 1, denied: 0, asked: 0 } }
-  const after = carryOver(kept, since, 'compact')
-  expect(after.agents.a1).toEqual(since.agents.a1)
-  expect(after.counts).toEqual(since.counts)
+test('compaction puts back the totals and decisions a reset cleared, merged', () => {
+  const d = (seq: number, target: string) =>
+    ({ seq, at: 0, tool: 'Bash', target, verdict: 'deny', reason: 'r' }) as never
+  const kept = { checked: 3, denied: 1, asked: 0 }
+  // Totals only grow: lower totals mean the reset cleared them.
+  expect(wasReset(kept, { checked: 0, denied: 0, asked: 0 })).toBe(true)
+  expect(wasReset(kept, { checked: 1, denied: 0, asked: 1 })).toBe(true)
+  expect(wasReset(kept, kept)).toBe(false)
+  expect(wasReset(kept, { checked: 4, denied: 1, asked: 0 })).toBe(false)
+  // What was recorded since the reset is kept, added to what came before.
+  expect(addCounts(kept, { checked: 1, denied: 0, asked: 1 })).toEqual({ checked: 4, denied: 1, asked: 1 })
+  const joined = joinDecisions([d(7, 'a'), d(8, 'b')], [d(1, 'c')])
+  expect(joined.map(x => [(x as { seq: number }).seq, (x as { target: string }).target])).toEqual([
+    [7, 'a'],
+    [8, 'b'],
+    [9, 'c'],
+  ])
+  expect(joinDecisions(Array.from({ length: 50 }, (_, i) => d(i + 1, 'k')), [d(1, 'n')])).toHaveLength(50)
 })
+

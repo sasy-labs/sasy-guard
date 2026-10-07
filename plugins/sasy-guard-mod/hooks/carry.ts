@@ -1,38 +1,41 @@
-// What the mod keeps across a reset of $.state: Claude Code clears a plugin's
-// session values at /clear, /resume and compaction without a new
-// session.start. Pure, so the tests can hold it to its rules.
+// What the mod puts back after compaction: Claude Code may clear a plugin's
+// session values ($.state) there without a new session.start, and the totals
+// and decisions describe the whole session. Pure, so the tests can hold it to
+// its rules. (Subagent records live in the hooks module's memory, which no
+// reset clears.)
 import type { GuardCounts, GuardDecision } from '../types'
-import type { AgentTable } from './agents'
 
-/** The most worktree ids seen before their spawn that the mod remembers. */
-export const MAX_EARLY = 200
+/** The most decisions the mod keeps. */
+export const MAX_DECISIONS = 50
 
-/** The mod's $.state values that a reset clears. */
+/** The mod's $.state values that compaction may clear. */
 export type Carried = {
-  agents: AgentTable
-  isolatedEarly: string[]
   counts: GuardCounts
   decisions: GuardDecision[]
   dismissedSeq: number
 }
 
 /**
- * What to hold after a reset, from what was held before it (`kept`) and what
- * is held now. Subagents keep running across /clear, /resume and compaction,
- * so their records always come back, under any recorded since. The totals and
- * decisions describe one session: they come back only after compaction, which
- * keeps it, and only if nothing was recorded since.
+ * Whether the values now held are a reset's: the totals only grow, so totals
+ * below those read before compaction mean they were cleared.
  */
-export function carryOver(kept: Carried, now: Carried, source: unknown): Carried {
-  const merged: Carried = {
-    ...now,
-    agents: { ...kept.agents, ...now.agents },
-    isolatedEarly: [
-      ...kept.isolatedEarly.filter(id => !now.isolatedEarly.includes(id)),
-      ...now.isolatedEarly,
-    ].slice(-MAX_EARLY),
+export function wasReset(kept: GuardCounts, now: GuardCounts): boolean {
+  return now.checked < kept.checked
+}
+
+/** The totals before the reset plus those recorded since. */
+export function addCounts(kept: GuardCounts, now: GuardCounts): GuardCounts {
+  return {
+    checked: kept.checked + now.checked,
+    denied: kept.denied + now.denied,
+    asked: kept.asked + now.asked,
   }
-  const isFresh = now.counts.checked === 0 && now.decisions.length === 0
-  if (source !== 'compact' || !isFresh) return merged
-  return { ...merged, counts: kept.counts, decisions: kept.decisions, dismissedSeq: kept.dismissedSeq }
+}
+
+/** The decisions before the reset, then those recorded since, renumbered after
+ *  them so each `seq` stays unique and growing. */
+export function joinDecisions(kept: GuardDecision[], now: GuardDecision[]): GuardDecision[] {
+  const last = kept[kept.length - 1]?.seq ?? 0
+  const since = now.map((d, i) => ({ ...d, seq: last + i + 1 }))
+  return [...kept, ...since].slice(-MAX_DECISIONS)
 }
