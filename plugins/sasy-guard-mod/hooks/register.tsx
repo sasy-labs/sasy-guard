@@ -22,7 +22,7 @@ import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
 import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
 import type { FeedBuffer, FeedRow } from './feed'
-import { MAX_RESULTS, afterPush, batches, emptyBuffer, enqueue, readyRows, rowOf, withResults } from './feed'
+import { MAX_RESULTS, afterPush, batches, emptyBuffer, enqueue, reportedCalls, rowOf, withResults } from './feed'
 import type { BypassOffer, CheckAnswer, CheckInput } from './enforce'
 import {
   ENDPOINT,
@@ -58,6 +58,8 @@ const MAX_EARLY = 200
 /** The band shows the policy's reason and fix; /guard has the rest. */
 const BAND_REASON_LINES = 3
 const HEALTH_TIMEOUT_MS = 3000
+/** How long a history push waits for a reported tool call to finish. */
+const RESULT_WAIT_MS = 5000
 
 const counts = atom({ plugin: 'sasy-guard-mod', key: 'counts' } as const, {
   checked: 0,
@@ -198,15 +200,17 @@ async function askForBypass(
   $: EngineInterface,
   input: CheckInput,
   offer: BypassOffer,
+  check: (input: CheckInput) => Promise<CheckAnswer>,
   attemptsLeft = 1,
 ): Promise<DialogOutcome> {
-  return askAbout($, input, cleanOffer(offer), attemptsLeft)
+  return askAbout($, input, cleanOffer(offer), check, attemptsLeft)
 }
 
 async function askAbout(
   $: EngineInterface,
   input: CheckInput,
   offer: BypassOffer,
+  check: (input: CheckInput) => Promise<CheckAnswer>,
   attemptsLeft: number,
 ): Promise<DialogOutcome> {
   const labels = choiceLabels(offer)
@@ -271,7 +275,8 @@ async function askAbout(
       ? `The user chose in the SASY dialog to trust ${offer.domain ?? 'this host'} for the rest ` +
         'of this session.'
       : undefined
-  const again = await checkCall($, input)
+  // Checked again with the history kept while the dialog was open.
+  const again = await check(input)
   // The re-check's own verdict (a new ask, or a plain denial on new evidence),
   // recorded after what the user chose, which the model is also told of.
   const after = (verdict: GuardVerdict, text: string): DialogOutcome => ({
@@ -285,7 +290,7 @@ async function askAbout(
   if (again.result.deny !== undefined) {
     // The decision's grounds changed since the question: ask about the new one.
     if (again.offer !== undefined && attemptsLeft > 0) {
-      const later = await askForBypass($, input, again.offer, attemptsLeft - 1)
+      const later = await askForBypass($, input, again.offer, check, attemptsLeft - 1)
       const context = [...(later.result.additionalContext ?? []), ...(trustNote ? [trustNote] : [])]
       const laterReason = later.record?.reason ?? `blocked: ${cleanReason(later.result.deny ?? '')}`
       return {
@@ -569,8 +574,18 @@ export const register: Register = on => {
   let feed: FeedBuffer = emptyBuffer()
   let feedSupported = true
   const toolResults = new Map<string, unknown>()
-  // Tool calls started and not yet finished, by tool_use_id.
-  const running = new Set<string>()
+  // Tool calls started and not yet finished, by tool_use_id, each with what
+  // ends its wait.
+  const running = new Map<string, { done: Promise<void>; finish: () => void }>()
+  const start = (id: string): void => {
+    let finish = (): void => {}
+    const done = new Promise<void>(resolve => (finish = resolve))
+    running.set(id, { done, finish })
+  }
+  const stop = (id: string): void => {
+    running.get(id)?.finish()
+    running.delete(id)
+  }
   // The history push in flight, which the next check waits for.
   let pushInFlight: Promise<void> | undefined
   const spawns: Record<string, { toolUseId: string; agentType: string }> = {}
@@ -719,25 +734,30 @@ export const register: Register = on => {
   const noteResult = (id: string, result: { result?: unknown }): void => {
     if (!feedSupported || result.result === undefined || result.result === null) return
     toolResults.set(id, result.result)
-    if (toolResults.size > MAX_RESULTS) toolResults.delete(toolResults.keys().next().value!)
+    if (toolResults.size > MAX_RESULTS) {
+      // A result dropped before its row went out: that row is read from the
+      // transcript instead.
+      toolResults.delete(toolResults.keys().next().value!)
+      feed = { ...feed, gap: feed.gap + 1 }
+    }
   }
 
   on('tool.call', async ($, e, next) => {
     const isIsolatedAgent =
       e.tool === 'Agent' && (e as { isolation?: unknown }).isolation === 'worktree'
     if (!isIsolatedAgent && e.agentId === undefined) {
-      running.add(e.tool_use_id)
+      start(e.tool_use_id)
       try {
         const result = await next(e)
         noteResult(e.tool_use_id, result)
         return result
       } finally {
-        running.delete(e.tool_use_id)
+        stop(e.tool_use_id)
       }
     }
     if (isIsolatedAgent) isolatedCalls.add(e.tool_use_id)
     if (e.agentId !== undefined) callerOf.set(e.tool_use_id, e.agentId)
-    running.add(e.tool_use_id)
+    start(e.tool_use_id)
     try {
       const result = await next(e)
       noteResult(e.tool_use_id, result)
@@ -752,7 +772,7 @@ export const register: Register = on => {
       // The call is over: its spawn, if any, has been recorded.
       isolatedCalls.delete(e.tool_use_id)
       callerOf.delete(e.tool_use_id)
-      running.delete(e.tool_use_id)
+      stop(e.tool_use_id)
     }
   })
 
@@ -803,67 +823,73 @@ export const register: Register = on => {
         ...(agentType === null ? {} : { agent_type: agentType }),
         sasy_mod: true,
       }
-      // The daemon first gets every row kept since the last push, so the
-      // check sees the whole history before it.
-      let pushed: FeedOutcome = 'unsupported'
-      // One push at a time: a check waits for one in flight, then sends what
-      // is left (so two never deliver, or count, the same rows).
-      while (pushInFlight !== undefined) await pushInFlight
-      let release = (): void => {}
-      pushInFlight = new Promise<void>(resolve => (release = resolve))
-      try {
-        if (feedSupported) {
-          // Rows up to the first that reports a tool call still running: its
-          // structured result is not known yet, and no call checked meanwhile
-          // can have seen that row.
-          const ready = readyRows(feed.rows, running)
-          const pending = { ...feed, rows: feed.rows.slice(0, ready) }
-          const base = {
-            session_id: input.session_id,
-            cwd: sessionCwd,
-            ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
-          }
-          const enriched = withResults(pending.rows, toolResults)
-          const sending = enriched.rows
-          const gap = pending.gap > 0 || enriched.gap
-          let { outcome, sent } = await sendFeed($, base, sending, spawns, gap)
-          if (outcome === 'unreachable') {
-            // As for a check: start the daemon once and send everything again (a
-            // new daemon may hold none of it; the daemon skips rows it has).
-            await ensureDaemon($)
-            ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap))
-          }
-          pushed = outcome
-          if (outcome === 'unsupported') {
-            feedSupported = false
-            feed = emptyBuffer()
-          } else {
-            feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
-          }
-        }
-      } finally {
-        pushInFlight = undefined
-        release()
-      }
-      // Undelivered history is never checked around: the daemon would decide
-      // without it. Only an unreachable daemon may fail open, as for a check.
-      const delivered = pushed === 'sent' || pushed === 'unsupported'
-      const answer: CheckAnswer = delivered
-        ? await checkCall($, input)
-        : pushed === 'unreachable' && (await failsOpen($))
-          ? { result: {} }
-          : {
-              result: {
-                deny:
-                  '[SASY] security check unavailable: the session history could not be sent ' +
-                  'to the sasy-watch daemon',
-              },
+      // Every check (and the re-check after an approval) first gives the daemon
+      // every row kept since the last push, so it decides on the whole history.
+      const check = async (checked: CheckInput): Promise<CheckAnswer> => {
+        let pushed: FeedOutcome = 'unsupported'
+        // One push at a time: a check waits for one in flight, then sends what
+        // is left (so two never deliver, or count, the same rows).
+        while (pushInFlight !== undefined) await pushInFlight
+        let release = (): void => {}
+        pushInFlight = new Promise<void>(resolve => (release = resolve))
+        try {
+          if (feedSupported) {
+            // A row reporting a tool call still running waits, briefly, for
+            // the call to finish and its structured result to be known.
+            const waits = reportedCalls(feed.rows).flatMap(id => {
+              const call = running.get(id)
+              return call === undefined ? [] : [call.done]
+            })
+            if (waits.length > 0) await Promise.race([Promise.all(waits), $.clock.sleep(RESULT_WAIT_MS)])
+            const pending = { ...feed, rows: [...feed.rows] }
+            const base = {
+              session_id: checked.session_id,
+              cwd: sessionCwd,
+              ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
             }
+            const enriched = withResults(pending.rows, toolResults)
+            const sending = enriched.rows
+            // A result still unknown: its row goes without it, and the daemon
+            // reads it from the transcript first.
+            const isMissing = reportedCalls(sending).some(id => running.has(id))
+            const gap = pending.gap > 0 || enriched.gap || isMissing
+            let { outcome, sent } = await sendFeed($, base, sending, spawns, gap)
+            if (outcome === 'unreachable') {
+              // As for a check: start the daemon once and send everything again
+              // (a new daemon may hold none of it; it skips rows it has).
+              await ensureDaemon($)
+              ;({ outcome, sent } = await sendFeed($, base, sending, spawns, gap))
+            }
+            pushed = outcome
+            if (outcome === 'unsupported') {
+              feedSupported = false
+              feed = emptyBuffer()
+            } else {
+              feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
+            }
+          }
+        } finally {
+          pushInFlight = undefined
+          release()
+        }
+        // Undelivered history is never checked around: the daemon would decide
+        // without it. Only an unreachable daemon may fail open, as for a check.
+        if (pushed === 'sent' || pushed === 'unsupported') return checkCall($, checked)
+        if (pushed === 'unreachable' && (await failsOpen($))) return { result: {} }
+        return {
+          result: {
+            deny:
+              '[SASY] security check unavailable: the session history could not be sent ' +
+              'to the sasy-watch daemon',
+          },
+        }
+      }
+      const answer = await check(input)
       // A one-time bypass on offer: ask the user here, holding the call, where
       // someone can be asked; elsewhere the denial (with its model-driven
       // AskUserQuestion instructions) stands, as with the hook plugin.
       if (answer.offer !== undefined && (await canAsk($))) {
-        const outcome = await askForBypass($, input, answer.offer)
+        const outcome = await askForBypass($, input, answer.offer, check)
         ours = outcome.result
         dialog = outcome.record
       } else {

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { MAX_BUFFER_ROWS, afterPush, batches, emptyBuffer, enqueue, readyRows, utf8Length, withResults } from '../hooks/feed'
+import { MAX_BUFFER_ROWS, afterPush, batches, emptyBuffer, enqueue, reportedCalls, utf8Length, withResults } from '../hooks/feed'
 
 test('the feed buffer: bounded, split into pushes, and kept across a push', () => {
   const row = (uuid: string, size = 10) => ({ uuid, message: { type: 'user', content: [{ type: 'text', text: 'x'.repeat(size) }] } })
@@ -51,10 +51,8 @@ test('sizes are UTF-8 bytes, as the daemon counts a request body', () => {
   expect(kept.gap).toBe(1)
 })
 
-test('rows wait behind one that reports a tool call still running', () => {
+test('the tool calls a push\'s rows report', () => {
   const text = (uuid: string) => ({ uuid, message: { type: 'user', content: [{ type: 'text', text: 'x' }] } })
   const result = (uuid: string, id: string) => ({ uuid, message: { type: 'user', content: [{ type: 'tool_result', tool_use_id: id }] } })
-  const rows = [text('a'), result('b', 't1'), text('c')]
-  expect(readyRows(rows, new Set(['t1']))).toBe(1)
-  expect(readyRows(rows, new Set())).toBe(3)
+  expect(reportedCalls([text('a'), result('b', 't1'), text('c'), result('d', 't2')])).toEqual(['t1', 't2'])
 })

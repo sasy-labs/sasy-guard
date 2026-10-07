@@ -89,11 +89,9 @@ export function enqueue(buffer: FeedBuffer, row: FeedRow): FeedBuffer {
   return { rows: buffer.rows, bytes, gap: buffer.gap }
 }
 
-/** How many rows from the front can be sent: those before the first that
- *  reports a tool call still running (its result is not yet known). */
-export function readyRows(rows: FeedRow[], running: ReadonlySet<string>): number {
-  const held = rows.findIndex(row => resultIds(row).some(id => running.has(id)))
-  return held === -1 ? rows.length : held
+/** The tool_use ids the rows' tool results report. */
+export function reportedCalls(rows: FeedRow[]): string[] {
+  return rows.flatMap(resultIds)
 }
 
 /** The tool_use ids a row's tool results answer. */
