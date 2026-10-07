@@ -99,8 +99,15 @@ row: the folder it ran in and the full result of the tool call it reports.
 - A daemon that does not accept the history (the released `sasy-watch`) keeps
   reading the transcript. The mod finds this out at its first check and stops
   sending.
-- If the daemon refuses the history, the call is blocked and the rows are sent
-  again before the next check.
+- If the daemon refuses the history, or cannot be reached for it even after
+  the mod tries to start it, the call is blocked and the rows are sent again
+  before the next check. (With `SASY_FAIL_OPEN=true`, a daemon that cannot be
+  reached lets the call through, as it does for the check itself.)
+- A single row too large to send (more than about 3 MB), or more unsent
+  history than the mod keeps, is left to the transcript: the mod tells the
+  daemon rows were lost, and the daemon reads them from the file.
+- After `/clear`, `/resume` or `/branch`, the mod starts collecting afresh for
+  the new session.
 - The daemon still reads the transcript once when a session starts, after
   `--resume` and after the daemon restarts: those load earlier history rather
   than add to it.

@@ -16,7 +16,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PreToolUseResult, Register } from 'claude-code'
 
-import type { GuardCounts, GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
+import type { GuardDecision, GuardSessionInfo, GuardVerdict } from '../types'
 import type { AgentTable } from './agents'
 import type { Carried } from './carry'
 import { addSpawn, attribute, markUnattributable, isolatedWorktreeAgent } from './agents'
@@ -24,6 +24,20 @@ import { MAX_DECISIONS, addCounts, joinDecisions } from './carry'
 import type { FeedBuffer, FeedRow } from './feed'
 import { MAX_RESULTS, afterPush, batches, emptyBuffer, enqueue, rowOf, withResults } from './feed'
 import type { BypassOffer, CheckAnswer, CheckInput, HostHeaders } from './enforce'
+import {
+  ENDPOINT,
+  FAIL_MODES,
+  MARKER,
+  SESSION_NOTE,
+  choiceLabels,
+  cleanOffer,
+  cleanReason,
+  decisionLines,
+  shorten,
+  statusText,
+  targetOf,
+  verdictOf,
+} from './text'
 import {
   CHECK_TIMEOUT_MS,
   DEFAULT_PORT,
@@ -43,10 +57,7 @@ const RECENT_IN_COMMAND = 5
 const MAX_EARLY = 200
 /** The band shows the policy's reason and fix; /guard has the rest. */
 const BAND_REASON_LINES = 3
-const TARGET_CHARS = 80
 const HEALTH_TIMEOUT_MS = 3000
-const MARKER = '[SASY]'
-const REASON_CHARS = 4000
 
 const counts = atom({ plugin: 'sasy-guard-mod', key: 'counts' } as const, {
   checked: 0,
@@ -60,72 +71,6 @@ const sessionInfo = atom(
   { plugin: 'sasy-guard-mod', key: 'sessionInfo' } as const,
   null as GuardSessionInfo | null,
 )
-
-/** What the model is told at SessionStart, as the hook plugin's script says it. */
-const SESSION_NOTE =
-  'SASY policy enforcement is active for this session. Tool calls are checked against ' +
-  'a security policy; denied calls return a [SASY] reason — relay it to the user and ' +
-  'follow its suggested fix rather than retrying or working around it.'
-
-/** The tool-call fields that name what a call acts on, in order of preference. */
-const TARGET_FIELDS = ['command', 'file_path', 'notebook_path', 'url', 'path', 'pattern']
-
-/** Control and format characters (C0 and C1 controls other than newline and
- *  tab, bidirectional marks, tags), every default-ignorable code point (zero-
- *  width characters, variation selectors, fillers that draw as nothing), and
- *  the blank Braille pattern: whatever could make a drawn command or path look
- *  like a different one or hide it. */
-const CONTROL =
-  /(?![\n\t])[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu
-
-function shorten(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, ' ').replace(CONTROL, '').trim()
-  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`
-}
-
-function targetOf(e: Readonly<Record<string, unknown>>): string {
-  for (const field of TARGET_FIELDS) {
-    const value = e[field]
-    if (typeof value === 'string' && value !== '') return shorten(value, TARGET_CHARS)
-  }
-  return ''
-}
-
-/**
- * A policy reason as the band and /guard show it: control characters other
- * than newline and tab removed, and held to REASON_CHARS. The model has already
- * read the same text as the call's result; this keeps the session's own copy
- * small and free of terminal escapes.
- */
-function cleanReason(text: string): string {
-  const clean = text.replace(CONTROL, '').trim()
-  return clean.length <= REASON_CHARS ? clean : `${clean.slice(0, REASON_CHARS - 1)}…`
-}
-
-/** The sasy-guard verdict in a PreToolUse result, or none for any other. */
-function verdictOf(result: PreToolUseResult): { verdict: GuardVerdict; reason: string } | null {
-  const pairs: [GuardVerdict, string | undefined][] = [
-    ['deny', result.deny],
-    ['ask', result.ask],
-  ]
-  for (const [verdict, text] of pairs) {
-    // The engine may wrap the hook's text (`PreToolUse:Bash hook error: ...`);
-    // the policy's own words start at the marker.
-    const at = text?.indexOf(MARKER) ?? -1
-    if (text !== undefined && at >= 0) {
-      return { verdict, reason: cleanReason(text.slice(at + MARKER.length)) }
-    }
-  }
-  return null
-}
-
-function statusText(c: GuardCounts): string {
-  return `${c.checked} checked · ${c.denied} denied · ${c.asked} asked`
-}
-
-function clockTime(ms: number): string {
-  return new Date(ms).toTimeString().slice(0, 8)
-}
 
 async function sasyHome($: EngineInterface): Promise<string> {
   return (await $.env.get('SASY_HOME')) || `${await $.env.get('HOME')}/.sasy`
@@ -232,6 +177,17 @@ async function ensureDaemon($: EngineInterface): Promise<void> {
  * reached after one attempt to start it, the call is denied, unless
  * SASY_FAIL_OPEN=true, as for the settings hook.
  */
+/** Whether an unreachable daemon lets calls through: SASY_FAIL_OPEN=true and,
+ *  as in the hook, the daemon's hook-auth file in place. */
+async function failsOpen($: EngineInterface): Promise<boolean> {
+  const port = await daemonPort($)
+  return (
+    port !== undefined &&
+    (await $.env.get('SASY_FAIL_OPEN')) === 'true' &&
+    (await authHeaderFile($, port)) !== undefined
+  )
+}
+
 async function checkCall($: EngineInterface, input: CheckInput): Promise<CheckAnswer> {
   // Mirrors the hook plugin's pretooluse.sh, which this mod replaces.
   const port = await daemonPort($)
@@ -249,25 +205,9 @@ async function checkCall($: EngineInterface, input: CheckInput): Promise<CheckAn
   // only with the daemon's hook-auth file in place: never a refused or missing
   // authentication, nor an answer that is no decision.
   const isDown = 'error' in answer && answer.kind === 'unreachable'
-  if (
-    isDown &&
-    port !== undefined &&
-    (await $.env.get('SASY_FAIL_OPEN')) === 'true' &&
-    (await authHeaderFile($, port)) !== undefined
-  ) {
-    return { result: {} }
-  }
+  if (isDown && (await failsOpen($))) return { result: {} }
   const why = 'error' in answer ? answer.error : 'sasy-watch gave an answer that is not a decision'
   return { result: { deny: `[SASY] security check unavailable (${why})` } }
-}
-
-/** What the dialog's buttons say, by the daemon's canonical choice. */
-function choiceLabels(offer: BypassOffer): Record<string, string> {
-  return {
-    approve: 'Approve once',
-    decline: 'Deny',
-    ...(offer.domain === undefined ? {} : { 'trust-domain': `Trust ${offer.domain} for this session` }),
-  }
 }
 
 /** Whether a person can be asked: some surface draws the session. */
@@ -295,16 +235,6 @@ async function askForBypass(
   attemptsLeft = 1,
 ): Promise<DialogOutcome> {
   return askAbout($, input, cleanOffer(offer), attemptsLeft)
-}
-
-/** The offer's daemon-authored texts as the mod draws every reason. */
-function cleanOffer(offer: BypassOffer): BypassOffer {
-  return {
-    ...offer,
-    question: cleanReason(offer.question),
-    reason: cleanReason(offer.reason),
-    policyReason: cleanReason(offer.policyReason),
-  }
 }
 
 async function askAbout(
@@ -350,16 +280,52 @@ async function askAbout(
     }
   }
   if (!isRecorded) {
+    // No answer is not proof that nothing changed: the daemon may have applied
+    // the choice before the connection failed, so say both.
+    const maybeTrusted =
+      choice === 'trust-domain'
+        ? [`The SASY daemon may have recorded the user's choice to trust ${offer.domain ?? 'this host'} for this session.`]
+        : []
     return {
-      result: { deny: `[SASY] The approval could not be recorded, so the action stays blocked.\n\n${policy}` },
-      record: { verdict: 'declined', reason: `${offer.reason} — your approval could not be recorded` },
+      result: {
+        deny: `[SASY] The approval could not be confirmed, so the action stays blocked.\n\n${policy}`,
+        ...(maybeTrusted.length === 0 ? {} : { additionalContext: maybeTrusted }),
+      },
+      record: { verdict: 'declined', reason: `${offer.reason} — your choice could not be confirmed (it may still have taken effect)` },
     }
   }
+  // What the user chose here, kept in the record whatever follows: a trusted
+  // host stays trusted for the session even if the call is then blocked.
+  const chosen =
+    choice === 'trust-domain'
+      ? `${offer.reason} — you trusted ${offer.domain ?? 'the host'} for this session`
+      : `${offer.reason} — you approved it once`
+  const trustNote =
+    choice === 'trust-domain'
+      ? `The user chose in the SASY dialog to trust ${offer.domain ?? 'this host'} for the rest ` +
+        'of this session.'
+      : undefined
   const again = await checkCall($, input)
+  // The re-check's own verdict (a new ask, or a plain denial on new evidence),
+  // recorded after what the user chose, which the model is also told of.
+  const after = (verdict: GuardVerdict, text: string): DialogOutcome => ({
+    result: trustNote
+      ? { ...again.result, additionalContext: [...(again.result.additionalContext ?? []), trustNote] }
+      : again.result,
+    record: { verdict, reason: `${chosen}; then ${cleanReason(text.slice(Math.max(text.indexOf(MARKER), 0)).replace(MARKER, ''))}` },
+  })
+  // A new approval requirement: Claude Code asks the user, as for any ask.
+  if (again.result.ask !== undefined) return after('ask', again.result.ask)
   if (again.result.deny !== undefined) {
     // The decision's grounds changed since the question: ask about the new one.
     if (again.offer !== undefined && attemptsLeft > 0) {
-      return askForBypass($, input, again.offer, attemptsLeft - 1)
+      const later = await askForBypass($, input, again.offer, attemptsLeft - 1)
+      const context = [...(later.result.additionalContext ?? []), ...(trustNote ? [trustNote] : [])]
+      const laterReason = later.record?.reason ?? `blocked: ${cleanReason(later.result.deny ?? '')}`
+      return {
+        result: context.length === 0 ? later.result : { ...later.result, additionalContext: context },
+        record: { verdict: later.record?.verdict ?? 'declined', reason: `${chosen}; then ${laterReason}` },
+      }
     }
     if (again.offer !== undefined) {
       // It changed again: stop asking, keep the call blocked, and say why.
@@ -378,36 +344,25 @@ async function askAbout(
           deny:
             '[SASY] The decision changed again after the user approved it, so the action ' +
             `stays blocked.\n\n${fix}`,
+          ...(trustNote ? { additionalContext: [trustNote] } : {}),
         },
-        record: { verdict: 'declined', reason: `${changed.reason} — changed again after your approval` },
+        record: {
+          verdict: 'declined',
+          reason: `${chosen}; then ${changed.reason} — changed again after your approval`,
+        },
       }
     }
     // A plain denial now (new evidence): recorded as the denial it is.
-    return { result: again.result }
+    return after('deny', again.result.deny)
   }
-  const note =
-    choice === 'trust-domain'
-      ? `The user chose in the SASY dialog to trust ${offer.domain ?? 'this host'} for the rest ` +
-        'of this session; this action may proceed.'
-      : 'The user approved a one-time bypass of a SASY check for this action in the SASY dialog.'
+  const note = trustNote
+    ? `${trustNote} This action may proceed.`
+    : 'The user approved a one-time bypass of a SASY check for this action in the SASY dialog.'
   return {
     result: { ...again.result, additionalContext: [...(again.result.additionalContext ?? []), note] },
-    record: {
-      verdict: 'approved',
-      reason:
-        choice === 'trust-domain'
-          ? `${offer.reason} — you trusted ${offer.domain ?? 'the host'} for this session`
-          : `${offer.reason} — you approved it once`,
-    },
+    record: { verdict: 'approved', reason: chosen },
   }
 }
-
-/** The /healthz fields /guard prints, each held to the shape the daemon sends. */
-/** An endpoint /guard may print: a DNS host name, an IPv4 address or a
- *  bracketed IPv6 address, and a port. Anything else is not printed. */
-const ENDPOINT =
-  /^(?=.{1,259}$)([A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})*|\[[0-9a-fA-F:]{2,39}\]):\d{1,5}$/
-const FAIL_MODES = ['open', 'closed']
 
 /**
  * One line on the sasy-watch daemon, from its /healthz route.
@@ -462,17 +417,9 @@ async function daemonHealth($: EngineInterface): Promise<string> {
   )
 }
 
-/** One decision for /guard: a heading, then its reason, whole or first line. */
-function decisionLines(d: GuardDecision, isWhole: boolean): string[] {
-  const head = `  ${clockTime(d.at)}  ${d.verdict.padEnd(8)}  ${d.tool}  ${d.target}`
-  const reason = d.reason.split('\n').filter(line => line.trim() !== '')
-  const body = isWhole ? reason : reason.slice(0, 1).map(line => shorten(line, 120))
-  return [head.trimEnd(), ...body.map(line => `            ${line}`)]
-}
-
 /** What the mod's own dialog came to, for the record: the offer the user
  *  answered (its reason) and whether they approved. */
-type DialogRecord = { verdict: 'approved' | 'declined'; reason: string }
+type DialogRecord = { verdict: GuardVerdict; reason: string }
 
 /** Counts one checked call and keeps it when it carries a [SASY] verdict, or
  *  when the mod's own dialog asked the user about it. */
@@ -500,8 +447,7 @@ async function record(
 
 /**
  * record(), never throwing: it runs after `next`, where a failure would hand
- * the call to the .catch handler, which replays only the downstream result and
- * would lose this mod's own decision.
+ * the call to the .catch handler, which denies it.
  */
 async function recordSafely(
   $: EngineInterface,
@@ -651,6 +597,9 @@ export const register: Register = on => {
   const noteMode = (e: { permission_mode?: unknown }): void => {
     if (typeof e.permission_mode === 'string' && e.permission_mode !== '') permissionMode = e.permission_mode
   }
+  // The session the buffered rows belong to: /clear, /resume and /branch move
+  // to another, whose history starts afresh.
+  let feedSession: string | undefined
   let feed: FeedBuffer = emptyBuffer()
   let feedSupported = true
   const toolResults = new Map<string, Record<string, unknown>>()
@@ -684,6 +633,12 @@ export const register: Register = on => {
   // to say about the session.
   on('classic.SessionStart', async ($, e, next) => {
     noteMode(e)
+    if (feedSession !== undefined && feedSession !== e.session_id) {
+      feed = emptyBuffer()
+      feedSupported = true
+      toolResults.clear()
+    }
+    feedSession = e.session_id
     const kept = carried
     carried = undefined
     if (kept !== undefined && e.source === 'compact') {
@@ -890,7 +845,14 @@ export const register: Register = on => {
           ...(info.transcriptPath === null ? {} : { transcript_path: info.transcriptPath }),
         }
         const sending = withResults(pending.rows, toolResults)
-        const { outcome, sent } = await sendFeed($, base, sending, spawns, pending.gap)
+        let { outcome, sent } = await sendFeed($, base, sending, spawns, pending.gap)
+        if (outcome === 'unreachable') {
+          // As for a check: start the daemon once and send again.
+          await ensureDaemon($)
+          const retried = await sendFeed($, base, sending.slice(sent), spawns, pending.gap && sent === 0)
+          outcome = retried.outcome
+          sent += retried.sent
+        }
         pushed = outcome
         if (outcome === 'unsupported') {
           feedSupported = false
@@ -899,16 +861,20 @@ export const register: Register = on => {
           feed = afterPush(feed, pending, sent, sent > 0 || outcome === 'sent')
         }
       }
-      const answer: CheckAnswer =
-        pushed === 'failed'
-          ? {
+      // Undelivered history is never checked around: the daemon would decide
+      // without it. Only an unreachable daemon may fail open, as for a check.
+      const delivered = pushed === 'sent' || pushed === 'unsupported'
+      const answer: CheckAnswer = delivered
+        ? await checkCall($, input)
+        : pushed === 'unreachable' && (await failsOpen($))
+          ? { result: {} }
+          : {
               result: {
                 deny:
                   '[SASY] security check unavailable: the session history could not be sent ' +
                   'to the sasy-watch daemon',
               },
             }
-          : await checkCall($, input)
       // A one-time bypass on offer: ask the user here, holding the call, where
       // someone can be asked; elsewhere the denial (with its model-driven
       // AskUserQuestion instructions) stands, as with the hook plugin.
@@ -926,8 +892,11 @@ export const register: Register = on => {
     // What SASY decided, not what another hook made of the call.
     await recordSafely($, e, ours, dialog)
     return result
-  }).catch(($, e, next) =>
-    next.called ? next(e) : { deny: '[SASY] security check failed inside sasy-guard-mod' },
+  }).catch(() =>
+    // Any failure denies, also after `next`: the engine refusing this mod's
+    // answer (an input rewrite its tool does not accept) must not let the
+    // call run as the other hooks left it.
+    ({ deny: '[SASY] security check failed inside sasy-guard-mod' }),
   )
 
   on('command.run', { command: COMMAND }, async ($, e, next) => {

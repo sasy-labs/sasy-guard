@@ -26,8 +26,8 @@ Both talk to the same local `sasy-watch` daemon and policy engine, installed by
   buffered and sent to the daemon (`/v1/session/append`) just before the next
   check, with the folder it ran in and the structured result of the tool call it
   reports. A daemon without that route (the released one) reads the transcript
-  instead; the mod asks once and stops. A push the daemon refuses blocks the
-  check and is retried.
+  instead; the mod asks once and stops. A push the daemon refuses, or cannot
+  take even after one `sasy-watch ensure`, blocks the check and is retried.
 - **After each call** (`classic.PostToolUse`): the daemon's post-tool signal
   (`/v1/posttooluse`), as the hook plugin sends it.
 - **Session end**: ends the session at the daemon (`/v1/session/end`).
