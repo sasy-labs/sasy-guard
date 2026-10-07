@@ -717,4 +717,3 @@ test('compaction puts back the totals and decisions a reset cleared, merged', ()
   ])
   expect(joinDecisions(Array.from({ length: 50 }, (_, i) => d(i + 1, 'k')), [d(1, 'n')])).toHaveLength(50)
 })
-
