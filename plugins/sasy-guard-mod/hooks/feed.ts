@@ -289,3 +289,6 @@ export const MAX_PUSH_ROUNDS = 3
 /** The most time a check spends sending history, all rounds included: room
  *  for one timed-out request, one daemon start, and a retry. */
 export const PUSH_DEADLINE_MS = 30_000
+/** The denial for a check whose history did not reach the daemon. */
+export const HISTORY_UNSENT =
+  '[SASY] security check unavailable: the session history could not be sent to the sasy-watch daemon'
