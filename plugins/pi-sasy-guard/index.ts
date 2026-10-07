@@ -277,6 +277,8 @@ export function createGuard(opts: GuardOptions = {}) {
         .select(
           `sasy-guard: ${tool} needs your approval\n\n${target ? `${target}\n\n` : ""}${displayReason(d.reason)}`,
           [BLOCK_CHOICE, RUN_CHOICE],
+          // An aborted turn dismisses the dialog, which leaves the call blocked.
+          { signal: ctx.signal },
         )
         .catch(() => null);
       if (choice === null) return { approved: false, outcome: "ui-error" as const };

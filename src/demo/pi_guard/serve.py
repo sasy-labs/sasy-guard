@@ -114,6 +114,9 @@ def _setup_project(proj: Path) -> list[str]:
 def pi_command(base_url: str) -> str:
     """The shell command that runs pi against the mock with the guard loaded.
 
+    ``-ne`` skips installed extensions, so an extension installed with
+    ``pi install`` does not load a second copy of the guard next to this one.
+
     Args:
         base_url: The mock endpoint's base URL.
 
@@ -121,7 +124,7 @@ def pi_command(base_url: str) -> str:
         One shell command line.
     """
     return (
-        f"SASY_DEMO_MODEL_URL={base_url} pi -e {shlex.quote(str(_EXTENSION))} "
+        f"SASY_DEMO_MODEL_URL={base_url} pi -ne -e {shlex.quote(str(_EXTENSION))} "
         f"-e {shlex.quote(str(_MOCK_PROVIDER))} --model sasy-demo/claude-mock"
     )
 
