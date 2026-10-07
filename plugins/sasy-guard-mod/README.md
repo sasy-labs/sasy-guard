@@ -20,6 +20,12 @@ Both talk to the same local `sasy-watch` daemon and policy engine, installed by
   call, asks the user, or lets it go on to any other settings hooks. A
   subagent's call carries the subagent's id, type and folder, which the mod
   learns from `agent.spawn`.
+- **Session history** (`session.append`): every row Claude Code keeps is
+  buffered and sent to the daemon (`/v1/session/append`) just before the next
+  check, with the folder it ran in and the structured result of the tool call it
+  reports. A daemon without that route (the released one) reads the transcript
+  instead; the mod asks once and stops. A push the daemon refuses, or cannot
+  take even after one `sasy-watch ensure`, blocks the check and is retried.
 - **After each call** (`classic.PostToolUse`): the daemon's post-tool signal
   (`/v1/posttooluse`), as the hook plugin sends it.
 - **Session end**: ends the session at the daemon (`/v1/session/end`).
@@ -67,6 +73,6 @@ calls are not checked (as with the hook plugin).
 
 ```sh
 claude plugin validate plugins/sasy-guard-mod   # what the mod hooks and calls
-claude plugin test plugins/sasy-guard-mod       # tests/guard.test.ts
+claude plugin test plugins/sasy-guard-mod       # tests/*.test.ts
 claude --plugin-dir plugins/sasy-guard-mod      # load it from this checkout
 ```
