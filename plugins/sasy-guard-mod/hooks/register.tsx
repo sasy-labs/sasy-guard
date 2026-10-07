@@ -717,7 +717,7 @@ export const register: Register = on => {
 
   // The tool's structured result, for the history row that reports it.
   const noteResult = (id: string, result: { result?: unknown }): void => {
-    if (!feedSupported || result.result === undefined) return
+    if (!feedSupported || result.result === undefined || result.result === null) return
     toolResults.set(id, result.result)
     if (toolResults.size > MAX_RESULTS) toolResults.delete(toolResults.keys().next().value!)
   }
