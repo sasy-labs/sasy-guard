@@ -123,16 +123,17 @@ function withoutImages(content: unknown): unknown {
 }
 
 /** The tool arguments policies read (paths, commands, patterns, URLs). */
-const POLICY_ARGS = ["command", "path", "file_path", "pattern", "url"];
+const POLICY_ARGS = ["command", "path", "file_path", "notebook_path", "pattern", "url"];
+/** Each policy argument's length in a stub that is still too large whole. */
 const MAX_POLICY_ARG_CHARS = 4096;
 
-/** A stubbed tool call's arguments: the ones policies read, cut short. */
-function policyArgs(args: unknown): Record<string, string> {
+/** A stubbed tool call's arguments: the ones policies read, cut to `max`. */
+function policyArgs(args: unknown, max = Infinity): Record<string, string> {
   if (!args || typeof args !== "object") return {};
   const out: Record<string, string> = {};
   for (const k of POLICY_ARGS) {
     const v = (args as Record<string, unknown>)[k];
-    if (typeof v === "string") out[k] = v.slice(0, MAX_POLICY_ARG_CHARS);
+    if (typeof v === "string") out[k] = v.slice(0, max);
   }
   return out;
 }
@@ -143,7 +144,8 @@ function policyArgs(args: unknown): Record<string, string> {
  * less the data of other extensions' custom entries. An entry still larger
  * than a request can carry is sent as a stub that keeps its place in the tree,
  * its role, its tool calls' and results' ids and names, and the arguments
- * policies read (cut short), so the push goes through and provenance survives.
+ * policies read (cut short only if still too large), so the push goes through
+ * and provenance survives.
  */
 export function shrinkEntry(entry: unknown): unknown {
   if (!entry || typeof entry !== "object") return entry;
@@ -159,22 +161,27 @@ export function shrinkEntry(entry: unknown): unknown {
   if (Buffer.byteLength(JSON.stringify(e)) <= MAX_PUSH_BYTES - ENVELOPE_BYTES) return e;
   const m = (e.message ?? {}) as Record<string, unknown>;
   const note = { type: "text", text: "[sasy-guard: entry too large to send]" };
-  const calls = Array.isArray(m.content)
-    ? m.content
-        .filter((b) => b && typeof b === "object" && (b as { type?: unknown }).type === "toolCall")
-        .map((b) => {
-          const { id, name, arguments: args } = b as { id?: unknown; name?: unknown; arguments?: unknown };
-          return { type: "toolCall", id, name, arguments: policyArgs(args) };
-        })
-    : [];
-  return {
-    type: e.type,
-    id: e.id,
-    parentId: e.parentId,
-    ...(e.message
-      ? { message: { role: m.role, toolCallId: m.toolCallId, toolName: m.toolName, content: [note, ...calls] } }
-      : {}),
+  // The policy arguments go whole when the stub then fits, else cut short.
+  const stub = (max: number) => {
+    const calls = Array.isArray(m.content)
+      ? m.content
+          .filter((b) => b && typeof b === "object" && (b as { type?: unknown }).type === "toolCall")
+          .map((b) => {
+            const { id, name, arguments: args } = b as { id?: unknown; name?: unknown; arguments?: unknown };
+            return { type: "toolCall", id, name, arguments: policyArgs(args, max) };
+          })
+      : [];
+    return {
+      type: e.type,
+      id: e.id,
+      parentId: e.parentId,
+      ...(e.message
+        ? { message: { role: m.role, toolCallId: m.toolCallId, toolName: m.toolName, content: [note, ...calls] } }
+        : {}),
+    };
   };
+  const whole = stub(Infinity);
+  return Buffer.byteLength(JSON.stringify(whole)) <= MAX_PUSH_BYTES - ENVELOPE_BYTES ? whole : stub(MAX_POLICY_ARG_CHARS);
 }
 
 /** Room left in each request for its other fields and the array's punctuation. */

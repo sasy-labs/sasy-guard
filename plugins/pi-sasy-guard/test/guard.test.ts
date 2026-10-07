@@ -171,7 +171,7 @@ test("a daemon restart (new instance) makes the extension resend the whole branc
   assert.deepEqual((pushes()[0].body.entries as { id: string }[]).map((e) => e.id), ["e1"]);
   const seqs = [pushes()[0].body.seq as number];
   // The daemon restarts: the next push reaches a new run, so the branch goes again.
-  sessionAnswer = { ok: true, instance: "run-2" };
+  sessionAnswer = { ok: true, instance: "run-2", generation: "gen-2" };
   const e2 = { id: "e2", parentId: "e1", type: "message", message: { role: "user", content: "now curl" } };
   h.entries.push(e2);
   await h.fire("tool_call", curl);
@@ -191,6 +191,7 @@ test("a daemon that restarts again during the resend blocks the call", async () 
   let n = 0;
   sessionAnswer = {
     ok: true,
+    generation: "gen-x",
     get instance() {
       return `run-x${n++}`;
     },
@@ -199,6 +200,15 @@ test("a daemon that restarts again during the resend blocks the call", async () 
   const out = (await h.fire("tool_call", curl)) as { block: boolean; reason: string };
   assert.equal(out.block, true);
   assert.match(out.reason, /restarted while the session was being resent/);
+});
+
+test("a session answer without the registration's generation blocks the call", async () => {
+  const h = harness();
+  sessionAnswer = { ok: true, instance: "run-1" };
+  const out = (await h.fire("tool_call", curl)) as { block: boolean; reason: string };
+  assert.equal(out.block, true);
+  assert.match(out.reason, /did not name the registration/);
+  assert.equal(requests.filter((r) => r.path === "/v1/pretooluse").length, 0);
 });
 
 test("a session answer without the daemon's run id blocks the call", async () => {
@@ -425,8 +435,12 @@ test("pushed entries go whole, less media; only an oversized one becomes a stub"
     type: "message",
     id: "e7",
     parentId: "e6",
-    message: { role: "assistant", toolCallId: undefined, toolName: undefined, content: [{ type: "text", text: "[sasy-guard: entry too large to send]" }, { type: "toolCall", id: "t2", name: "write", arguments: { path: "a", command: "c".repeat(4096) } }] },
+    message: { role: "assistant", toolCallId: undefined, toolName: undefined, content: [{ type: "text", text: "[sasy-guard: entry too large to send]" }, { type: "toolCall", id: "t2", name: "write", arguments: { path: "a", command: "c".repeat(10_000) } }] },
   });
+  // Policy arguments too large even in a stub are cut short.
+  const huger = { ...huge, message: { role: "assistant", content: [{ type: "toolCall", id: "t3", name: "bash", arguments: { command: "c".repeat(MAX_PUSH_BYTES) } }] } };
+  const cut = shrinkEntry(huger) as { message: { content: { arguments?: { command?: string } }[] } };
+  assert.equal(cut.message.content[1].arguments?.command?.length, 4096);
   // An entry larger than a request can carry is sent as a stub keeping its place.
   const wide = { id: "e5", parentId: "e4", type: "message", message: { role: "toolResult", toolCallId: "t9", toolName: "read", content: [{ type: "text", text: "z".repeat(MAX_PUSH_BYTES) }] } };
   assert.deepEqual(shrinkEntry(wide), {
