@@ -144,9 +144,9 @@ The hook uses Codex's PreToolUse hooks and its session files, as Codex CLI
 
 ## What you see
 
-- **A blocked call** shows in Codex as a failed tool call:
-  `Command blocked by PreToolUse hook: [SASY] …`, followed by the policy's
-  reason and suggested fix. Codex's model reads the same text.
+- **A blocked call** shows in Codex as **Blocked by hook**, followed by the
+  policy's reason and suggested fix. Codex's model gets the same reason as the
+  tool's result, as `Command blocked by PreToolUse hook: [SASY] …`.
 - **An allowed call** runs with no sign of the check.
 - **`status.sh`**, the script from step 5, reports on the daemon. The status
   check runs outside Codex because Codex hooks cannot add a command to Codex
@@ -191,7 +191,9 @@ The first time, Codex asks you to trust the project folder and then the hook:
 choose **Trust and continue**, then **Trust all and continue**. Type any prompt;
 the stand-in replays the scenario's calls, and the guard blocks the last one
 (in `baseline`, it lets it run).
-`uv run python -m demo.codex_guard.serve --list` lists the scenarios.
+`uv run python -m demo.codex_guard.serve --list` lists the scenarios. Codex
+shows a warning that it has no metadata for the model `sasy-mock`; that is the
+scripted stand-in, and the warning does not affect the demo.
 
 <Aside type="tip" title="Resume and restart">
 `GROUP=toxic_flow_resume` splits the toxic flow over two prompts: the first
