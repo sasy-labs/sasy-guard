@@ -8,8 +8,10 @@
 . "$(dirname "$0")/lib.sh"
 
 PAYLOAD=$(cat)
+AUTH_FILE=$(hook_auth_file) || exit 0
+
 OUT=$(printf '%s' "$PAYLOAD" | \
   curl -fsS -m 5 -X POST "${BASE}/v1/posttooluse" \
-    -H 'content-type: application/json' --data-binary @- 2>/dev/null)
+    -H 'content-type: application/json' -H "@${AUTH_FILE}" --data-binary @- 2>/dev/null)
 [ -n "$OUT" ] && printf '%s' "$OUT"
 exit 0

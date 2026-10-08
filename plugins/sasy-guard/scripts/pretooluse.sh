@@ -27,12 +27,13 @@ HDR_ENTRYPOINT=$(header_safe "${CLAUDE_CODE_ENTRYPOINT:-unknown}")
 HDR_TERM=$(header_safe "${TERM_PROGRAM:-}")
 
 check() {
+  AUTH_FILE=$(hook_auth_file) || return 1
   # Forward the host entrypoint (cli | vscode | …) + terminal program so the
   # daemon can log/act on it (parity with the native hook, which sends the same
   # X-Claude-Code-* headers). The daemon can't read this hook's env itself.
   printf '%s' "$PAYLOAD" | \
     curl -fsS -m 10 -X POST "${BASE}/v1/pretooluse" \
-      -H 'content-type: application/json' \
+      -H 'content-type: application/json' -H "@${AUTH_FILE}" \
       -H "x-claude-code-entrypoint: ${HDR_ENTRYPOINT:-unknown}" \
       -H "x-claude-code-term-program: ${HDR_TERM}" \
       --data-binary @- 2>/dev/null
@@ -42,7 +43,8 @@ OUT=$(check)
 if [ $? -ne 0 ]; then
   ensure_daemon && OUT=$(check)
   if [ $? -ne 0 ] || [ -z "$OUT" ]; then
-    [ "${SASY_FAIL_OPEN:-false}" = "true" ] && exit 0
+    # Missing authentication never inherits the optional availability fail-open.
+    if hook_auth_file >/dev/null && [ "${SASY_FAIL_OPEN:-false}" = "true" ]; then exit 0; fi
     echo "[SASY] security check unavailable (sasy-watch unreachable on port ${PORT})" >&2
     exit 2
   fi

@@ -25,14 +25,23 @@ find_watch_bin() {
   return 1
 }
 
+# Reuse the resolver without splitting executable or source paths on spaces.
+invoke_watch() {
+  BIN=$(find_watch_bin) || return 1
+  if [ -x "$BIN" ]; then
+    "$BIN" "$@"
+  else
+    bun "${CLAUDE_PLUGIN_ROOT}/../../packages/claude-code/src/main.ts" "$@"
+  fi
+}
+
 ensure_daemon() {
   curl -fsS -m 1 "${BASE}/healthz" >/dev/null 2>&1 && return 0
-  BIN=$(find_watch_bin) || return 1
   # Bound the respawn wait so the PreToolUse script (curl 10s + ensure + curl
   # 10s) stays under Claude Code's 30s hook timeout — a killed hook never runs
   # its `exit 2` deny, so an unbounded ensure on an unstartable daemon would
   # fail OPEN. 6s here ⇒ worst case ~26s ⇒ always reaches the deny in time.
-  $BIN ensure --wait-ms 6000 >/dev/null 2>&1
+  invoke_watch ensure --wait-ms 6000 >/dev/null 2>&1
 }
 
 # Read config.transport (script|native|http) from ~/.sasy/config.json.
@@ -57,4 +66,12 @@ json_field() { # $1=json $2=field
   else
     printf '%s' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
   fi
+}
+
+# The daemon publishes a new private header file after each successful launch.
+# curl reads it directly so the secret never appears in process arguments.
+hook_auth_file() {
+  auth_file="$SASY_HOME/hook-auth-${PORT}.header"
+  [ -f "$auth_file" ] && [ ! -L "$auth_file" ] && [ -r "$auth_file" ] || return 1
+  printf '%s' "$auth_file"
 }

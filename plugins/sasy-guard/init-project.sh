@@ -15,8 +15,8 @@
 #   PROJECT_DIR      project to configure (default: current directory)
 #
 # Rule groups: data_loss secret_scan exfil toxic_flow reverse_shell
-#   config_persistence agent_redirect curl_sh hidden_unicode public_push
-#   review_gate supply_chain dep_scan
+#   config_persistence guard_config agent_redirect curl_sh hidden_unicode public_push
+#   review_gate supply_chain dep_scan sast
 set -eu
 
 PROFILE=security
@@ -35,6 +35,10 @@ while [ $# -gt 0 ]; do
     *)          PROJECT_DIR="$1"; shift ;;
   esac
 done
+if [ -n "$RULE_OFF" ] && [ -n "$RULE_ON" ]; then
+  echo "error: --rule-off and --rule-on are mutually exclusive" >&2
+  exit 1
+fi
 PROJECT_DIR="${PROJECT_DIR:-$PWD}"
 
 # Clean up temp files on any exit (jq writes go through mktemp).
@@ -70,8 +74,7 @@ fi
 . "$SCRIPTS/lib.sh"
 WATCH_BIN="$(find_watch_bin)" || { echo "error: sasy-watch binary not found (build packages/claude-code or set SASY_WATCH_BIN)"; exit 1; }
 echo "→ installing daemon + policy config to $SASY_HOME (profile: $PROFILE)"
-# shellcheck disable=SC2086
-$WATCH_BIN setup --mode local --profile "$PROFILE"
+invoke_watch setup --profile "$PROFILE"
 
 # 2. Apply rule-group flags to the global daemon config, if any.
 if [ -n "$RULE_OFF" ] || [ -n "$RULE_ON" ]; then
@@ -84,8 +87,8 @@ if [ -n "$RULE_OFF" ] || [ -n "$RULE_ON" ]; then
   jq \
     --argjson off "$( [ -n "$RULE_OFF" ] && to_json_array "$RULE_OFF" || echo null )" \
     --argjson on  "$( [ -n "$RULE_ON" ]  && to_json_array "$RULE_ON"  || echo null )" \
-    'if $off != null then .ruleOff = $off else . end
-     | if $on != null then .ruleOn = $on else . end' \
+    'if $off != null then .ruleOff = $off | del(.ruleOn) else . end
+     | if $on != null then .ruleOn = $on | del(.ruleOff) else . end' \
     "$CFG" > "$tmp" && mv "$tmp" "$CFG"
   echo "→ rule flags: off=[$RULE_OFF] on=[$RULE_ON]"
 fi
@@ -110,12 +113,25 @@ hooks_json() {
 }
 
 tmp="$(mktemp)"
+# Match both old raw paths and new shell-quoted commands. Remove only our
+# commands from each event entry, retaining unrelated commands and matchers.
+merge_hooks='reduce ($h | keys[]) as $event (. ;
+  ($h[$event] | [.[].hooks[].command]) as $raw |
+  ($raw + ($raw | map(@sh))) as $ours |
+  .hooks[$event] = (
+    [(.hooks[$event] // [])[] |
+      if (.hooks | type) == "array" then
+        .hooks |= map(select(.command as $cmd | ($ours | index($cmd)) == null)) |
+        select(.hooks | length > 0)
+      else . end
+    ] + ($h[$event] | map(.hooks |= map(.command |= @sh)))
+  ))'
 if [ -f "$SETTINGS" ]; then
-  # Merge into any existing settings.json (overwrites only the four hook keys).
-  jq --argjson h "$(hooks_json)" '.hooks = ((.hooks // {}) + $h)' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+  jq --argjson h "$(hooks_json)" "$merge_hooks" "$SETTINGS" > "$tmp"
 else
-  jq -n --argjson h "$(hooks_json)" '{ hooks: $h }' > "$tmp" && mv "$tmp" "$SETTINGS"
+  printf '{}\n' | jq --argjson h "$(hooks_json)" "$merge_hooks" > "$tmp"
 fi
+mv "$tmp" "$SETTINGS"
 
 echo "✓ $PROJECT_DIR is configured for SASY enforcement."
 echo "  Run 'claude' in it — tool calls are checked; denials show a [SASY] reason."

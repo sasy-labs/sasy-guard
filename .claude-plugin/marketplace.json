@@ -9,6 +9,11 @@
       "name": "sasy-guard",
       "source": "./plugins/sasy-guard",
       "description": "SASY policy enforcement for Claude Code tool calls (PreToolUse checks against a Datalog policy engine)"
+    },
+    {
+      "name": "sasy-guard-mod",
+      "source": "./plugins/sasy-guard-mod",
+      "description": "SASY policy enforcement for Claude Code as a mod: checks each tool call from inside Claude Code and shows the decisions (use instead of sasy-guard)"
     }
   ]
 }

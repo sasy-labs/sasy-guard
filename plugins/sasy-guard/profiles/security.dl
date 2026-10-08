@@ -1,7 +1,7 @@
 /*
     Security profile — the unified "turn it all on" default.
 
-    One policy, thirteen independently-toggleable rule groups (the old separate
+    One policy, fourteen independently-toggleable rule groups (the old separate
     rm-rf-block / taint-untrusted-fetch / supply-chain profiles are now groups
     here). Every group is ON by default; a deployment dials coverage via
     PolicyMetadata flags WITHOUT recompiling (the same baked evaluator serves
@@ -11,8 +11,8 @@
         on-listed groups (e.g. rule_on data_loss == the old rm-rf-block).
 
     Groups: data_loss, secret_scan, exfil, toxic_flow, reverse_shell,
-            config_persistence, agent_redirect, curl_sh, hidden_unicode,
-            public_push, review_gate, supply_chain, dep_scan.
+            config_persistence, guard_config, agent_redirect, curl_sh,
+            hidden_unicode, public_push, review_gate, supply_chain, dep_scan.
 
     All gates are substring/graph heuristics: an agent running arbitrary code
     can obfuscate around them. The goal is to patch common failure modes, not
@@ -35,14 +35,14 @@ IsAuthorized(idx) :- Actions(idx, _).
                      opt-in — ONLY the on-listed groups run (minimal/demo
                      configs, e.g. the old rm-rf-block = rule_on data_loss).
    Groups: data_loss secret_scan exfil toxic_flow reverse_shell
-           config_persistence agent_redirect curl_sh hidden_unicode
-           public_push review_gate supply_chain dep_scan. */
+           config_persistence guard_config agent_redirect curl_sh
+           hidden_unicode public_push review_gate supply_chain dep_scan. */
 .decl KnownRule(group: symbol)
 KnownRule("data_loss").     KnownRule("secret_scan").        KnownRule("exfil").
 KnownRule("toxic_flow").    KnownRule("reverse_shell").      KnownRule("config_persistence").
-KnownRule("agent_redirect").KnownRule("curl_sh").            KnownRule("hidden_unicode").
-KnownRule("public_push").   KnownRule("review_gate").        KnownRule("supply_chain").
-KnownRule("dep_scan").
+KnownRule("guard_config").  KnownRule("agent_redirect").     KnownRule("curl_sh").
+KnownRule("hidden_unicode").KnownRule("public_push").        KnownRule("review_gate").
+KnownRule("supply_chain").  KnownRule("dep_scan").  KnownRule("sast").
 
 .decl RuleOff(group: symbol)
 RuleOff(g) :- PolicyMetadata("rule_off", g, _).
@@ -100,10 +100,10 @@ ForcePush(idx) :-
 ForcePush(idx) :- ShellCommand(idx, cmd), @str_contains(cmd, "push -f") = 1.
 
 // @deny_message: Destructive recursive delete (rm -rf) is blocked by policy
-// @suggestion: Delete specific files without rm -rf, or ask the user to run it themselves
+// @suggestion: Delete specific files instead of rm -rf; if the recursive delete is genuinely needed, run it outside the agent
 Unauthorized(idx) :- RuleEnabled("data_loss"), RecursiveDelete(idx).
 // @deny_message: Force push rewrites remote history and is blocked by policy
-// @suggestion: Push without --force (or use --force-with-lease), or ask the user to force-push
+// @suggestion: Push without --force (or use --force-with-lease); a genuine history rewrite has to be run outside the agent
 Unauthorized(idx) :- RuleEnabled("data_loss"), ForcePush(idx).
 
 /* ── 2. Secret-scan gate on push ───────────────────────────────────── */
@@ -134,16 +134,30 @@ EditArgs(args) :- IsPush(_), ToolResult(_, "MultiEdit", args).
 // FAIL-SAFE on every ambiguity — never silently drop a push-gating edit:
 //   · no repo_root at all (non-git cwd, withheld/cross-repo push) → count.
 //   · repo_root present but file_path missing/empty (malformed args) → count.
-// Accepted residual: a repo UNDER a symlinked path (macOS /tmp→/private/tmp) can
-// realpath-mismatch `file_path` and be wrongly excluded (fail-open). Real repos
-// aren't under symlinks and /private-temp scratchpad is unambiguously outside, so
-// this is not reachable for the intended use; revisit if repos move under /tmp.
+// The mapper's canonical path scopes modern recordings. For older recordings,
+// keep the raw path as a fallback; an unresolved relative path counts rather
+// than silently dropping the edit. Absolute raw paths remain a text match.
+.decl EditScopePath(args: symbol, path: symbol)
+EditScopePath(args, p) :- EditArgs(args),
+    p = @json_get_str(args, "__sasy_edit_path"), p != "".
+EditScopePath(args, p) :- EditArgs(args),
+    @json_get_str(args, "__sasy_edit_path") = "",
+    p = @json_get_str(args, "file_path").
+// Production repo_root metadata already ends in '/'. Accept unsuffixed roots
+// in older recordings too, without broadening '/repo' to '/repo-neighbor'.
+.decl EditRootPrefix(prefix: symbol)
+EditRootPrefix(root) :- RepoRoot(root), strlen(root) > 0,
+    substr(root, strlen(root) - 1, 1) = "/".
+EditRootPrefix(cat(root, "/")) :- RepoRoot(root), strlen(root) > 0,
+    substr(root, strlen(root) - 1, 1) != "/".
 .decl EditPathRelevant(args: symbol)
-EditPathRelevant(args) :- EditArgs(args), RepoRoot(root),
-    @str_starts_with(@json_get_str(args, "file_path"), root) = 1.
+EditPathRelevant(args) :- EditScopePath(args, p), EditRootPrefix(prefix),
+    @str_starts_with(p, prefix) = 1.
+EditPathRelevant(args) :- EditScopePath(args, p), RepoRoot(root), p = root.
+EditPathRelevant(args) :- EditScopePath(args, p), RepoRoot(root), cat(p, "/") = root.
 EditPathRelevant(args) :- EditArgs(args), !HaveRepoRoot().
-EditPathRelevant(args) :- EditArgs(args), HaveRepoRoot(),
-    @json_get_str(args, "file_path") = "".
+EditPathRelevant(args) :- EditScopePath(args, p), HaveRepoRoot(),
+    @str_starts_with(p, "/") = 0.
 
 // Edits in the current slice (Claude Code edit tools), scoped to repo files.
 .decl RecentEdit(id: symbol)
@@ -257,27 +271,79 @@ FlaggedEdit(e) :- RecentEdit(e), ScannedSinceEdit(e), !CoveredByGitleaks(e).
 // A) A push with no tracked edits and no scan at all → run one first. Keeps
 //    "every push is scanned" even when this session made no tracked edits.
 // @deny_message: Push blocked — no gitleaks secret scan has run in this session
-// @suggestion: Call gitleaks via the Bash tool (e.g. run `gitleaks git --log-opts=origin/main..HEAD`) and confirm it reports "no leaks found" before pushing
-Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), !GitleaksRun(_), !HasRecentEdit().
+// @suggestion: The agent must run `gitleaks git --log-opts=origin/main..HEAD` itself (a scan run elsewhere is not credited) and confirm "no leaks found" before pushing
+Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), !GitleaksRun(_), !HasRecentEdit(), !SecretScanAvailable(idx).
 
 // B) Files edited without a fresh scan covering them → (re-)scan. Clear action.
 // @deny_message: Push blocked — files edited this session without a fresh gitleaks scan
-// @suggestion: Call gitleaks via the Bash tool (e.g. `gitleaks git --log-opts=origin/main..HEAD`) AFTER your latest edits and confirm "no leaks found", then push
-Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), UnscannedEdit(_).
+// @suggestion: The agent must re-run `gitleaks git --log-opts=origin/main..HEAD` itself AFTER the latest edits (a scan run elsewhere is not credited) and confirm "no leaks found", then push
+Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), UnscannedEdit(_), !SecretScanAvailable(idx).
 
 // C) A scan flagged a potential secret in edited files → @ask (may be a false
 //    positive; only the user can adjudicate). NOT a hard block.
 // @ask
 // @deny_message: gitleaks flagged a potential secret in files edited this session
-// @suggestion: If it's a real secret, remove it and re-scan via Bash; if it's a false positive, approve to push (or add a gitleaks allowlist / .gitleaksignore entry and re-scan clean)
-Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), FlaggedEdit(_).
+// @suggestion: If it's a real secret, remove it and re-scan; if it's a false positive, allowlist it (.gitleaksignore) and re-scan clean, or approve the push when prompted
+Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), FlaggedEdit(_), !SecretScanAvailable(idx).
 
 // C') A scan flagged something but this session made no tracked edits to tie it
 //     to → still @ask (a leak in un-edited content would ship on push).
 // @ask
 // @deny_message: gitleaks flagged a potential secret (not tied to a tracked edit this session)
-// @suggestion: If it's a real secret, remove it and re-scan via Bash; if it's a false positive, approve to push (or add a gitleaks allowlist / .gitleaksignore entry and re-scan clean)
-Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), GitleaksDirty(), !HasRecentEdit().
+// @suggestion: If it's a real secret, remove it and re-scan; if it's a false positive, allowlist it (.gitleaksignore) and re-scan clean, or approve the push when prompted
+Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), GitleaksDirty(), !HasRecentEdit(), !SecretScanAvailable(idx).
+
+// ── Daemon-scanned path (preferred) ──────────────────────────────────
+// The daemon scans the commits a push would publish, incrementally: a
+// background pass advances an anchor commit-by-commit, so the push itself only
+// scans what is new since that anchor. It reports one verdict, which is all the
+// policy needs.
+//
+// Everything above this line exists to reconstruct the same answer from the
+// message graph -- whether a scan ran, whether it was clean, and whether it
+// covered each edit -- because there was nowhere else to get it. Those rules are
+// the OPT-OUT path (`secretScanIncremental: false`): they apply only when the
+// daemon produced no verdict at all. SecretScanAvailable holds for each supported
+// verdict -- `unavailable` (no scanner, or the scan budget spent) and
+// `unscannable` (a range the scan could not cover) included -- so a verdict
+// silences them and the two paths cannot double-gate. An unknown status keeps
+// the transcript rules active. While it held for `clean`
+// and `leaks` only, a missing scanner fired a hard deny from above beside the
+// @ask below, and the deny won.
+.decl SecretScanVerdict(idx: unsigned, v: symbol)
+SecretScanVerdict(idx, v) :- ActionMetadata(idx, "secret_scan", v, _).
+
+.decl SecretScanAvailable(idx: unsigned)
+SecretScanAvailable(idx) :- SecretScanVerdict(idx, "clean").
+SecretScanAvailable(idx) :- SecretScanVerdict(idx, "leaks").
+SecretScanAvailable(idx) :- SecretScanVerdict(idx, "unavailable").
+SecretScanAvailable(idx) :- SecretScanVerdict(idx, "unscannable").
+
+// D) The scan found a secret in the commits being pushed. @ask rather than a
+//    hard deny for the same reason as (C): a detector hit can be a false
+//    positive and only the developer can tell. The daemon puts the rule, file,
+//    line and commit in front of them; the secret itself is never quoted.
+// @ask
+// @deny_message: A secret scan of the commits this push would publish found a potential secret
+// @suggestion: Rotate the credential and rewrite the commits that carry it; if it is a false positive, approve to push or add a .gitleaksignore entry
+Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), SecretScanVerdict(idx, "leaks").
+
+// E) The scanner could not run at all. Unverified is not the same as clean.
+// @ask
+// @deny_message: The commits this push would publish could not be scanned for secrets
+// @suggestion: Install gitleaks so pushes are scanned automatically, or approve the push if the diff has already been checked
+Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), SecretScanVerdict(idx, "unavailable").
+
+// F) The scan could not COVER the range: a commit too large to scan, or a
+//    finding withheld because it did not come back redacted. Distinct from
+//    (E) — the scanner ran, and cannot vouch for part of what is being pushed.
+//    This had no rule at all, so the verdict fell through to the transcript
+//    evidence above, which is not scoped to a repository: a clean scan run in
+//    another checkout satisfied it.
+// @ask
+// @deny_message: Part of what this push would publish could not be scanned for secrets
+// @suggestion: Scan the range directly (`gitleaks git --log-opts=<base>..<ref>`) and confirm it is clean, or approve the push if it has already been checked
+Unauthorized(idx) :- RuleEnabled("secret_scan"), IsPush(idx), SecretScanVerdict(idx, "unscannable").
 
 /* ── 3. Prompt-injection exfiltration ──────────────────────────────── */
 
@@ -315,11 +381,11 @@ ExfilExec(idx) :- ShellNorm(idx, n), @str_contains(n, "http.client") = 1.
 ExfilMaybe(idx) :- ShellCommand(idx, cmd), ExfilProg(p), @cmd_egress_class(cmd, p) = 1.
 
 // @deny_message: Outbound network command blocked — context depends on untrusted web-fetched content (possible prompt-injection exfiltration)
-// @suggestion: Do not send data to the network while acting on fetched web content; if intentional, ask the user to run it
+// @suggestion: Don't send data to the network while acting on fetched web content; if the send is intended, run it outside the agent
 Unauthorized(idx) :- RuleEnabled("exfil"), ExfilExec(idx), UntrustedInContext().
 // @ask
 // @deny_message: Possible outbound command while untrusted web-fetched content is in context — a network tool's name appears but the command couldn't be confirmed to run it (e.g. via a variable)
-// @suggestion: If this does NOT send data to the network, approve; otherwise avoid network egress while acting on fetched content, or run it yourself
+// @suggestion: Approve when prompted only if this sends nothing to the network; otherwise drop the network step, or run it outside the agent
 Unauthorized(idx) :- RuleEnabled("exfil"), ExfilMaybe(idx), UntrustedInContext().
 
 /* ── 3b. Secret-bearing reads → egress (toxic-flow, hard deny) ─────── */
@@ -351,11 +417,11 @@ SensitiveInContext() :- InContext(id), ToolResult(id, "Bash", args),
     SensitivePath(s), @str_contains(n, s) = 1.
 
 // @deny_message: Outbound command blocked — secret-bearing files (.env/.ssh) are in context (possible exfiltration)
-// @suggestion: Don't send secrets to the network; if intentional, run the command yourself
+// @suggestion: Don't send secrets to the network; if the send is intended, run the command outside the agent
 Unauthorized(idx) :- RuleEnabled("toxic_flow"), ExfilExec(idx), SensitiveInContext().
 // @ask
 // @deny_message: Possible outbound command with secret-bearing files (.env/.ssh) in context — a network tool's name appears but the command couldn't be confirmed to run it (e.g. via a variable)
-// @suggestion: If this does NOT send secrets to the network, approve; otherwise don't, or run the command yourself
+// @suggestion: Approve when prompted only if this sends no secrets; otherwise drop the send, or run the command outside the agent
 Unauthorized(idx) :- RuleEnabled("toxic_flow"), ExfilMaybe(idx), SensitiveInContext().
 
 // WebFetch is the tool-native egress channel (its URL/prompt can carry data
@@ -366,7 +432,7 @@ Unauthorized(idx) :- RuleEnabled("toxic_flow"), ExfilMaybe(idx), SensitiveInCont
 .decl WebEgress(idx: unsigned)
 WebEgress(idx) :- Actions(idx, a), a = $CallTool("WebFetch", _).
 // @deny_message: WebFetch blocked — secret-bearing files (.env/.ssh) are in context (possible exfiltration)
-// @suggestion: Don't fetch URLs while secrets are in context; if intentional, run it yourself
+// @suggestion: Don't fetch URLs while secrets are in context; if the fetch is intended, run it outside the agent
 Unauthorized(idx) :- RuleEnabled("toxic_flow"), WebEgress(idx), SensitiveInContext().
 
 /* ── 4. Reverse-shell / remote-exec block (Tier-0, hard deny) ───────── */
@@ -399,7 +465,7 @@ ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "-e /bin/sh") = 1.
 ReverseShell(idx) :- ShellNorm(idx, n), @str_contains(n, "-e /bin/bash") = 1.
 
 // @deny_message: Reverse-shell / remote-exec pattern blocked by policy
-// @suggestion: Remove the shell-spawning network command; if legitimate, run it yourself outside the agent
+// @suggestion: Remove the shell-spawning network command; if it is legitimate, run it outside the agent
 Unauthorized(idx) :- RuleEnabled("reverse_shell"), ReverseShell(idx).
 
 /* ── 5. Config / hook persistence (Tier-0, hard deny) ──────────────── */
@@ -412,6 +478,18 @@ ConfigPathFrag(".claude/settings").
 ConfigPathFrag(".claude/hooks").
 ConfigPathFrag(".claude/commands").
 ConfigPathFrag(".claude/agents").
+// The TRANSCRIPTS, which are not configuration but are the guard's evidence.
+// Everything the transcript-derived rules know comes from these files: whether
+// a gitleaks run happened and was clean, whether untrusted content is in
+// context, whether a review ran, which files were edited. An agent able to
+// write its own transcript can assert any of that — insert a clean scan result,
+// drop the tool_result that carries taint, fabricate a review launch — and the
+// gates that read it agree. Blocked at the same tier as hook persistence,
+// because forging the evidence is at least as direct as installing a hook.
+//
+// `.claude/projects/` only. `.claude/todos/` and the rest of the directory are
+// the agent's own working state and it writes them routinely.
+ConfigPathFrag(".claude/projects").
 ConfigPathFrag(".claude.json").
 ConfigPathFrag(".mcp.json").
 ConfigPathFrag(".cursor/rules").
@@ -430,8 +508,35 @@ EditTarget(idx, p) :- Actions(idx, a), a = $CallTool("Write", args), p = @json_g
 EditTarget(idx, p) :- Actions(idx, a), a = $CallTool("MultiEdit", args), p = @json_get_str(args, "file_path").
 EditTarget(idx, p) :- Actions(idx, a), a = $CallTool("NotebookEdit", args), p = @json_get_str(args, "notebook_path").
 
+// The TRANSCRIPT is matched differently from the rest: ANY command naming it
+// counts, with no verb list. The list below (redirect / tee / sed -i / cp / mv
+// / ln) is a reasonable filter for configuration files, where `cat` is routine
+// and a write needs one of a few shapes — but it has no end for a path whose
+// content is the guard's own evidence. `python -c 'open(p,"w")'`, `truncate`,
+// `perl -pi` and plain `rm` all name the file and none contain a listed verb.
+// This is the same reasoning the guard-home rules already state: enumerate the
+// verbs and the list is always missing one, so match the PATH instead and
+// accept that reading it asks too. Nobody has a routine reason to touch their
+// own transcript.
+.decl TranscriptFrag(frag: symbol)
+// NO trailing slash, for the reason the guard-home rule above already gives:
+// with one, the DIRECTORY itself is invisible. `rm -rf ~/.claude/projects`
+// destroys every transcript and never contains `.claude/projects/`, and
+// `cd ~/.claude/projects && echo >> s.jsonl` writes one by a relative path that
+// never names it at all. I wrote the slash anyway; the lesson was already
+// recorded eight lines up.
+TranscriptFrag(".claude/projects").
+
 .decl TouchesConfig(idx: unsigned)
+TouchesConfig(idx) :- ShellCommand(idx, cmd), TranscriptFrag(f), @str_contains(cmd, f) = 1.
+TouchesConfig(idx) :- ShellNorm(idx, n), TranscriptFrag(f), @str_contains(n, f) = 1.
 TouchesConfig(idx) :- EditTarget(idx, p), ConfigPathFrag(f), @str_contains(p, f) = 1.
+// ...and case-insensitively. macOS filesystems are case-insensitive, so
+// `/Users/x/.CLAUDE/projects/s.jsonl` IS the transcript; and the guard-home
+// fragment is seeded lowercased for the Bash side, which left the edit tools
+// unable to match a mixed-case home at all.
+TouchesConfig(idx) :- EditTarget(idx, p), ConfigPathFrag(f),
+    @str_contains(@normalize_cmd(p), f) = 1.
 // Bash writes: a config path together with a write operator (redirect/tee/sed -i/cp/mv/ln).
 TouchesConfig(idx) :- ShellCommand(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, ">") = 1.
 TouchesConfig(idx) :- ShellCommand(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "tee ") = 1.
@@ -440,9 +545,126 @@ TouchesConfig(idx) :- ShellCommand(idx, cmd), ConfigPathFrag(f), @str_contains(c
 TouchesConfig(idx) :- ShellCommand(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "mv ") = 1.
 TouchesConfig(idx) :- ShellCommand(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "ln ") = 1.
 
+// ...and the same against the NORMALIZED command. The fragments are lowercase
+// and the raw form is not, so `.CLAUDE/settings.json` — the same file on a
+// case-insensitive filesystem — matched none of the rules above.
+TouchesConfig(idx) :- ShellNorm(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, ">") = 1.
+TouchesConfig(idx) :- ShellNorm(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "tee ") = 1.
+TouchesConfig(idx) :- ShellNorm(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "sed -i") = 1.
+TouchesConfig(idx) :- ShellNorm(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "cp ") = 1.
+TouchesConfig(idx) :- ShellNorm(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "mv ") = 1.
+TouchesConfig(idx) :- ShellNorm(idx, cmd), ConfigPathFrag(f), @str_contains(cmd, f) = 1, @str_contains(cmd, "ln ") = 1.
+
 // @deny_message: Writing agent/editor config (hooks, MCP servers, rules) is blocked — a known persistence vector
-// @suggestion: Edit project source instead; change agent/editor settings yourself outside the agent session
+// @suggestion: Edit project source instead; agent/editor settings have to be changed outside the agent session
 Unauthorized(idx) :- RuleEnabled("config_persistence"), TouchesConfig(idx).
+
+/* ── 5b. sasy-guard's own installation (Tier-1, @ask) ───────────────── */
+// The rules above protect the HOST agent's config. This one protects the guard
+// itself: everything under the guard home (~/.sasy by default) — config.json,
+// the baked policies and their manifest, the binaries, the credential store.
+//
+// It is the shortest path around every other gate in this file. config.json
+// alone carries `failMode` (flip it to "open" and an unreachable engine allows
+// instead of denies), `ruleOff` (name a group and it stops running), `endpoint`
+// (point the daemon at something that says yes), and `policyProfile` (bind
+// deny-all's opposite). Rewriting security.dl, or replacing the binary in
+// bin/, ends enforcement outright. None of that is reachable through the
+// config_persistence paths above, which cover `.claude/…` and editor config.
+//
+// SOFT (@ask), not a hard deny, because reconfiguring the guard is a legitimate
+// thing to ask an agent to do — including in this repository, where changing a
+// threshold and reinstalling is ordinary work. The value is that it cannot
+// happen SILENTLY: an edit here surfaces as a confirmation naming the file. A
+// hard deny would push the work outside the session without making the change
+// any more visible. Turning the group off (`ruleOff: ["guard_config"]`) is
+// itself an edit to config.json, so it asks once before it can take effect.
+//
+// LIMITS. This gates the guard's FILES, not every route to the same outcome:
+//   · A `sasy-watch setup` re-run, an env override (SASY_HOME, SASY_FAIL_OPEN)
+//     or killing the daemon reconfigure enforcement without writing these paths.
+//   · The Bash side asks on ANY command naming a guard path, reads included, so
+//     `cat ~/.sasy/config.json` asks. Over-asking is the safe direction here and
+//     the prompt names the file.
+//   · The path is matched as a substring of the command text, so ordinary shell
+//     word construction hides it: `~/.sa""sy/config.json` and `~/.sa'sy'/…` both
+//     resolve to the guard home while the literal `.sasy` never appears. That is
+//     the general limit of substring matching over shell text (issue #196) and it
+//     applies to `config_persistence` above in exactly the same way; the
+//     tokenizer is a tripwire here, not a soundness boundary.
+.decl GuardHomeFrag(frag: symbol)
+// The leading DOT is what distinguishes the guard home from an ordinary folder:
+// a project directory that merely ends in `sasy` (this repository's own
+// `SASY/sasy/…`) has no dot before it and cannot match. No trailing slash — with
+// one, the directory ITSELF was invisible, so `rm -rf ~/.sasy`, `mv ~/.sasy
+// /tmp/off` and `chmod 000 ~/.sasy` removed or disabled the entire installation
+// without asking, which is the loudest version of what this group exists to
+// catch. Matching without the slash also covers a sibling like `.sasy-old`,
+// which is over-asking rather than under.
+GuardHomeFrag(".sasy").
+// ...and wherever the guard ACTUALLY lives, which the daemon sends as an
+// absolute path. `.sasy` alone protects only the default location: under
+// `SASY_HOME=/opt/sasy` the literal never appears, so rewriting the controlling
+// config was not escalated at all. Both facts hold, so a non-default install is
+// covered without weakening the default.
+GuardHomeFrag(frag) :- PolicyMetadata("guard_home_frag", frag, _).
+
+// Bash side: naming a guard path in a shell command asks, with NO exemption for
+// reading. Two narrower shapes were tried first and both failed in the same way.
+//
+// Listing the write verbs and firing on those is the wrong way round: the list
+// has no end (`install -m755 … ~/.sasy/bin/sasy`, `dd of=~/.sasy/config.json`,
+// `rsync`, `perl -pi -e`, `python -c`, an editor in batch mode), and every verb
+// missing from it silently REPLACES the binary or the policy.
+//
+// Inverting that — ask by default, exempt a single simple command running one of
+// a short list of inspection tools — is the right direction but could not be made
+// sound. The exemption sprang a hole every time it was examined: `find … -delete`
+// deletes, `less -O out` writes its input to a file, `more` is `less` on several
+// systems, GNU `diff --output=FILE` writes, `file -C -m src` compiles a magic
+// file. Each of those reads like an inspection tool, so the list can only be
+// trusted after reading every flag of every entry, and one wrong entry costs the
+// group. The last one settled it: `@cmd_invokes` only reports that a read verb
+// appears SOMEWHERE, and ShellNorm collapses a newline to a space, so a two-line
+// script — `cat ~/.sasy/config.json` then `rm ~/.sasy/config.json` — satisfied
+// every condition while deleting the file. There is no newline left to test for
+// at that point, and no primitive here counts commands.
+//
+// So reading the guard's own files asks too. That costs one confirmation on an
+// uncommon action, and buys a rule with no exemption left to attack. The edit
+// tools stay narrower only in that they match the tool's declared `file_path`
+// rather than a whole command line — both sides match the path as TEXT, so the
+// boundary is approximate in the harmless direction as well: a neighbouring
+// `/tmp/.sasy-backup/` or a file named `notes.sasy.txt` asks too.
+.decl TouchesGuardConfig(idx: unsigned)
+TouchesGuardConfig(idx) :- EditTarget(idx, p), GuardHomeFrag(f), @str_contains(p, f) = 1.
+TouchesGuardConfig(idx) :- EditTarget(idx, p), GuardHomeFrag(f),
+    @str_contains(@normalize_cmd(p), f) = 1.
+// Matched against the NORMALIZED command, so a `\`+newline continuation cannot
+// split the path out of recognition and the match is case-insensitive.
+TouchesGuardConfig(idx) :- ShellNorm(idx, n), GuardHomeFrag(f), @str_contains(n, f) = 1.
+
+// @ask
+// @deny_message: Touching sasy-guard's own installation (config, policy, or binary under ~/.sasy) — this is what decides whether every other check runs. Shell commands are asked about even when they only read, because reading and writing cannot be told apart reliably in a command line
+// @suggestion: Approve when prompted only if you asked for this; otherwise edit ~/.sasy directly rather than through the agent
+Unauthorized(idx) :- RuleEnabled("guard_config"), TouchesGuardConfig(idx).
+
+// A project's own `.sasy/` directory — `project.json` (what the scan gate
+// excludes and which severities gate) and `overrides.json` (findings a person
+// accepted) — is guard configuration that lives in the repository. The daemon
+// reads it from HEAD, never from the working tree, so changing it means
+// committing it; and a push that carries such a commit asks here, so the change
+// is seen by a person before it governs the remote. The edit itself already
+// asked above (`.sasy` is in the path); this catches the routes that name no
+// path — `git apply`, a checkout, a script — at the moment the change leaves
+// the machine.
+.decl SastProjectChanged(idx: unsigned, path: symbol)
+SastProjectChanged(idx, path) :- ActionMetadata(idx, "sast_project_changed", path, _).
+
+// @ask
+// @deny_message: This push changes the project's .sasy/ configuration, which decides what the scan gate excludes, overrides, and blocks
+// @suggestion: Approve when prompted only if the change to .sasy/ was reviewed and is intended; the committed version takes effect from the next session on
+Unauthorized(idx) :- RuleEnabled("guard_config"), IsPush(idx), SastProjectChanged(idx, _).
 
 /* ── 6. Agent-redirect environment variables (Tier-0, hard deny) ───── */
 // Setting the API base URL / auth token redirects the agent to an attacker
@@ -513,10 +735,32 @@ FromTrustedHost(idx) :-
     @count_urls(cmd) < 2,
     rd = @registrable_domain(cmd), rd != "", TrustedDomain(rd).
 
-// @ask
-// @deny_message: Piping a downloaded script straight into a shell (curl|sh) from an unrecognized source
-// @suggestion: Download and read the script first, or approve if this is a trusted installer
-Unauthorized(idx) :- RuleEnabled("curl_sh"), PipeToInterp(idx), !FromTrustedHost(idx).
+// The reason NAMES the registrable domain, for two reasons. A prompt that says
+// "an unrecognized source" without saying which one asks the user to judge
+// something it did not show them. And the daemon reads that name back to offer
+// "trust it for this session" — @registrable_domain is the ONLY implementation
+// of eTLD+1 here (a curated multi-label suffix set over a last-two-labels rule),
+// so having the daemon derive its own would be a second copy that can disagree;
+// a naive last-two-labels copy reduces foo.co.uk to co.uk and trusts a whole
+// TLD. The value the reason states is by construction the value TrustedDomain
+// compares against, which is what makes the round-trip safe.
+//
+// Two rules, not one with a disjunctive body: `( … ; … )` is outside the
+// checkable Datalog fragment and the checker's front end refuses it outright.
+DenialReason(idx, "ask",
+  cat("Piping a downloaded script straight into a shell (curl|sh) from an unrecognized source (",
+      cat(rd, ")")),
+  "Download and read the script before running it; approve when prompted only if this is a trusted installer") :-
+    RuleEnabled("curl_sh"), PipeToInterp(idx), !FromTrustedHost(idx),
+    ShellCommand(idx, cmd), rd = @registrable_domain(cmd), rd != "".
+
+// No URL the domain extractor could name (a piped fetch it can't parse): ask
+// with the original wording, and the daemon simply finds nothing to offer.
+DenialReason(idx, "ask",
+  "Piping a downloaded script straight into a shell (curl|sh) from an unrecognized source",
+  "Download and read the script before running it; approve when prompted only if this is a trusted installer") :-
+    RuleEnabled("curl_sh"), PipeToInterp(idx), !FromTrustedHost(idx),
+    ShellCommand(idx, cmd), @registrable_domain(cmd) = "".
 
 /* ── 8. Hidden Unicode tags (Tier-0, taint source → @ask) ──────────── */
 // Invisible Tags-block text (U+E0000–U+E007F) is a prompt-injection carrier. It
@@ -527,18 +771,57 @@ Unauthorized(idx) :- RuleEnabled("curl_sh"), PipeToInterp(idx), !FromTrustedHost
 // approve clears the source (detaint), deny hard-blocks it.
 
 // Any source carrying invisible / display-deceptive Unicode — not just the
-// Tags block, but also bidi overrides (Trojan Source), zero-width / invisible
-// format chars (which also evade the substring command gates), and
-// variation-selector byte smuggling. Tag-block text is additionally decodable
-// and surfaced verbatim below.
+// Tags block, but also bidi overrides (Trojan Source), interlinear annotation,
+// and variation-selector byte smuggling. Tag-block text is additionally
+// decodable and surfaced verbatim below.
+// Scattered payload-free format chars (a stray BOM in a fetched file, one ZWSP
+// at a word boundary in copied web text, soft hyphens in HTML prose) do NOT
+// taint the source: @deceptive_unicode_class returns 1 only past the harmless
+// bound (more than 4, or two in one contiguous invisible run — adjacent, or
+// separated only by invisible chars that are in no class; any VISIBLE char
+// breaks the run) and 2 for every class that stays dangerous with an empty
+// decode. "In no class" is the default-ignorable PROPERTY, not a list of
+// codepoints, in both the run test and the volume tally below — otherwise an
+// unlisted invisible could be interleaved to break a blob the reader sees
+// unbroken, or used as padding no tally counts. The variation-selector channel
+// reads a run the same way: two selectors in one invisible blob, however many
+// invisibles sit between them. A large VOLUME of blank characters taints on its
+// own — more than 256 class-free invisibles IN RUNS of two or more (the Braille
+// blank, the Hangul fillers, ZWJ/ZWNJ, the bidi marks, and every other codepoint
+// that renders as nothing; a lone one is ordinary in Persian/Arabic/Indic text
+// and displaces nothing, so only a contiguous wall counts). They carry nothing individually, which is why each one is
+// exempt above, but a wall of them pushes earlier content out of the window the
+// agent can still see and pads a message past where a human skimming it stops
+// reading. Word POSITION is deliberately NOT a trigger: a format char between
+// two letters ("previ"+ZWSP+"ous instructions") looks like intent, but a split
+// in a SOURCE subverts nothing here. Splitting only defeats a LITERAL match,
+// and every substring test this policy runs over message CONTENTS is
+// presence-based — the GitleaksRun/GitleaksClean/OsvClean markers, which UNLOCK
+// a gate — so a split makes them fail to match and the gate stays SHUT. The
+// substring tests a split COULD subvert run over the ACTION, and the command
+// sink rule at the end of this section keeps the strict per-char test there.
+// SCOPED, not universal: the policy does run two ABSENCE tests over a source
+// node's ARGS — ReviewArtifact's `@str_contains(st, "preview") = 0` exclusions
+// below — and a split there ("p"+ZWSP+"review-deploy") passes the exclusion. It
+// buys nothing today (naming the subagent "code-review" credits a review just
+// as well, no split needed), but a future absence test that actually gates
+// something cannot lean on this exemption.
+// LIMIT: a visible injected instruction on a fetched page is not covered — but
+// it never was, and is not covered on a page carrying no invisible char either;
+// what arms against it is the page being untrusted context (public_push/exfil).
+// Nor is the HINT reported: an in-word format char is weak evidence the text was
+// worked on deliberately, and below the bound that evidence is dropped. Traded
+// on purpose — a split RENDERS as the unsplit word, so the instruction it
+// decorates is in plain sight to reader and model alike, and reporting the hint
+// costs a prompt on ordinary copied prose.
 // Gated on the source so the whole group (label, @ask, deny) cascades off AND
-// the per-message @has_deceptive_unicode scan is skipped when disabled. NOTE:
-// the @ask DenialReason and the DetaintDenied deny below inherit this gate
-// transitively (they join on HiddenUnicodeSource) — they carry no explicit
-// RuleEnabled. Any future producer of HiddenUnicodeSource MUST also gate on
+// the per-message unicode scan is skipped when disabled. NOTE: the @ask
+// DenialReason and the DetaintDenied deny below inherit this gate transitively
+// (they join on HiddenUnicodeSource) — they carry no explicit RuleEnabled. Any
+// future producer of HiddenUnicodeSource MUST also gate on
 // RuleEnabled("hidden_unicode") or the group becomes un-disablable.
 .decl HiddenUnicodeSource(id: symbol)
-HiddenUnicodeSource(id) :- RuleEnabled("hidden_unicode"), SentMessage(id, m), @has_deceptive_unicode(m.contents) = 1.
+HiddenUnicodeSource(id) :- RuleEnabled("hidden_unicode"), SentMessage(id, m), @deceptive_unicode_class(m.contents) >= 1.
 
 // Remembered detaint decisions (node-bound), projected from policy metadata.
 .decl DetaintApproved(node: symbol)
@@ -546,10 +829,16 @@ DetaintApproved(n) :- PolicyMetadata("detaint_approved", n, _).
 .decl DetaintDenied(node: symbol)
 DetaintDenied(n) :- PolicyMetadata("detaint_denied", n, _).
 
-// Undecided source the current action depends on → @ask, showing the decoded
-// hidden text. Written as DenialReason directly so the message can carry the
-// functor-decoded text ("ask" kind does not derive Unauthorized, so the action
-// stays allow-but-confirm).
+// Undecided source the current action depends on → @ask, describing what the
+// source carries. Written as DenialReason directly so the message can carry the
+// functor-built description ("ask" kind does not derive Unauthorized, so the
+// action stays allow-but-confirm).
+// The prompt shows @deceptive_unicode_summary, not the raw decode: the decode is
+// EMPTY for every class that hides no readable text — a bidi override, bulk
+// blank padding, a Tags framing char — so a prompt built from it alone told the
+// user nothing was found in exactly the cases it was firing on. The summary
+// names each class with an exact count and its dominant codepoint, and carries
+// the decoded Tags text verbatim when there is any.
 // Label the source by its provenance — the tool that produced it, when known.
 .decl HiddenSourceHasTool(s: symbol)
 HiddenSourceHasTool(s) :- HiddenUnicodeSource(s), ToolResult(s, _, _).
@@ -570,28 +859,85 @@ DenialReason(idx, "ask", reason,
              "Approve ONLY if this hidden text is benign (remembered as a detaint for this source). If it looks malicious, do NOT approve — revert the session to before the message that introduced it, since the agent has already read it.") :-
     Actions(idx, _), !InteractionTool(idx), InContext(s), HiddenUnicodeSource(s),
     !DetaintApproved(s), !DetaintDenied(s),
-    HiddenSourceLabel(s, label), SentMessage(s, m), decoded = @decode_unicode_tags(m.contents),
+    HiddenSourceLabel(s, label), SentMessage(s, m), summary = @deceptive_unicode_summary(m.contents),
     reason = cat("Invisible or display-deceptive Unicode in ",
-                 cat(label, cat(" — the agent reads it as text you may not see. Decoded hidden text (if any): ", decoded))).
+                 cat(label, cat(" — the agent reads it as text you may not see. Found: ", summary))).
 
 // A source the user already rejected → hard block (deny, no re-ask). The
 // !DetaintApproved guard makes an explicit approval authoritative: a later deny
 // (e.g. a mis-scoped one) can't silently revoke a source the user vouched for.
 //
-// Scoped to CurrentDepends(s) (data-dependency reachability), NOT session-wide
-// and NOT InContext(s): only actions that transitively depend on the denied
-// source are blocked. InContext = Current ∪ CurrentDepends would over-block,
-// because the daemon's frontier (Current) is a union across threads — a
-// concurrent subagent that never read the tainted data would inherit it.
-// CurrentDepends follows the dependency (parent) chain, so it keeps blocking
-// every action on the branch that descends from the source — including those
-// after the denied action — while a *reverted* branch correctly drops it. The
-// daemon keeps that chain intact across records it would otherwise skip (system
-// messages, snapshots), so the source isn't lost as the conversation advances.
-// @deny_message: Acting on content from a hidden-text source you previously rejected
-// @suggestion: This taint source was denied; revert the session to before the message that introduced it
-Unauthorized(idx) :- Actions(idx, _), !InteractionTool(idx), CurrentDepends(s), HiddenUnicodeSource(s),
+// Scoped to InContext(s) — Current ∪ CurrentDepends — which MUST be the same
+// scope the @ask above uses. It was CurrentDepends alone (dependency
+// reachability, excluding the frontier itself), to avoid blocking a concurrent
+// subagent that never read the tainted data, since the daemon's frontier is a
+// union across threads. But the ask is suppressed by !DetaintDenied(s) at the
+// WIDER scope, so on the difference between the two — a denied source sitting in
+// the frontier rather than strictly upstream of it — the ask went quiet and this
+// deny never fired: the action was ALLOWED. Answering "malicious" was therefore
+// strictly more permissive than not answering at all, and it went that way in the
+// case that matters most, the first action after a poisoned tool result lands.
+// A narrower deny than the ask is unsound whenever the ask defers to it; the
+// over-blocking that motivated the narrow scope is the correct trade against a
+// verdict the user made deliberately, and it is bounded — CurrentDepends still
+// carries the block down the dependency chain, and a reverted branch still drops
+// it, because a source that leaves the context leaves InContext too.
+// @deny_message: Acting on content from a hidden-text source that was rejected earlier
+// @suggestion: This source was rejected; clearing it needs the session rewound to before the message that introduced it
+Unauthorized(idx) :- Actions(idx, _), !InteractionTool(idx), InContext(s), HiddenUnicodeSource(s),
     DetaintDenied(s), !DetaintApproved(s).
+
+// Sink rule (Tier-1, @ask) — display-deceptive Unicode in the command the agent
+// is about to RUN, as opposed to the Tier-0 taint source above. This is what
+// makes the source-side exemption safe: inside a command a single format char
+// splits a needle ("cu" + ZWSP + "rl" defeats @str_contains) and has no place in
+// a command anyone meant to type, so the strict per-char @has_deceptive_unicode
+// applies here, NOT the class threshold. Independent of the taint flow: it fires
+// on the action itself, with no source, dependency, or detaint involved.
+// SCOPE: @has_deceptive_unicode's low-FP exclusions apply here too — ZWJ/ZWNJ
+// (U+200C/U+200D), the bidi marks (U+200E/U+200F/U+061C), a lone presentation
+// selector (U+FE00–FE0F), the Braille blank (U+2800), the Hangul fillers
+// (U+115F/U+1160/U+3164/U+FFA0) and the other class-free invisibles are
+// invisible but do NOT fire the strict test on their own: one of them in a
+// command is a strange space, not an attack, and tainting it is a false
+// positive. Their VOLUME is a different matter, so the SECOND rule below adds
+// the same bulk-padding trigger the source rule uses (@deceptive_unicode_class
+// = 1 for more than 256 of them sitting in RUNS of two or more). Without it a
+// command could carry a wall of blanks and be allowed with no prompt at all —
+// pushing what actually runs out of the host's own raw command preview, which
+// SASY does not render. Once a prompt IS shown, SASY's copy is safe by
+// construction: promptSafeText names and collapses every invisible character
+// and spends its length budget on visible ones only.
+// The class threshold is used ONLY as this extra trigger; it never relaxes the
+// strict test, so a single format char in a command still @asks.
+//
+// TWO RULES for one helper relation, not one rule with a disjunctive body:
+// `( A ; B )` is outside the checkable Datalog fragment — the translation
+// checker's front end (packages/policy-ir) refuses it as a "disjunctive rule
+// body" — and this verdict rule is one of the rules that front end admits, so
+// it must stay inside the fragment. Two rules for one relation ARE the
+// disjunction, in the fragment. The verdict-rule count is unchanged:
+// DeceptiveCommand derives no DenialReason of its own.
+// Both helper rules carry the group gate so a disabled group does no scanning
+// at all (the verdict rule keeps its own copy, so the gate is visible on the
+// rule it gates).
+.decl DeceptiveCommand(idx: unsigned)
+DeceptiveCommand(idx) :- RuleEnabled("hidden_unicode"), ShellCommand(idx, cmd), @has_deceptive_unicode(cmd) = 1.
+DeceptiveCommand(idx) :- RuleEnabled("hidden_unicode"), ShellCommand(idx, cmd), @deceptive_unicode_class(cmd) >= 1.
+// …and the class-free invisibles, but only where they are CODE. One of them in a
+// command's data is a strange space in an echo argument — the false positive the
+// exemption exists for — while one in a program name disguises what runs: a repo
+// can ship an executable named `cu<U+200D>rl`, which reads as curl to whoever
+// skims the transcript, executes, and matches neither the curl gate (it looks for
+// the literal "curl") nor the strict test (which passes over U+200D). Quoted
+// regions and here-doc bodies are data; a substitution inside double quotes is
+// code. See issue #282.
+DeceptiveCommand(idx) :- RuleEnabled("hidden_unicode"), ShellCommand(idx, cmd), @cmd_hidden_in_code(cmd) = 1.
+
+// @ask
+// @deny_message: Invisible Unicode characters inside a shell command — they can disguise what actually runs or defeat pattern checks
+// @suggestion: Re-enter the command without the hidden characters instead of copying it from the source
+Unauthorized(idx) :- RuleEnabled("hidden_unicode"), DeceptiveCommand(idx), !InteractionTool(idx).
 
 /* ── 9. Public push / issue while tainted (Tier-1, @ask) ───────────── */
 // Pushing/posting to a PUBLIC repo while untrusted or secret-bearing content is
@@ -618,7 +964,7 @@ IsRepoSink(idx) :- ShellCommand(idx, cmd), @str_contains(cmd, "gh ") = 1, @str_c
 
 // @ask
 // @deny_message: Pushing/posting to a PUBLIC repo while untrusted or secret-bearing content is in context (possible exfiltration to an attacker-readable location)
-// @suggestion: Push to a private remote, or approve if this is intended and the destination is trusted
+// @suggestion: Push to a private remote instead; approve when prompted only if this destination is trusted and intended
 Unauthorized(idx) :- RuleEnabled("public_push"), IsRepoSink(idx), RepoIsPublic(), TaintedContext().
 
 /* ── 10. Security-review gate on push (Tier-1, @ask) ───────────────── */
@@ -630,6 +976,12 @@ Unauthorized(idx) :- RuleEnabled("public_push"), IsRepoSink(idx), RepoIsPublic()
 // A review artifact node — a code/security-review subagent or a review skill.
 // Excludes "preview" so a preview-deploy tool can't pose as a review (mirrors
 // isReviewArtifact in review-diff.ts — keep the two in sync).
+// NOTE for anyone extending these: the "preview" tests are ABSENCE tests over a
+// SOURCE node's args, the one shape the hidden-unicode source exemption does not
+// cover — "p"+ZWSP+"review-deploy" passes the exclusion, and the Bash command
+// sink does not see tool args. Harmless here (any name containing "review"
+// credits an artifact anyway, so a split gains nothing), but a NEW exclusion
+// that actually decides a gate needs its own defence.
 .decl ReviewArtifact(id: symbol)
 // The subagent-LAUNCH tools, each carrying `subagent_type`. Named `Agent` in this
 // host and `Task` / `TaskCreate` / `TaskRun` in others; the daemon's isReviewArtifact
@@ -691,6 +1043,30 @@ ReviewDiffLinesConfigured() :- PolicyMetadata("review_diff_lines", _, _).
 ReviewDiffThreshold(n) :- PolicyMetadata("review_diff_lines", v, _), n = to_number(v).
 ReviewDiffThreshold(150) :- !ReviewDiffLinesConfigured().
 
+// A diff measured FROM the review anchor: what changed SINCE a review, as
+// opposed to the same number of lines that no review ever saw. The daemon emits
+// this only when every measured push target used the anchor as its base.
+.decl ReviewAnchored(idx: unsigned)
+ReviewAnchored(idx) :- ActionMetadata(idx, "review_anchored", _, _).
+
+// Threshold for that post-review case — configurable, default 500. It is
+// DELIBERATELY looser than the never-reviewed bound. A fix answering review
+// findings carries its regression test and its doc update in the same change
+// (this project requires all three), so a one-line behaviour fix routinely runs
+// to a few hundred lines; measured on the branch that added this gate's own
+// rules, the median such fix was ~350 lines and only the outliers passed 500.
+// Grading those on the never-reviewed bound re-gates the fix for the review that
+// just happened, which trains people to push through the prompt rather than read
+// it. The looser bound is not free — it rides on the same trust as the anchor
+// itself, since launching a review is what sets the anchor — but it widens
+// nothing that the anchor did not already grant: an anchor set at HEAD already
+// makes the diff since it zero.
+.decl ReviewFixLinesConfigured()
+ReviewFixLinesConfigured() :- PolicyMetadata("review_fix_diff_lines", _, _).
+.decl ReviewFixThreshold(n: number)
+ReviewFixThreshold(n) :- PolicyMetadata("review_fix_diff_lines", v, _), n = to_number(v).
+ReviewFixThreshold(500) :- !ReviewFixLinesConfigured().
+
 // FALLBACK (transcript path, only when no git diff is available — a non-repo
 // context, which can't actually push): per-edit char threshold, default 800.
 .decl ReviewThresholdConfigured()
@@ -700,17 +1076,137 @@ ReviewEditThreshold(n) :- PolicyMetadata("review_edit_threshold", v, _), n = to_
 ReviewEditThreshold(800) :- !ReviewThresholdConfigured().
 
 .decl LargeUnreviewedEdit(idx: unsigned)
-// Git path: the accurate unreviewed diff exceeds the line threshold.
-LargeUnreviewedEdit(idx) :- ReviewDiffAvailable(idx),
+// Git path, never reviewed: the whole unpushed diff exceeds the strict bound.
+LargeUnreviewedEdit(idx) :- ReviewDiffAvailable(idx), !ReviewAnchored(idx),
     UnreviewedDiffLines(idx, n), ReviewDiffThreshold(t), n > t.
+// Git path, measured since a review: graded on the looser post-review bound.
+LargeUnreviewedEdit(idx) :- ReviewDiffAvailable(idx), ReviewAnchored(idx),
+    UnreviewedDiffLines(idx, n), ReviewFixThreshold(t), n > t.
 // Transcript fallback: a large single edit unreviewed since it was made.
 LargeUnreviewedEdit(idx) :- IsPush(idx), !ReviewDiffAvailable(idx),
     EditSize(e, n), ReviewEditThreshold(t), n > t, !ReviewedEdit(e).
 
 // @ask
 // @deny_message: Pushing substantial code edits not reviewed since they were made (large changes — incl. audit-suggested fixes — need a (re-)review)
-// @suggestion: Run a code-review subagent or /review skill on the latest changes, then retry the push
+// @suggestion: The agent must review the latest changes (a code-review subagent, or the /review skill) before this push is allowed
 Unauthorized(idx) :- RuleEnabled("review_gate"), IsPush(idx), LargeUnreviewedEdit(idx).
+
+/* ── Static analysis (opt-in; Tier-0 deny or Tier-1 @ask, by severity) ──
+   Gates a push on findings from the project's OWN static analyser, read by the
+   daemon out of a SARIF file and attached as ActionMetadata. The guard runs no
+   scanner and bundles none: any engine that emits SARIF works (Semgrep,
+   opengrep, CodeQL, Bandit, Pysa), so which one runs is the policy owner's
+   decision. That also keeps engine licensing out of this product — CodeQL, for
+   one, may not be used on a non-open-source codebase without paid GitHub
+   Advanced Security, and may not be redistributed or hosted by us at all;
+   reading a file their licensed scanner wrote raises neither question.
+
+   This does NOT replace review_gate, and the two answer different questions. The
+   review gate establishes that somebody looked at the change; it cannot
+   establish that what they looked at is safe. Static analysis finds what the
+   look missed. Both, or neither claim is worth much.
+
+   ENTIRELY OFF unless configured: with no sast_action facts seeded, SastAction
+   is empty and neither rule below can fire, whatever the SARIF says. */
+.decl SastAction(sev: symbol, action: symbol)
+SastAction(sev, action) :- PolicyMetadata("sast_action", sev, action).
+.decl SastConfigured()
+SastConfigured() :- SastAction(_, _).
+
+
+.decl SastFindings(idx: unsigned, sev: symbol, n: number)
+SastFindings(idx, sev, n) :- ActionMetadata(idx, "sast_finding", sev, v), n = to_number(v).
+
+// Results that are missing, unreadable, or older than the code they describe.
+// The daemon reports this rather than "no findings", so deleting the file is not
+// a way through the gate; the policy treats it as the absence of evidence.
+.decl SastStale(idx: unsigned)
+SastStale(idx) :- ActionMetadata(idx, "sast_stale", _, _).
+
+// @deny_message: Static analysis found problems at a severity the policy blocks
+// @suggestion: Fix the reported findings and re-run the analyser until the blocking severities are clear, then push
+Unauthorized(idx) :- RuleEnabled("sast"), IsPush(idx),
+    SastFindings(idx, sev, n), n > 0, SastAction(sev, "block").
+
+// @ask
+// @deny_message: Static analysis found problems at a severity the policy asks about
+// @suggestion: Review the reported findings; fix them and re-run the analyser, or approve the push when prompted
+Unauthorized(idx) :- RuleEnabled("sast"), IsPush(idx),
+    SastFindings(idx, sev, n), n > 0, SastAction(sev, "ask").
+
+// @ask
+// @deny_message: Static-analysis results are missing or older than the code being pushed, so nothing was checked
+// @suggestion: Re-run the analyser so its results cover the latest edits, then push; or approve the push when prompted
+Unauthorized(idx) :- RuleEnabled("sast"), IsPush(idx), SastConfigured(), SastStale(idx).
+
+// The project's committed `.sasy/project.json` and `.sasy/overrides.json` are
+// applied by the daemon before the facts above are built: an overridden
+// finding is set aside (`sast_overridden` counts them, nothing gates on it)
+// and a demoted finding arrives as `low`. When either file is present at HEAD
+// but cannot be honoured, the daemon says so rather than quietly applying
+// neither — a typo in the project's STRICTER table must not weaken the gate,
+// and the person who wrote an override should learn that it never applied.
+.decl SastProjectInvalid(idx: unsigned, why: symbol)
+SastProjectInvalid(idx, why) :- ActionMetadata(idx, "sast_project_invalid", why, _).
+
+// @ask
+// @deny_message: The project's .sasy/ configuration at HEAD could not be read, so its exclusions and overrides were not applied
+// @suggestion: Fix .sasy/project.json or .sasy/overrides.json (the daemon log names the problem) and commit, then push; or approve the push when prompted
+Unauthorized(idx) :- RuleEnabled("sast"), IsPush(idx), SastConfigured(), SastProjectInvalid(idx, _).
+
+/* ── 10b. Findings in files THIS session edited ────────────────────────
+   The counts above cannot say WHERE a finding is, so a policy cannot treat
+   "you just wrote this" differently from "it was already there". The daemon
+   now emits one `sast_at(<repo-relative file>, <severity>)` per file and
+   severity actually found, which SARIF has carried all along — the location
+   and severity of every result were parsed and then aggregated away.
+
+   Paths are compared by reconstructing the absolute path (`repo_root` carries
+   its trailing slash) rather than by substring, so `src/a.py` cannot match an
+   edit to `vendor/src/a.py`.
+
+   OFF unless `sast_edited_action` is seeded, exactly like the rules above: a
+   deployment that has not asked to be stricter about its own edits sees no
+   change. */
+.decl SastAt(idx: unsigned, file: symbol, sev: symbol)
+SastAt(idx, file, sev) :- ActionMetadata(idx, "sast_at", file, sev).
+
+// The detail list is bounded daemon-side. When it overflows, `sast_at` no
+// longer names every file, so a rule keyed on it would silently stop firing.
+.decl SastDetailCapped(idx: unsigned)
+SastDetailCapped(idx) :- ActionMetadata(idx, "sast_detail_capped", _, _).
+
+.decl SastEditedAction(sev: symbol, action: symbol)
+SastEditedAction(sev, action) :- PolicyMetadata("sast_edited_action", sev, action).
+.decl SastEditedConfigured()
+SastEditedConfigured() :- SastEditedAction(_, _).
+// Either table counts as "the owner asked for this gate". Recognising only the
+// first meant a deployment that configured ONLY the edited-file table got no
+// staleness check: delete the SARIF, edit a file, push, and the stale rule
+// above could not fire because SastConfigured was false.
+SastConfigured() :- SastEditedAction(_, _).
+
+.decl SastFileEditedHere(file: symbol)
+SastFileEditedHere(file) :-
+    SastAt(_, file, _), RecentEdit(id), ToolResult(id, _, args), RepoRoot(root),
+    @json_get_str(args, "file_path") = cat(root, file).
+
+// @deny_message: Static analysis flagged a file this session edited, at a severity the policy blocks
+// @suggestion: Fix the finding in the file you edited and re-run the analyser, then push
+Unauthorized(idx) :- RuleEnabled("sast"), IsPush(idx),
+    SastAt(idx, file, sev), SastFileEditedHere(file), SastEditedAction(sev, "block").
+
+// @ask
+// @deny_message: Static analysis flagged a file this session edited
+// @suggestion: Review the finding in the file you edited; fix it and re-run the analyser, or approve the push when prompted
+Unauthorized(idx) :- RuleEnabled("sast"), IsPush(idx),
+    SastAt(idx, file, sev), SastFileEditedHere(file), SastEditedAction(sev, "ask").
+
+// @ask
+// @deny_message: Static-analysis detail was truncated, so findings in files edited this session cannot be identified
+// @suggestion: Narrow the analyser scope (or set sastScope to "changed") so the results fit, then push; or approve the push when prompted
+Unauthorized(idx) :- RuleEnabled("sast"), IsPush(idx),
+    SastEditedConfigured(), SastDetailCapped(idx).
 
 /* ── 11. Supply-chain cooldown (Tier-0 deny + Tier-1 @ask) ──────────────
    Gates dependency installs on daemon-resolved per-action metadata: the daemon
@@ -746,7 +1242,7 @@ EnrichUnavailable(idx, grp) :- ActionMetadata(idx, "enrich_unavailable", grp, _)
 
 DenialReason(idx, "ask",
   "Could not verify external context for this action — package advisories or repository visibility were unreachable, so a security check was skipped",
-  "Re-run when the network/registry is reachable, or approve to proceed without the check if you trust this action.") :-
+  "Retry when the network/registry is reachable, or approve when prompted to proceed without the check.") :-
     Actions(idx, _), EnrichUnavailable(idx, grp), RuleEnabled(grp).
 
 // @deny_message: A dependency in this install is flagged malicious by OSV (MAL-) — blocked
@@ -758,7 +1254,7 @@ TooNew(idx, pkg) :-
     PackageAgeDays(idx, pkg, d), CooldownDays(n), d < n, !SecurityUpdate(idx, pkg).
 // @ask
 // @deny_message: A dependency is newer than the cooldown window — malicious releases are typically caught and unpublished within days
-// @suggestion: Approve if you trust this release, pin an older vetted version, or wait out the cooldown window
+// @suggestion: Pin an older vetted version or wait out the cooldown window; approve when prompted only if this release is trusted
 Unauthorized(idx) :- RuleEnabled("supply_chain"), TooNew(idx, _).
 
 /* ── 12. OSV scan gate on dependency changes before push (Tier-1, @ask) ──
@@ -781,31 +1277,49 @@ DepManifestFrag("go.mod").           DepManifestFrag("go.sum").
 DepManifestFrag("Gemfile").          DepManifestFrag("Gemfile.lock").
 
 // An edit (in the slice) to a dependency manifest/lockfile.
-.decl DependencyEdit(id: symbol)
-DependencyEdit(e) :- RecentEdit(e), ToolResult(e, "Edit", args),
-    DepManifestFrag(f), p = @json_get_str(args, "file_path"), @str_contains(p, f) = 1.
-DependencyEdit(e) :- RecentEdit(e), ToolResult(e, "Write", args),
-    DepManifestFrag(f), p = @json_get_str(args, "file_path"), @str_contains(p, f) = 1.
-DependencyEdit(e) :- RecentEdit(e), ToolResult(e, "MultiEdit", args),
-    DepManifestFrag(f), p = @json_get_str(args, "file_path"), @str_contains(p, f) = 1.
+.decl DependencyEdit(id: symbol, path: symbol)
+DependencyEdit(e, p) :- RecentEdit(e), ToolResult(e, "Edit", args),
+    DepManifestFrag(f), p = @json_get_str(args, "__sasy_edit_path"), p != "",
+    @str_contains(p, f) = 1.
+DependencyEdit(e, p) :- RecentEdit(e), ToolResult(e, "Write", args),
+    DepManifestFrag(f), p = @json_get_str(args, "__sasy_edit_path"), p != "",
+    @str_contains(p, f) = 1.
+DependencyEdit(e, p) :- RecentEdit(e), ToolResult(e, "MultiEdit", args),
+    DepManifestFrag(f), p = @json_get_str(args, "__sasy_edit_path"), p != "",
+    @str_contains(p, f) = 1.
+// If an older host did not provide cwd, retain the edit as uncovered. It can
+// still trigger the gate but can never be covered by an unscoped scan.
+DependencyEdit(e, p) :- RecentEdit(e), ToolResult(e, "Edit", args),
+    @json_get_str(args, "__sasy_edit_path") = "", DepManifestFrag(f),
+    p = @json_get_str(args, "file_path"), @str_contains(p, f) = 1.
+DependencyEdit(e, p) :- RecentEdit(e), ToolResult(e, "Write", args),
+    @json_get_str(args, "__sasy_edit_path") = "", DepManifestFrag(f),
+    p = @json_get_str(args, "file_path"), @str_contains(p, f) = 1.
+DependencyEdit(e, p) :- RecentEdit(e), ToolResult(e, "MultiEdit", args),
+    @json_get_str(args, "__sasy_edit_path") = "", DepManifestFrag(f),
+    p = @json_get_str(args, "file_path"), @str_contains(p, f) = 1.
 
-// A clean osv-scanner run = a Bash result that INVOKED osv-scanner (cmd_invokes,
-// not a substring → no echo-spoof) and reported no vulns.
-.decl OsvClean(id: symbol)
-OsvClean(id) :-
+// The transcript mapper, not Datalog string matching, validates OSV evidence:
+// a sole canonical command, target `.`, structured non-error outcome, clean
+// summary line, and the session cwd are required before these reserved fields
+// are attached. User-supplied fields with these names are stripped.
+.decl OsvClean(id: symbol, scope: symbol)
+OsvClean(id, scope) :-
     InContext(id), ToolResult(id, "Bash", args),
-    cmd = @json_get_str(args, "command"), @cmd_invokes(cmd, "osv-scanner") = 1,
-    SentMessage(id, msg), @str_contains(msg.contents, "No vulnerabilities found") = 1.
+    @json_get_str(args, "__sasy_osv_clean") = "1",
+    scope = @json_get_str(args, "__sasy_osv_scope"), scope != "".
 
-// A dependency edit is covered iff a clean osv-scanner run ran after it.
+// A dependency edit is covered iff a clean project-root scan ran after it and
+// the edited manifest is actually inside the scanned scope.
 .decl OsvCoveredEdit(edit: symbol)
-OsvCoveredEdit(e) :- DependencyEdit(e), OsvClean(s), Reaches(e, s).
+OsvCoveredEdit(e) :- DependencyEdit(e, p), OsvClean(s, root),
+    @str_starts_with(p, root) = 1, Reaches(e, s).
 .decl UncoveredDependencyEdit()
-UncoveredDependencyEdit() :- DependencyEdit(e), !OsvCoveredEdit(e).
+UncoveredDependencyEdit() :- DependencyEdit(e, _), !OsvCoveredEdit(e).
 
 // @ask
 // @deny_message: Dependency files changed without a clean osv-scanner run — possible vulnerable/known-bad dependencies
-// @suggestion: Run `osv-scanner` over the project (or the changed manifests) until clean, then push; or approve to push anyway
+// @suggestion: Run `osv-scanner scan source --recursive .` from the project root until clean, then push; or approve the push when prompted
 Unauthorized(idx) :- RuleEnabled("dep_scan"), IsPush(idx), UncoveredDependencyEdit().
 
 /* ── Reaches definition (sink-rooted; see the .decl near the top) ──────────
@@ -819,7 +1333,7 @@ Unauthorized(idx) :- RuleEnabled("dep_scan"), IsPush(idx), UncoveredDependencyEd
 ReachSink(s) :- GitleaksRun(s).
 ReachSink(s) :- GitleaksClean(s).
 ReachSink(r) :- ReviewArtifact(r).
-ReachSink(s) :- OsvClean(s).
+ReachSink(s) :- OsvClean(s, _).
 
 // Relevance gate (mirrors common_policy's *PolicyRelevant pattern): Reaches is
 // consumed ONLY by secret_scan / review_gate / dep_scan, all of which fire only on

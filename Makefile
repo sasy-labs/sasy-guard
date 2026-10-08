@@ -8,7 +8,7 @@
 .PHONY: setup \
         claude-code-guard-demo claude-code-guard-demo-step \
         claude-code-guard-scenario claude-code-guard-serve \
-        pi-guard-demo \
+        pi-guard-demo claude-code-guard-mod-demo \
         docs docs-build docs-install
 
 # ── Setup ──────────────────────────────────────────
@@ -55,6 +55,26 @@ claude-code-guard-serve:
 #   make pi-guard-demo GROUP=data_loss
 pi-guard-demo:
 	$(UV_RUN_SDK) python -m demo.pi_guard.serve --scenario $(or $(GROUP),toxic_flow)
+
+# Mod demo: the same scripted mock, with `claude` loading the sasy-guard-mod
+# plugin from this checkout, so the mod checks each call and its status entry,
+# decision band and /guard show. Each run creates a fresh project in the
+# system temp folder, outside this repository and with a git repository of its
+# own (so scripted git commands never reach this checkout), with the scenario
+# fixtures; PROJECT names your own project instead (then no fixture files are
+# written):
+#   make claude-code-guard-mod-demo GROUP=agent_redirect
+claude-code-guard-mod-demo:
+	@if [ -n "$(PROJECT)" ]; then \
+	  dir="$(PROJECT)"; fixtures=""; \
+	else \
+	  dir=$$(mktemp -d "$${TMPDIR:-/tmp}/sasy-guard-mod-demo.XXXXXX") && [ -d "$$dir" ] \
+	    || { echo "error: could not create a temporary demo project" >&2; exit 1; }; \
+	  git -C "$$dir" init -q || exit 1; fixtures="--setup-fixtures"; \
+	fi; \
+	$(UV_RUN_SDK) python -m demo.cc_guard.serve_mock \
+	  --scenario $(or $(GROUP),toxic_flow) $$fixtures \
+	  --project "$$dir" --plugin-dir "$(CURDIR)/plugins/sasy-guard-mod"
 
 # ── Documentation ──────────────────────────────────
 
