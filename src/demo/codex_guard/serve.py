@@ -124,6 +124,11 @@ def write_codex_home(home: Path, base_url: str) -> None:
         'name = "sasy-guard demo (scripted)"\n'
         f'base_url = "{base_url}"\n'
         'wire_api = "responses"\n'
+        "\n"
+        "# No background app server: the demo leaves nothing running when Codex\n"
+        "# quits, and each session ends (SessionEnd) when you quit.\n"
+        "[features]\n"
+        "daemon_auto_start = false\n"
     )
     hook = {"type": "command", "command": str(_HOOK), "timeout": 60}
     end = {"type": "command", "command": str(_HOOK), "timeout": 3}
