@@ -2,10 +2,10 @@
 # sasy-guard PreToolUse hook for the Codex CLI.
 #
 # Codex runs this before every tool call, with the call as JSON on stdin. The
-# hook asks the local sasy-watch daemon for a decision and prints a denial when
-# there is one. Codex lets a call through when a hook fails, so every failure
-# here (no daemon, no access token, a bad answer) is turned into a denial
-# (exit code 2, the reason on stderr) unless SASY_FAIL_OPEN=true.
+# hook asks the local sasy-watch daemon for a decision and blocks the call
+# (exit code 2, the reason on stderr) when it is denied. Codex lets a call
+# through when a hook fails, so every failure here (no daemon, no access
+# token, a bad answer) is turned into a denial too, unless SASY_FAIL_OPEN=true.
 set -u
 
 # shellcheck source=lib.sh
@@ -14,6 +14,35 @@ set -u
 deny() {
   echo "[SASY] security check unavailable ($1)" >&2
   exit 2
+}
+
+# The reason in a denial (`permissionDecisionReason`), its JSON string escapes
+# decoded. Prints nothing when there is none.
+reason_of() {
+  printf '%s' "$1" | awk '
+    { s = s $0 "\n" }
+    END {
+      i = index(s, "\"permissionDecisionReason\"")
+      if (!i) exit
+      s = substr(s, i + 26)
+      if (!sub(/^[ \t\r\n]*:[ \t\r\n]*"/, "", s)) exit
+      out = ""
+      for (j = 1; j <= length(s); j++) {
+        c = substr(s, j, 1)
+        if (c == "\"") break
+        if (c == "\\") {
+          j++; e = substr(s, j, 1)
+          if (e == "n") out = out "\n"
+          else if (e == "t") out = out "\t"
+          else if (e == "r") out = out
+          else if (e == "u") { out = out "\\u" substr(s, j + 1, 4); j += 4 }
+          else out = out e
+          continue
+        }
+        out = out c
+      }
+      printf "%s", out
+    }'
 }
 
 # Starts the daemon if it is down, as the Claude Code hooks do, then waits up
@@ -68,13 +97,16 @@ out=$(printf '%s' "$body" | check "$auth") || {
 }
 
 # The daemon answers an allow with `{}`, and a denial with its reason; anything
-# else is not a decision, and is blocked.
+# else is not a decision, and is blocked. A denial is given to Codex as exit
+# code 2 with the reason on stderr, never as JSON: output Codex cannot read
+# would count as a failed hook, and Codex runs the call after a failed hook.
 if [ "$(printf '%s' "$out" | tr -d '[:space:]')" = "{}" ]; then
   exit 0 # An allow is no output: Codex runs the call.
 fi
 if printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"'; then
-  printf '%s' "$out"
-  exit 0
+  reason=$(reason_of "$out")
+  printf '%s\n' "${reason:-[SASY] blocked by policy}" >&2
+  exit 2
 fi
 deny "sasy-watch gave an answer that is not a decision"
 exit 0

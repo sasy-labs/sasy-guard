@@ -46,7 +46,7 @@ after(() => {
 // process can answer it.
 function runHook(env, input = JSON.stringify(CALL)) {
   return new Promise((resolve) => {
-    const child = spawn("bash", [HOOK], { env: { PATH: process.env.PATH, HOME: home, SASY_HOME: home, SASY_WATCH_BIN: join(home, "no-such-bin"), ...env } });
+    const child = spawn("bash", [HOOK], { env: { PATH: process.env.PATH, HOME: process.env.HOME, SASY_HOME: home, SASY_WATCH_BIN: join(home, "no-such-bin"), ...env } });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
@@ -56,13 +56,16 @@ function runHook(env, input = JSON.stringify(CALL)) {
   });
 }
 
-test("a denial is passed to Codex as the daemon wrote it; the call is marked as Codex's", async () => {
+test("a denial blocks the call with the daemon's reason; the call is marked as Codex's", async () => {
   requests = [];
   status = 200;
-  answer = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "[SASY] blocked" } };
+  answer = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "[SASY] blocked\n\nFix:\n  don't" } };
   const out = await runHook({ SASY_WATCH_PORT: String(port) });
-  assert.equal(out.code, 0);
-  assert.deepEqual(JSON.parse(out.stdout), answer);
+  // Exit code 2 with the reason on stderr: Codex blocks the call and gives the
+  // model the reason. Nothing on stdout that Codex could fail to read.
+  assert.equal(out.code, 2);
+  assert.equal(out.stderr, "[SASY] blocked\n\nFix:\n  don't\n");
+  assert.equal(out.stdout, "");
   const sent = JSON.parse(requests[0].body);
   assert.equal(sent.agent, "codex");
   assert.equal(sent.tool_use_id, "call_1");
@@ -109,8 +112,13 @@ test("a denial is read however it is spaced; any other answer than an allow is b
   status = 200;
   answer = '{\n  "hookSpecificOutput": { "permissionDecision" : "deny", "permissionDecisionReason": "[SASY] spaced" }\n}';
   let out = await runHook({ SASY_WATCH_PORT: String(port) });
-  assert.equal(out.code, 0);
-  assert.match(out.stdout, /spaced/);
+  assert.equal(out.code, 2);
+  assert.match(out.stderr, /spaced/);
+  // A truncated denial still blocks: the reason falls back to a generic one.
+  answer = '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDeci';
+  out = await runHook({ SASY_WATCH_PORT: String(port) });
+  assert.equal(out.code, 2);
+  assert.match(out.stderr, /\[SASY\] blocked by policy/);
   // A JSON object that is neither `{}` nor a denial is not a decision.
   answer = { error: "engine unavailable" };
   out = await runHook({ SASY_WATCH_PORT: String(port) });
@@ -122,7 +130,7 @@ test("status.sh reports a token others can read as not usable", async () => {
   const header = join(home, `hook-auth-${port}.header`);
   const status = () =>
     new Promise((resolve) => {
-      const child = spawn("bash", [join(dirname(HOOK), "status.sh")], { env: { PATH: process.env.PATH, HOME: home, SASY_HOME: home, SASY_WATCH_PORT: String(port) } });
+      const child = spawn("bash", [join(dirname(HOOK), "status.sh")], { env: { PATH: process.env.PATH, HOME: process.env.HOME, SASY_HOME: home, SASY_WATCH_PORT: String(port) } });
       let stdout = "";
       child.stdout.on("data", (d) => (stdout += d));
       child.on("close", () => resolve(stdout));

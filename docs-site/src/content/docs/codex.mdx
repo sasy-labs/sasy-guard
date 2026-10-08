@@ -215,8 +215,9 @@ codex ──PreToolUse hook──▶ sasy-watch daemon ──gRPC──▶ sasy 
 ```
 
 - The **hook** (`hook.sh`) gets each tool call from Codex as JSON, marks it as
-  a Codex call, and sends it to the daemon. It passes on the daemon's denials
-  and lets everything else run. Running it requires `bash` and `curl`.
+  a Codex call, and sends it to the daemon. When the daemon denies the call,
+  the hook blocks it and gives Codex the daemon's reason; when the daemon
+  allows it, the call runs. Running it requires `bash` and `curl`.
 - The **daemon** translates Codex's tools into the tool names the policy uses.
   A shell command becomes `Bash`, a patch over one file becomes `Write` or
   `Edit` with the file's absolute path, and a patch over several files is
@@ -256,6 +257,9 @@ number blocks every call rather than falling back to the default port.
   sends input to a program Codex already started. A command typed into an
   interactive shell that way is not checked; the command that started the
   shell was.
+- **Leave Codex's code mode off.** Code mode, an experimental Codex feature
+  that is off by default, lets the model run tools from a script. Tools run
+  that way may skip the hook, so sasy-guard does not cover them.
 - **Checks that look at a repository use the session's folder.** Codex does
   not give its hook the folder a command runs in when the model picks another
   one (`workdir`). Checks that inspect a git repository, such as the rules for
