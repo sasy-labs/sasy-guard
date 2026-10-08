@@ -9,10 +9,11 @@ import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 [Codex CLI](https://github.com/openai/codex) is OpenAI's coding agent for the
 terminal. Codex can run **hooks**: commands it starts at fixed points in a
-session. A **PreToolUse hook** runs before every tool call (a shell command, a
+session. A **PreToolUse hook** runs before a tool call (a shell command, a
 file edit, and so on), and it can block the call. The **sasy-guard Codex hook**
-uses this to check every call against the same SASY security policy that
-[Sasy Guard for Claude Code](/claude-code/) and [for pi](/pi/) enforce.
+uses this to check each call against the same SASY security policy that
+[Sasy Guard for Claude Code](/claude-code/) and [for pi](/pi/) enforce. Codex
+runs the hook for most tools; "Limitations" below lists the few it skips.
 
 The hook asks the local **`sasy-watch` daemon**, the background process that
 `sasy-guard install` sets up, whether the call is allowed:
@@ -250,8 +251,19 @@ number blocks every call rather than falling back to the default port.
 - **A hook Codex stops runs the call.** If the hook does not answer within its
   timeout (60 seconds above), Codex runs the call. The hook bounds its own
   waits well under that limit; this case needs a very slow or stuck machine.
-- **Hosted tools are not checked.** Codex does not run hooks for tools the
-  model provider runs itself, such as web search.
+- **Some tools run without the hook.** Codex does not run hooks for tools the
+  model provider runs itself, such as web search, or for `write_stdin`, which
+  sends input to a program Codex already started. A command typed into an
+  interactive shell that way is not checked; the command that started the
+  shell was.
+- **Checks that look at a repository use the session's folder.** Codex does
+  not give its hook the folder a command runs in when the model picks another
+  one (`workdir`). Checks that inspect a git repository, such as the rules for
+  pushes, look at the folder the session started in.
+- **Reviews run inside Codex do not count as reviews.** After large edits the
+  policy blocks `git push` until a review has run. sasy-guard does not
+  recognize a review that Codex runs through one of its own agents, and Codex
+  cannot ask you to approve the push, so run that push yourself.
 - **Sessions without a session file are blocked.** `codex exec --ephemeral`
   writes no session file. Without one, the daemon has no history to judge by,
   and it blocks every call in such a session.

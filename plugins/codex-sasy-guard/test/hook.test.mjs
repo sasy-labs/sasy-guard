@@ -105,6 +105,37 @@ test("no usable answer blocks the call (Codex would otherwise run it)", async ()
   assert.equal(out.code, 2);
 });
 
+test("a denial is read however it is spaced; any other answer than an allow is blocked", async () => {
+  status = 200;
+  answer = '{\n  "hookSpecificOutput": { "permissionDecision" : "deny", "permissionDecisionReason": "[SASY] spaced" }\n}';
+  let out = await runHook({ SASY_WATCH_PORT: String(port) });
+  assert.equal(out.code, 0);
+  assert.match(out.stdout, /spaced/);
+  // A JSON object that is neither `{}` nor a denial is not a decision.
+  answer = { error: "engine unavailable" };
+  out = await runHook({ SASY_WATCH_PORT: String(port) });
+  assert.equal(out.code, 2);
+  assert.match(out.stderr, /not a decision/);
+});
+
+test("status.sh reports a token others can read as not usable", async () => {
+  const header = join(home, `hook-auth-${port}.header`);
+  const status = () =>
+    new Promise((resolve) => {
+      const child = spawn("bash", [join(dirname(HOOK), "status.sh")], { env: { PATH: process.env.PATH, HOME: home, SASY_HOME: home, SASY_WATCH_PORT: String(port) } });
+      let stdout = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.on("close", () => resolve(stdout));
+    });
+  chmodSync(header, 0o644);
+  try {
+    assert.match(await status(), /missing or not private/);
+  } finally {
+    chmodSync(header, 0o600);
+  }
+  assert.match(await status(), /access token: \//);
+});
+
 test("an access token others can read is not trusted", async () => {
   const header = join(home, `hook-auth-${port}.header`);
   chmodSync(header, 0o644);

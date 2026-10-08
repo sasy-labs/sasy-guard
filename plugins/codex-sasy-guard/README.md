@@ -1,7 +1,8 @@
 # sasy-guard for Codex CLI
 
-A Codex CLI PreToolUse hook that checks every tool call against the SASY
-security policy, through the local `sasy-watch` daemon, before the call runs.
+A Codex CLI PreToolUse hook that checks Codex's tool calls against the SASY
+security policy, through the local `sasy-watch` daemon, before each call runs.
+(Codex runs no hook for hosted tools such as web search, or for `write_stdin`.)
 
 - **allow**: the call runs.
 - **deny**: the call is blocked; Codex's model reads the policy's reason and

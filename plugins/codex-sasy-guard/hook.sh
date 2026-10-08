@@ -8,37 +8,32 @@
 # (exit code 2, the reason on stderr) unless SASY_FAIL_OPEN=true.
 set -u
 
-SASY_HOME="${SASY_HOME:-$HOME/.sasy}"
-PORT="${SASY_WATCH_PORT:-51711}"
-BASE="http://127.0.0.1:${PORT}"
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
 
 deny() {
   echo "[SASY] security check unavailable ($1)" >&2
   exit 2
 }
 
-# The daemon's access token: a regular file owned by this user and readable by
-# no one else, as the daemon writes it. Prints its path when it can be trusted.
-auth_file() {
-  f="$SASY_HOME/hook-auth-${PORT}.header"
-  [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] && [ -r "$f" ] || return 1
-  mode=$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f" 2>/dev/null) || return 1
-  case "$mode" in '' | *[!0-7]*) return 1 ;; esac
-  [ "$(( 8#$mode & 8#077 ))" -eq 0 ] || return 1
-  printf '%s' "$f"
-}
-
 # Starts the daemon if it is down, as the Claude Code hooks do, then waits up
 # to 15 seconds for its policy engine. Every wait is bounded so the hook
-# answers well within its 60-second timeout in Codex: worst case one check
-# (15s), the start (6s), the wait (15s) and a second check (15s).
+# answers within its 60-second timeout in Codex: at worst one check (15s), two
+# health probes (2s), the start (6s), the wait (16s) and a second check (15s).
+ready() {
+  curl -fsS -m 1 "${BASE}/healthz" 2>/dev/null | grep -q '"ready":true'
+}
 ensure_daemon() {
-  curl -fsS -m 1 "${BASE}/healthz" >/dev/null 2>&1 && return 0
-  bin="${SASY_WATCH_BIN:-$SASY_HOME/bin/sasy-watch}"
-  [ -x "$bin" ] || return 1
-  "$bin" ensure --wait-ms 6000 >/dev/null 2>&1
-  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-    curl -fsS -m 1 "${BASE}/healthz" 2>/dev/null | grep -q '"ready":true' && return 0
+  ready && return 0
+  if ! curl -fsS -m 1 "${BASE}/healthz" >/dev/null 2>&1; then
+    bin="${SASY_WATCH_BIN:-$SASY_HOME/bin/sasy-watch}"
+    [ -x "$bin" ] || return 1
+    "$bin" ensure --wait-ms 6000 >/dev/null 2>&1
+  fi
+  # Bounded by the clock, not by a count of tries.
+  deadline=$((SECONDS + 15))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    ready && return 0
     sleep 1
   done
   return 0
@@ -72,10 +67,14 @@ out=$(printf '%s' "$body" | check "$auth") || {
   deny "sasy-watch did not answer on port ${PORT}"
 }
 
-case "$out" in
-  *'"permissionDecision":"deny"'*) printf '%s' "$out" ;;
-  # An allow is no output: Codex runs the call.
-  '{'*) ;;
-  *) deny "sasy-watch gave an answer that is not a decision" ;;
-esac
+# The daemon answers an allow with `{}`, and a denial with its reason; anything
+# else is not a decision, and is blocked.
+if [ "$(printf '%s' "$out" | tr -d '[:space:]')" = "{}" ]; then
+  exit 0 # An allow is no output: Codex runs the call.
+fi
+if printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"'; then
+  printf '%s' "$out"
+  exit 0
+fi
+deny "sasy-watch gave an answer that is not a decision"
 exit 0
