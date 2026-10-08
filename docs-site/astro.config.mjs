@@ -22,6 +22,10 @@ export default defineConfig({
             { label: 'Why sasy-guard, not hooks?', slug: 'why-sasy-guard' },
           ],
         },
+        {
+          label: 'pi',
+          items: [{ label: 'Enforce Policy on pi', slug: 'pi' }],
+        },
       ],
     }),
   ],

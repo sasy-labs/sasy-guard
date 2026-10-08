@@ -1,0 +1,9 @@
+{
+  "name": "sasy-guard",
+  "private": true,
+  "description": "Lets `pi install git:github.com/sasy-labs/sasy-guard` find the pi extension in plugins/pi-sasy-guard",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./plugins/pi-sasy-guard/index.ts"]
+  }
+}

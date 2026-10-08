@@ -8,7 +8,7 @@
 .PHONY: setup \
         claude-code-guard-demo claude-code-guard-demo-step \
         claude-code-guard-scenario claude-code-guard-serve \
-        claude-code-guard-mod-demo \
+        pi-guard-demo claude-code-guard-mod-demo \
         docs docs-build docs-install
 
 # ── Setup ──────────────────────────────────────────
@@ -48,6 +48,13 @@ claude-code-guard-scenario:
 claude-code-guard-serve:
 	$(UV_RUN_SDK) python -m demo.cc_guard.serve_mock \
 	  --scenario $(or $(GROUP),toxic_flow) $(if $(PROJECT),--project $(PROJECT))
+
+# pi coding agent: serve the scripted mock for a real `pi` session with the
+# sasy-guard pi extension loaded from this checkout (needs `pi` on PATH and
+# `sasy-guard install`). GROUP picks the scenario (default toxic_flow):
+#   make pi-guard-demo GROUP=data_loss
+pi-guard-demo:
+	$(UV_RUN_SDK) python -m demo.pi_guard.serve --scenario $(or $(GROUP),toxic_flow)
 
 # Mod demo: the same scripted mock, with `claude` loading the sasy-guard-mod
 # plugin from this checkout, so the mod checks each call and its status entry,
