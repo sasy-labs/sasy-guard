@@ -158,14 +158,29 @@ test("an access token others can read is not trusted", async () => {
   }
 });
 
-test("fail-open lets a call through only when a trusted token is in place", async () => {
-  // A daemon that errors, with a trusted token: let through.
+test("fail-open lets a call through only when an authenticated daemon does not answer", async () => {
+  // A daemon that answers with an error is not "no answer": still blocked.
   status = 500;
   answer = {};
   let out = await runHook({ SASY_WATCH_PORT: String(port), SASY_FAIL_OPEN: "true" });
-  assert.equal(out.code, 0);
-  assert.equal(out.stdout, "");
+  assert.equal(out.code, 2);
+  assert.match(out.stderr, /answered with an error/);
   // No token on the port: still blocked.
   out = await runHook({ SASY_WATCH_PORT: "9", SASY_FAIL_OPEN: "true" });
   assert.equal(out.code, 2);
+  // A trusted token, but nothing listens on the port: let through.
+  const header = join(home, "hook-auth-9.header");
+  writeFileSync(header, `x-sasy-hook-token: ${TOKEN}\n`);
+  chmodSync(header, 0o600);
+  try {
+    out = await runHook({ SASY_WATCH_PORT: "9", SASY_FAIL_OPEN: "true" });
+    assert.equal(out.code, 0);
+    assert.equal(out.stdout, "");
+    // Without SASY_FAIL_OPEN the same call is blocked.
+    out = await runHook({ SASY_WATCH_PORT: "9" });
+    assert.equal(out.code, 2);
+    assert.match(out.stderr, /did not answer/);
+  } finally {
+    rmSync(header, { force: true });
+  }
 });

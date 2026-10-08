@@ -88,13 +88,24 @@ esac
 body="{\"agent\":\"codex\",${payload#\{}"
 
 auth=$(auth_file) || { ensure_daemon; auth=$(auth_file); } || deny "sasy-watch is not running on port ${PORT} (no access token)"
-out=$(printf '%s' "$body" | check "$auth") || {
-  ensure_daemon && auth=$(auth_file) && out=$(printf '%s' "$body" | check "$auth")
-} || {
-  # Missing authentication never inherits the fail-open, as in the Claude Code hooks.
-  if [ "${SASY_FAIL_OPEN:-false}" = "true" ] && auth_file >/dev/null; then exit 0; fi
-  deny "sasy-watch did not answer on port ${PORT}"
-}
+out=$(printf '%s' "$body" | check "$auth")
+rc=$?
+if [ "$rc" -ne 0 ] && ensure_daemon && auth=$(auth_file); then
+  out=$(printf '%s' "$body" | check "$auth")
+  rc=$?
+fi
+if [ "$rc" -ne 0 ]; then
+  # Only a daemon that does not answer at all can be let through with
+  # SASY_FAIL_OPEN: curl could not connect (7), timed out (28), or got no
+  # reply (52, 56). An error answer, a missing curl, or missing authentication
+  # never inherits the fail-open, as in the Claude Code hooks.
+  case "$rc" in
+    7 | 28 | 52 | 56)
+      if [ "${SASY_FAIL_OPEN:-false}" = "true" ] && auth_file >/dev/null; then exit 0; fi
+      deny "sasy-watch did not answer on port ${PORT}" ;;
+    *) deny "sasy-watch answered with an error on port ${PORT}" ;;
+  esac
+fi
 
 # The daemon answers an allow with `{}`, and a denial with its reason; anything
 # else is not a decision, and is blocked. A denial is given to Codex as exit

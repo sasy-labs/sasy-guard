@@ -219,14 +219,16 @@ codex ──PreToolUse hook──▶ sasy-watch daemon ──gRPC──▶ sasy 
   the hook blocks it and gives Codex the daemon's reason; when the daemon
   allows it, the call runs. Running it requires `bash` and `curl`.
 - The **daemon** translates Codex's tools into the tool names the policy uses.
-  A shell command becomes `Bash`, a patch over one file becomes `Write` or
-  `Edit` with the file's absolute path, and a patch over several files is
-  checked as one command that names each file. The daemon reads Codex's **session file**
+  A shell command becomes `Bash`, and a patch becomes an edit (`Write`,
+  `Edit`, or `MultiEdit` for several files) that names each file by its
+  absolute path. The daemon reads Codex's **session file**
   (`~/.codex/sessions/…/rollout-*.jsonl`) and builds the session's
   **dependency graph**: which messages and tool results each action came from.
   Before every check it reads what Codex appended since the last one. When you
   resume a session, Codex appends to the same file, and the daemon picks up
-  where it was; after a daemon restart, it reads the file from the start.
+  where it was; after a daemon restart, it reads the file from the start. A
+  subagent (an agent Codex starts to help the main one) writes its own file;
+  the daemon follows it too, as part of the same session.
 - The **engine** evaluates the policy over that graph and answers allow, ask
   or deny; the daemon turns an ask into a deny for Codex.
 
