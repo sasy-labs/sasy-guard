@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
+import subprocess
 import sys
 import tempfile
 import threading
@@ -162,6 +163,9 @@ def main(argv: list[str] | None = None) -> int:
     proj = run / "project"
     proj.mkdir()
     created = _setup_project(proj)
+    # A git repository of its own, so Codex trusts this folder only, not the
+    # repository the demo was started from.
+    subprocess.run(["git", "init", "-q", str(proj)], check=True)
 
     mock = MockResponses([list(t) for t in scenario.turns])
     mock.start()
