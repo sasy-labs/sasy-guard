@@ -1,0 +1,47 @@
+# sasy-guard for Codex CLI
+
+A Codex CLI PreToolUse hook that checks every tool call against the SASY
+security policy, through the local `sasy-watch` daemon, before the call runs.
+
+- **allow**: the call runs.
+- **deny**: the call is blocked; Codex's model reads the policy's reason and
+  fix.
+- **needs approval**: blocked as well, because a Codex hook cannot ask you.
+- **no answer** from the daemon: the call is blocked (`SASY_FAIL_OPEN=true` to
+  let calls through instead, only while the daemon's access token is in place).
+
+## Install
+
+Codex support needs `sasy-guard` runtime newer than 0.4.0, and Codex CLI
+0.161.0 or newer.
+
+```sh
+uv tool install sasy-guard && sasy-guard install   # the policy engine + daemon
+```
+
+Add the hook to `~/.codex/hooks.json`, with this script's absolute path:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/sasy-guard/plugins/codex-sasy-guard/hook.sh",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Start `codex` and, when it says **Hooks need review**, trust the hook.
+`status.sh` reports whether the daemon is up.
+
+Tests: `node --test test/`. Full documentation: the "Enforce Policy on Codex
+CLI" page of the sasy-guard docs.
