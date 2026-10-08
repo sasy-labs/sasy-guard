@@ -13,9 +13,11 @@ fi
 
 # Forward the verbatim hook payload (session_id, transcript_path, cwd) so the
 # daemon can locate and tail the transcript for graph ingestion.
+AUTH_FILE=$(hook_auth_file) || exit 0
+
 RESP=$(printf '%s' "$PAYLOAD" | \
   curl -fsS -m 60 -X POST "${BASE}/v1/session/start" \
-    -H 'content-type: application/json' --data-binary @- 2>/dev/null)
+    -H 'content-type: application/json' -H "@${AUTH_FILE}" --data-binary @- 2>/dev/null) || exit 0
 
 cat <<EOF
 {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"SASY policy enforcement is active for this session. Tool calls are checked against a security policy; denied calls return a [SASY] reason — relay it to the user and follow its suggested fix rather than retrying or working around it."}}
