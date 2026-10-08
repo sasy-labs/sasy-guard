@@ -461,6 +461,29 @@ test("no answer from the daemon blocks the call (fail closed)", async () => {
   assert.match(out.reason, /^\[SASY\] security check unavailable \(sasy-watch unreachable/);
 });
 
+test("fail-open lets a call through only when an authenticated daemon does not answer", async () => {
+  process.env.SASY_FAIL_OPEN = "true";
+  const header = join(home, "hook-auth-9.header");
+  try {
+    // No token for the port: authentication is missing, so the call is still blocked.
+    const unauthenticated = (await harness({ daemonPort: 9 }).fire("tool_call", readEnv)) as { block: boolean };
+    assert.equal(unauthenticated.block, true);
+    // A trusted token, but nothing answers on the port: the call goes through.
+    writeFileSync(header, `x-sasy-hook-token: ${TOKEN}\n`);
+    chmodSync(header, 0o600);
+    assert.equal(await harness({ daemonPort: 9 }).fire("tool_call", readEnv), undefined);
+  } finally {
+    delete process.env.SASY_FAIL_OPEN;
+    rmSync(header, { force: true });
+  }
+});
+
+test("a SASY_WATCH_PORT that is not a port fails closed instead of using the default", async () => {
+  const client = new DaemonClient({ env: { SASY_HOME: home, SASY_WATCH_PORT: `${port}x` } });
+  await assert.rejects(client.post("/v1/pretooluse", {}), /is not a port/);
+  assert.match(await client.health(), /not checked/);
+});
+
 test("user ! commands are checked too; a denial replaces their result", async () => {
   const h = harness();
   answer = deny("[SASY] Destructive recursive delete is blocked");

@@ -259,7 +259,10 @@ export function createGuard(opts: GuardOptions = {}) {
         if (d) return d;
         throw new Error("sasy-watch gave an answer that is not a decision");
       } catch (err) {
-        if (process.env.SASY_FAIL_OPEN === "true") return { kind: "allow" };
+        // As in the hook scripts, only an authenticated daemon that does not
+        // answer is let through: missing or untrusted authentication, or an
+        // unusable port, never inherits the fail-open.
+        if (process.env.SASY_FAIL_OPEN === "true" && !client.portError && client.token()) return { kind: "allow" };
         return { kind: "deny", reason: `[SASY] security check unavailable (${(err as Error).message})` };
       }
     }

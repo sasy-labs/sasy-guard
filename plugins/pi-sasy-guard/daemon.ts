@@ -21,13 +21,19 @@ export class DaemonUnavailable extends Error {}
 export class DaemonClient {
   readonly home: string;
   readonly port: number;
+  /** Why SASY_WATCH_PORT cannot be used; every request then fails closed. */
+  readonly portError: string | undefined;
   private readonly env: NodeJS.ProcessEnv;
 
   constructor(opts: DaemonOptions = {}) {
     this.env = opts.env ?? process.env;
     this.home = this.env.SASY_HOME || join(homedir(), ".sasy");
-    const port = Number(this.env.SASY_WATCH_PORT || DEFAULT_PORT);
-    this.port = Number.isInteger(port) && port > 0 && port < 65536 ? port : DEFAULT_PORT;
+    const raw = this.env.SASY_WATCH_PORT;
+    const port = raw ? Number(raw) : DEFAULT_PORT;
+    // A port that is set but invalid is an error, as it is for the hook
+    // scripts: falling back to the default could reach another daemon.
+    this.portError = Number.isInteger(port) && port > 0 && port < 65536 ? undefined : `SASY_WATCH_PORT ${JSON.stringify(raw)} is not a port`;
+    this.port = this.portError ? DEFAULT_PORT : port;
   }
 
   get base(): string {
@@ -60,6 +66,7 @@ export class DaemonClient {
     // The daemon writes its token when it starts and requires it on every
     // request; without one, whatever answers on the port is not trusted, and
     // the daemon is treated as not running (so postEnsuring starts it).
+    if (this.portError) throw new DaemonUnavailable(this.portError);
     const token = this.token();
     if (!token) throw new DaemonUnavailable(`sasy-watch unreachable on port ${this.port} (no hook token)`);
     let res: Response;
@@ -102,6 +109,7 @@ export class DaemonClient {
 
   /** One line on daemon health for /guard, from GET /healthz. */
   async health(): Promise<string> {
+    if (this.portError) return `daemon: not checked (${this.portError})`;
     try {
       const res = await fetch(`${this.base}/healthz`, { signal: AbortSignal.timeout(3_000) });
       if (res.status !== 200) return `daemon: ${this.base}/healthz answered HTTP ${res.status}`;

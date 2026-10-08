@@ -172,10 +172,13 @@ pi ──extension──▶ sasy-watch daemon ──gRPC──▶ sasy engine
 The check **fails closed**: if the daemon does not answer (it is not installed,
 or it is down and cannot be started), the call is blocked with
 `[SASY] security check unavailable`. Setting `SASY_FAIL_OPEN=true` lets calls
-through instead. The extension only talks to a daemon that has written its
-access token (`~/.sasy/hook-auth-<port>.header`, readable only by you); a
+through instead, but only when the daemon's access token is in place and the
+daemon does not answer; a missing or untrusted token still blocks the call, as
+in the Claude Code hooks. The extension only talks to a daemon that has written
+its access token (`~/.sasy/hook-auth-<port>.header`, readable only by you); a
 process answering on the port without that token is not trusted, and the
-extension tries to start the daemon instead.
+extension tries to start the daemon instead. A `SASY_WATCH_PORT` that is not a
+port number blocks every call rather than falling back to the default port.
 
 ## Limitations
 

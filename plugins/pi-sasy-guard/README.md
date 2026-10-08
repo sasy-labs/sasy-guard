@@ -8,7 +8,7 @@ a SASY security policy before it runs.
 - **ask**: a dialog whose default choice blocks; "Yes, run it once" lets it run.
   With no UI (print or JSON mode) the call is blocked.
 - **no answer** from the daemon: the call is blocked (`SASY_FAIL_OPEN=true` to
-  let calls through instead).
+  let calls through instead, only while the daemon's access token is in place).
 
 Decisions show in pi's footer status, in a widget above the editor, and in
 `/guard` (daemon health and recent decisions; `/guard clear` hides the widget).
