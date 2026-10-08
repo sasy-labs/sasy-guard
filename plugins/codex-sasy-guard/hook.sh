@@ -7,6 +7,9 @@
 # through when a hook fails, so every failure here (no daemon, no access
 # token, a bad answer) is turned into a denial too, unless SASY_FAIL_OPEN=true.
 set -u
+# Codex runs the call when a hook exits with anything but 0 or 2, so any
+# other exit (an error in this script) is turned into a denial.
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then echo "[SASY] security check unavailable (hook error)" >&2; exit 2; fi' EXIT
 
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"

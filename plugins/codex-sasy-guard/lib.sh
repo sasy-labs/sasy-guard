@@ -1,7 +1,7 @@
 #!/bin/bash
 # Shared by the Codex hook and status.sh: the daemon's address and its access
 # token, checked the same way in both.
-SASY_HOME="${SASY_HOME:-$HOME/.sasy}"
+SASY_HOME="${SASY_HOME:-${HOME:-}/.sasy}"
 PORT="${SASY_WATCH_PORT:-51711}"
 BASE="http://127.0.0.1:${PORT}"
 

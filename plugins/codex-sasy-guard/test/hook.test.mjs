@@ -243,3 +243,16 @@ test("the token is trusted with GNU stat (Linux) as well as BSD stat (macOS)", a
     rmSync(bin, { recursive: true, force: true });
   }
 });
+
+test("a hook that fails for any reason still blocks the call", async () => {
+  // No HOME and no SASY_HOME: nothing to find the token by, and no crash.
+  const out = await new Promise((resolve) => {
+    const child = spawn("bash", [HOOK], { env: { PATH: process.env.PATH, SASY_WATCH_PORT: String(port) } });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("close", (code) => resolve({ code, stderr }));
+    child.stdin.end(JSON.stringify(CALL));
+  });
+  assert.equal(out.code, 2);
+  assert.match(out.stderr, /\[SASY\] security check unavailable/);
+});
