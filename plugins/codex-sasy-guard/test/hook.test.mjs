@@ -227,3 +227,19 @@ test("at the end of a Codex session the daemon is told, and nothing is blocked",
   out = await runHook({ SASY_WATCH_PORT: "9" }, JSON.stringify(end));
   assert.equal(out.code, 0);
 });
+
+test("the token is trusted with GNU stat (Linux) as well as BSD stat (macOS)", async () => {
+  // A stand-in for GNU stat: `-c %a` works, `-f …` prints something and fails.
+  const bin = mkdtempSync(join(tmpdir(), "gnu-stat-"));
+  const real = "/usr/bin/stat";
+  writeFileSync(join(bin, "stat"), `#!/bin/bash\nif [ "$1" = "-c" ]; then ${real} -f %Lp "$3"; else echo "  File: $2"; exit 1; fi\n`);
+  chmodSync(join(bin, "stat"), 0o755);
+  try {
+    status = 200;
+    answer = {};
+    const out = await runHook({ SASY_WATCH_PORT: String(port), PATH: `${bin}:${process.env.PATH}` });
+    assert.equal(out.code, 0);
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
+});

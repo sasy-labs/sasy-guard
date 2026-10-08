@@ -10,7 +10,9 @@ BASE="http://127.0.0.1:${PORT}"
 auth_file() {
   f="$SASY_HOME/hook-auth-${PORT}.header"
   [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] && [ -r "$f" ] || return 1
-  mode=$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f" 2>/dev/null) || return 1
+  # GNU stat (Linux) first: BSD stat's `-f %Lp` makes GNU stat print other
+  # output and fail, which a fallback after it would append to.
+  if mode=$(stat -c %a "$f" 2>/dev/null); then :; else mode=$(stat -f %Lp "$f" 2>/dev/null) || return 1; fi
   case "$mode" in '' | *[!0-7]*) return 1 ;; esac
   [ "$(( 8#$mode & 8#077 ))" -eq 0 ] || return 1
   printf '%s' "$f"

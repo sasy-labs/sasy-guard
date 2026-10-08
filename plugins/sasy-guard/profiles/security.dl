@@ -532,6 +532,7 @@ EditTarget(idx, p) :- Actions(idx, a), a = $CallTool("NotebookEdit", args), p = 
 // never names it at all. I wrote the slash anyway; the lesson was already
 // recorded eight lines up.
 TranscriptFrag(".claude/projects").
+TranscriptFrag(".codex/sessions").
 
 .decl TouchesConfig(idx: unsigned)
 TouchesConfig(idx) :- ShellCommand(idx, cmd), TranscriptFrag(f), @str_contains(cmd, f) = 1.
