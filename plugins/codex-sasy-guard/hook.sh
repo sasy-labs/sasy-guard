@@ -45,15 +45,26 @@ reason_of() {
     }'
 }
 
-# Starts the daemon if it is down, as the Claude Code hooks do, then waits up
-# to 15 seconds for its policy engine. Every wait is bounded so the hook
-# answers within its 60-second timeout in Codex: at worst one check (15s), two
-# health probes (2s), the start (6s), the wait (16s) and a second check (15s).
+# Everything the hook does fits in BUDGET seconds, well within the 60-second
+# timeout the docs give it in Codex: Codex runs the call when a hook is still
+# running at its timeout. `remaining` is what is left of the budget.
+BUDGET="${SASY_CODEX_HOOK_BUDGET:-45}" # overridable for tests only
+case "$BUDGET" in '' | *[!0-9]*) BUDGET=45 ;; esac
+[ "$BUDGET" -le 45 ] || BUDGET=45
+remaining() {
+  r=$((BUDGET - SECONDS))
+  [ "$r" -gt 0 ] && echo "$r" || echo 0
+}
+
 ready() {
   curl -fsS -m 1 "${BASE}/healthz" 2>/dev/null | grep -q '"ready":true'
 }
+
+# Starts the daemon if it is down, as the Claude Code hooks do, then waits up
+# to 15 seconds for its policy engine, always leaving time for one check.
 ensure_daemon() {
   ready && return 0
+  [ "$(remaining)" -gt 25 ] || return 1
   if ! curl -fsS -m 1 "${BASE}/healthz" >/dev/null 2>&1; then
     bin="${SASY_WATCH_BIN:-$SASY_HOME/bin/sasy-watch}"
     [ -x "$bin" ] || return 1
@@ -61,15 +72,20 @@ ensure_daemon() {
   fi
   # Bounded by the clock, not by a count of tries.
   deadline=$((SECONDS + 15))
-  while [ "$SECONDS" -lt "$deadline" ]; do
+  while [ "$SECONDS" -lt "$deadline" ] && [ "$(remaining)" -gt 6 ]; do
     ready && return 0
     sleep 1
   done
   return 0
 }
 
+# One check, given at most 15 seconds and never more than the budget leaves.
+# Exits 99 when no time is left, so the call is denied rather than let through.
 check() {
-  curl -fsS -m 15 -X POST "${BASE}/v1/pretooluse" \
+  t=$(remaining)
+  [ "$t" -ge 2 ] || return 99
+  [ "$t" -le 15 ] || t=15
+  curl -fsS -m "$t" -X POST "${BASE}/v1/pretooluse" \
     -H 'content-type: application/json' -H "@$1" \
     --data-binary @- 2>/dev/null
 }

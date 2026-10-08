@@ -184,3 +184,23 @@ test("fail-open lets a call through only when an authenticated daemon does not a
     rmSync(header, { force: true });
   }
 });
+
+test("a daemon that never answers is denied within the hook's time budget", async () => {
+  // Accepts the request and never answers.
+  const hung = createServer(() => {});
+  await new Promise((r) => hung.listen(0, "127.0.0.1", r));
+  const hungPort = hung.address().port;
+  const header = join(home, `hook-auth-${hungPort}.header`);
+  writeFileSync(header, `x-sasy-hook-token: ${TOKEN}\n`);
+  chmodSync(header, 0o600);
+  try {
+    const started = Date.now();
+    const out = await runHook({ SASY_WATCH_PORT: String(hungPort), SASY_CODEX_HOOK_BUDGET: "4" });
+    assert.equal(out.code, 2);
+    assert.ok(Date.now() - started < 8000, "answers within the budget");
+  } finally {
+    rmSync(header, { force: true });
+    hung.closeAllConnections?.();
+    hung.close();
+  }
+});
