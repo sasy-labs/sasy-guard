@@ -39,9 +39,7 @@ possible, the extension sends the daemon each new entry of pi's session
 <Steps>
 
 1. **Install the runtime**: the policy engine and the `sasy-watch` daemon.
-   pi support needs a runtime release newer than 0.2.0; 0.2.0, the latest
-   release when this page was written, does not accept pi's sessions (see
-   "Runtime version" below).
+   pi support needs runtime 0.4.0 or newer (see "Runtime version" below).
 
    ```bash
    uv tool install sasy-guard
@@ -77,11 +75,10 @@ possible, the extension sends the daemon each new entry of pi's session
 
 <Aside type="caution" title="Runtime version">
 The pi extension needs a `sasy-watch` daemon that accepts pi's sessions and tool
-calls, which the runtime releases after 0.2.0 include. The 0.2.0 runtime
-predates this support: its daemon does not write the hook token the extension
-sends with each request. The footer then adds `daemon did not answer`, and the
-extension blocks every tool call with `[SASY] security check unavailable`,
-because it treats a check that gets no answer as a denial.
+calls, which runtime 0.4.0 and newer include. Against an older runtime the
+extension gets no answer it accepts: the footer adds `daemon did not answer`, and
+every tool call is blocked with `[SASY] security check unavailable`, because the
+extension treats a check that gets no answer as a denial.
 `uv tool install sasy-guard` installs the latest release;
 `uv tool upgrade sasy-guard` then `sasy-guard install` moves an existing install
 to it.

@@ -17,7 +17,7 @@ Full documentation: [guard.sasy.ai/pi](https://guard.sasy.ai/pi/).
 
 ## Install
 
-pi support needs a `sasy-guard` runtime release newer than 0.2.0 (0.2.0 does not
+pi support needs `sasy-guard` runtime 0.4.0 or newer (an older runtime does not
 accept pi's sessions, so every call would be blocked).
 
 ```sh
