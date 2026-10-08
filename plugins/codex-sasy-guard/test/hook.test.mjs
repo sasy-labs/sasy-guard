@@ -215,6 +215,14 @@ test("at the end of a Codex session the daemon is told, and nothing is blocked",
   assert.equal(requests[0].url, "/v1/session/end");
   assert.equal(JSON.parse(requests[0].body).agent, "codex");
   assert.equal(JSON.parse(requests[0].body).session_id, "s1");
+  // A tool call whose arguments mention SessionEnd is still a tool call.
+  requests = [];
+  answer = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "[SASY] no" } };
+  const sneaky = { ...CALL, tool_name: "mcp__x__y", tool_input: { hook_event_name: "SessionEnd" } };
+  out = await runHook({ SASY_WATCH_PORT: String(port) }, JSON.stringify(sneaky));
+  assert.equal(out.code, 2);
+  assert.equal(requests[0].url, "/v1/pretooluse");
+  answer = { ok: true };
   // With no daemon at all, the end still exits cleanly.
   out = await runHook({ SASY_WATCH_PORT: "9" }, JSON.stringify(end));
   assert.equal(out.code, 0);

@@ -105,7 +105,10 @@ body="{\"agent\":\"codex\",${payload#\{}"
 
 # The end of a Codex session: the daemon stops following it. Best effort, and
 # quick (Codex gives a SessionEnd hook 3 seconds); it never blocks anything.
-if printf '%s' "$payload" | grep -Eq '"hook_event_name"[[:space:]]*:[[:space:]]*"SessionEnd"'; then
+# A SessionEnd payload has no `tool_input`, and a tool call's always has one,
+# so text inside a tool call's arguments can never make it look like an end.
+if ! printf '%s' "$payload" | grep -q '"tool_input"' &&
+  printf '%s' "$payload" | grep -Eq '"hook_event_name"[[:space:]]*:[[:space:]]*"SessionEnd"'; then
   if auth=$(auth_file); then
     printf '%s' "$body" | curl -fsS -m 2 -X POST "${BASE}/v1/session/end" \
       -H 'content-type: application/json' -H "@$auth" --data-binary @- >/dev/null 2>&1
