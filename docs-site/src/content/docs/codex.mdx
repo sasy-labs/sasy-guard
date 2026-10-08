@@ -81,6 +81,17 @@ the hook with every call.
              }
            ]
          }
+       ],
+       "SessionEnd": [
+         {
+           "hooks": [
+             {
+               "type": "command",
+               "command": "/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh",
+               "timeout": 3
+             }
+           ]
+         }
        ]
      }
    }
@@ -105,12 +116,27 @@ the hook with every call.
    }
    ```
 
+   And this entry to the `"SessionEnd"` list (create the list if needed):
+
+   ```json
+   {
+     "hooks": [
+       {
+         "type": "command",
+         "command": "/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh",
+         "timeout": 3
+       }
+     ]
+   }
+   ```
+
    </TabItem>
    </Tabs>
 
    `"matcher": "*"` means every tool. Keep the timeout at 60 seconds: the hook
    answers well within it, and a hook that Codex stops at its timeout lets the
-   call run.
+   call run. The same script, run at **SessionEnd**, tells the daemon that the
+   session is over, so the daemon stops following it.
 
 4. **Start Codex and trust the hook.** Run `codex` in your project. The first
    time, Codex says **Hooks need review**. Choose **Review hooks** to see the
@@ -278,5 +304,10 @@ number blocks every call rather than falling back to the default port.
   session to a new file that refers back to the original instead of copying
   it. Because the daemon reads only the new file, what happened before the
   fork is not part of the forked session's history.
+- **A session that ends without its SessionEnd hook stays open.** If Codex
+  exits without running the hook (it crashes, or the machine stops), the
+  daemon keeps following that session until the daemon restarts. The daemon
+  follows at most 128 sessions at once; past that, a new session's calls are
+  blocked until older sessions end or the daemon restarts.
 - **The session file's format is Codex's own.** It can change between Codex
   versions; the daemon reads the parts it knows and skips the rest.

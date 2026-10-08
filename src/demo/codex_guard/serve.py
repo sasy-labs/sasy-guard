@@ -126,7 +126,13 @@ def write_codex_home(home: Path, base_url: str) -> None:
         'wire_api = "responses"\n'
     )
     hook = {"type": "command", "command": str(_HOOK), "timeout": 60}
-    hooks = {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}}
+    end = {"type": "command", "command": str(_HOOK), "timeout": 3}
+    hooks = {
+        "hooks": {
+            "PreToolUse": [{"matcher": "*", "hooks": [hook]}],
+            "SessionEnd": [{"hooks": [end]}],
+        }
+    }
     (home / "hooks.json").write_text(json.dumps(hooks, indent=2) + "\n")
 
 

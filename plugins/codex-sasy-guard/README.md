@@ -20,7 +20,9 @@ Codex support needs `sasy-guard` runtime newer than 0.4.0, and Codex CLI
 uv tool install sasy-guard && sasy-guard install   # the policy engine + daemon
 ```
 
-Add the hook to `~/.codex/hooks.json`, with this script's absolute path:
+Add the hook to `~/.codex/hooks.json`, with this script's absolute path, for
+both `PreToolUse` (the checks) and `SessionEnd` (the daemon stops following
+the session):
 
 ```json
 {
@@ -33,6 +35,17 @@ Add the hook to `~/.codex/hooks.json`, with this script's absolute path:
             "type": "command",
             "command": "/path/to/sasy-guard/plugins/codex-sasy-guard/hook.sh",
             "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/sasy-guard/plugins/codex-sasy-guard/hook.sh",
+            "timeout": 3
           }
         ]
       }

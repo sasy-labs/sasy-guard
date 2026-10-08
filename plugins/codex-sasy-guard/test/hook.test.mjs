@@ -204,3 +204,18 @@ test("a daemon that never answers is denied within the hook's time budget", asyn
     hung.close();
   }
 });
+
+test("at the end of a Codex session the daemon is told, and nothing is blocked", async () => {
+  requests = [];
+  status = 200;
+  answer = { ok: true };
+  const end = { session_id: "s1", transcript_path: "/tmp/x.jsonl", cwd: "/w", hook_event_name: "SessionEnd", reason: "other" };
+  let out = await runHook({ SASY_WATCH_PORT: String(port) }, JSON.stringify(end));
+  assert.equal(out.code, 0);
+  assert.equal(requests[0].url, "/v1/session/end");
+  assert.equal(JSON.parse(requests[0].body).agent, "codex");
+  assert.equal(JSON.parse(requests[0].body).session_id, "s1");
+  // With no daemon at all, the end still exits cleanly.
+  out = await runHook({ SASY_WATCH_PORT: "9" }, JSON.stringify(end));
+  assert.equal(out.code, 0);
+});
