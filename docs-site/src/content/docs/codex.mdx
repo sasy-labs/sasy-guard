@@ -272,10 +272,12 @@ only talks to a daemon that has written its access token
 start the daemon when it finds none. A `SASY_WATCH_PORT` that is not a port
 number blocks every call rather than falling back to the default port.
 
-The policy also stops the agent from changing what guards it: a write to
-Codex's configuration or hooks (`.codex/config.toml`, `.codex/hooks.json`) or
-to its session files is denied, because it could turn the hook off or rewrite
-the history the daemon reads.
+The agent may also not touch what guards it. Any tool call that reaches Codex's
+configuration, its hooks or its session files is denied, because it could turn
+the hook off or rewrite the history the daemon reads. That covers the files in
+the Codex home the session runs from (`~/.codex`, or wherever `CODEX_HOME`
+points), whatever command reaches them, and a project's own `.codex/config.toml`
+and `.codex/hooks.json`.
 
 ## Limitations
 
