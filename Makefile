@@ -8,7 +8,7 @@
 .PHONY: setup \
         claude-code-guard-demo claude-code-guard-demo-step \
         claude-code-guard-scenario claude-code-guard-serve \
-        pi-guard-demo claude-code-guard-mod-demo \
+        pi-guard-demo codex-guard-demo claude-code-guard-mod-demo \
         docs docs-build docs-install
 
 # ── Setup ──────────────────────────────────────────
@@ -55,6 +55,13 @@ claude-code-guard-serve:
 #   make pi-guard-demo GROUP=data_loss
 pi-guard-demo:
 	$(UV_RUN_SDK) python -m demo.pi_guard.serve --scenario $(or $(GROUP),toxic_flow)
+
+# Codex CLI: serve the scripted mock for a real `codex` session with the
+# sasy-guard hook from this checkout, in a Codex home of its own (needs
+# `codex` on PATH and `sasy-guard install`). GROUP picks the scenario:
+#   make codex-guard-demo GROUP=data_loss
+codex-guard-demo:
+	$(UV_RUN_SDK) python -m demo.codex_guard.serve --scenario $(or $(GROUP),toxic_flow)
 
 # Mod demo: the same scripted mock, with `claude` loading the sasy-guard-mod
 # plugin from this checkout, so the mod checks each call and its status entry,
