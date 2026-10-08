@@ -491,6 +491,12 @@ ConfigPathFrag(".claude/agents").
 // the agent's own working state and it writes them routinely.
 ConfigPathFrag(".claude/projects").
 ConfigPathFrag(".claude.json").
+// Codex CLI: its config (a project's `.codex/config.toml` can turn hooks off),
+// its hooks (the sasy-guard hook among them), and its session files, which the
+// daemon reads as the session's history.
+ConfigPathFrag(".codex/config").
+ConfigPathFrag(".codex/hooks").
+ConfigPathFrag(".codex/sessions").
 ConfigPathFrag(".mcp.json").
 ConfigPathFrag(".cursor/rules").
 ConfigPathFrag(".github/copilot-instructions").

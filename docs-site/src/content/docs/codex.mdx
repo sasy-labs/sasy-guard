@@ -272,6 +272,11 @@ only talks to a daemon that has written its access token
 start the daemon when it finds none. A `SASY_WATCH_PORT` that is not a port
 number blocks every call rather than falling back to the default port.
 
+The policy also stops the agent from changing what guards it: a write to
+Codex's configuration or hooks (`.codex/config.toml`, `.codex/hooks.json`) or
+to its session files is denied, because it could turn the hook off or rewrite
+the history the daemon reads.
+
 ## Limitations
 
 - **macOS and Linux only.** The sasy-guard runtime (the daemon and the policy
