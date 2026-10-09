@@ -94,6 +94,13 @@ test("a proxy in the environment is not used: the check goes to the local daemon
   assert.equal(requests[0].token, TOKEN);
 });
 
+test("a SECONDS value inherited from the environment does not use up the budget", async () => {
+  status = 200;
+  answer = {};
+  const out = await runHook({ SASY_WATCH_PORT: String(port), SECONDS: "100" });
+  assert.equal(out.code, 0);
+});
+
 test("no usable answer blocks the call (Codex would otherwise run it)", async () => {
   // An answer that is not a decision.
   status = 200;

@@ -296,7 +296,8 @@ A project's own `.codex/config.toml` and `.codex/hooks.json` are protected too.
   sends input to a program Codex already started, or for `view_image`, which
   shows the model an image file. A command typed into an interactive shell
   that way is not checked; the command that started the shell was. An image
-  the model viewed still counts as a file it read in later checks.
+  the model viewed still counts as a file it read in later checks, and a web
+  search counts as untrusted web content in the session.
 - **Leave Codex's code mode off.** Code mode, an experimental Codex feature
   that is off by default, lets the model run tools from a script. Tools run
   that way may skip the hook, so sasy-guard does not cover them.

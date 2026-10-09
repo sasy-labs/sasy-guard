@@ -51,6 +51,7 @@ reason_of() {
 # Everything the hook does fits in BUDGET seconds, well within the 60-second
 # timeout the docs give it in Codex: Codex runs the call when a hook is still
 # running at its timeout. `remaining` is what is left of the budget.
+SECONDS=0 # Bash may inherit SECONDS from the environment; the budget starts now.
 BUDGET="${SASY_CODEX_HOOK_BUDGET:-45}" # overridable for tests only
 case "$BUDGET" in '' | *[!0-9]*) BUDGET=45 ;; esac
 [ "$BUDGET" -le 45 ] || BUDGET=45
