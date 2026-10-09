@@ -292,10 +292,11 @@ A project's own `.codex/config.toml` and `.codex/hooks.json` are protected too.
   timeout (60 seconds above), Codex runs the call. The hook bounds its own
   waits well under that limit; this case needs a very slow or stuck machine.
 - **Some tools run without the hook.** Codex does not run hooks for tools the
-  model provider runs itself, such as web search, or for `write_stdin`, which
-  sends input to a program Codex already started. A command typed into an
-  interactive shell that way is not checked; the command that started the
-  shell was.
+  model provider runs itself, such as web search, for `write_stdin`, which
+  sends input to a program Codex already started, or for `view_image`, which
+  shows the model an image file. A command typed into an interactive shell
+  that way is not checked; the command that started the shell was. An image
+  the model viewed still counts as a file it read in later checks.
 - **Leave Codex's code mode off.** Code mode, an experimental Codex feature
   that is off by default, lets the model run tools from a script. Tools run
   that way may skip the hook, so sasy-guard does not cover them.
