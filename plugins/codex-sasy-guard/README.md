@@ -20,6 +20,9 @@ Codex support needs `sasy-guard` runtime newer than 0.4.0, and Codex CLI
 uv tool install sasy-guard && sasy-guard install   # the policy engine + daemon
 ```
 
+Already have an older `sasy-guard`? Run `uv tool upgrade sasy-guard` and then
+`sasy-guard install` instead.
+
 Add the hook to `~/.codex/hooks.json`, with this script's absolute path
 (quoted, since Codex runs it through a shell), for
 both `PreToolUse` (the checks) and `SessionEnd` (the daemon stops following
