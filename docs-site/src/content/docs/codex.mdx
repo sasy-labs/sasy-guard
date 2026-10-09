@@ -276,8 +276,9 @@ The agent may also not touch what guards it. Any tool call that reaches into
 the Codex home the session runs from (`~/.codex`, or wherever `CODEX_HOME`
 points) is denied, whatever command reaches it, because Codex's configuration,
 hooks and session files live there: changing them could turn the hook off or
-rewrite the history the daemon reads. A project's own `.codex/config.toml` and
-`.codex/hooks.json` are protected too.
+rewrite the history the daemon reads. That includes reading from it with a
+shell command that names the folder (`.codex`), so run such commands yourself.
+A project's own `.codex/config.toml` and `.codex/hooks.json` are protected too.
 
 ## Limitations
 
