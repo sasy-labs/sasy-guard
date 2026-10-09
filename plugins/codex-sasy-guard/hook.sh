@@ -60,7 +60,7 @@ remaining() {
 }
 
 ready() {
-  curl -fsS -m 1 "${BASE}/healthz" 2>/dev/null | grep -q '"ready":true'
+  curl --noproxy '*' -fsS -m 1 "${BASE}/healthz" 2>/dev/null | grep -q '"ready":true'
 }
 
 # Starts the daemon if it is down, as the Claude Code hooks do, then waits up
@@ -68,7 +68,7 @@ ready() {
 ensure_daemon() {
   ready && return 0
   [ "$(remaining)" -gt 25 ] || return 1
-  if ! curl -fsS -m 1 "${BASE}/healthz" >/dev/null 2>&1; then
+  if ! curl --noproxy '*' -fsS -m 1 "${BASE}/healthz" >/dev/null 2>&1; then
     bin="${SASY_WATCH_BIN:-$SASY_HOME/bin/sasy-watch}"
     [ -x "$bin" ] || return 1
     # Bounded here, not only by its own --wait-ms: a start that hangs is
@@ -96,7 +96,7 @@ check() {
   t=$(remaining)
   [ "$t" -ge 2 ] || return 99
   [ "$t" -le 15 ] || t=15
-  curl -fsS -m "$t" -X POST "${BASE}/v1/pretooluse" \
+  curl --noproxy '*' -fsS -m "$t" -X POST "${BASE}/v1/pretooluse" \
     -H 'content-type: application/json' -H "@$1" \
     --data-binary @- 2>/dev/null
 }
@@ -121,7 +121,7 @@ body="{\"agent\":\"codex\",${payload#\{}"
 if ! printf '%s' "$payload" | grep -q '"tool_input"' &&
   printf '%s' "$payload" | grep -Eq '"hook_event_name"[[:space:]]*:[[:space:]]*"SessionEnd"'; then
   if auth=$(auth_file); then
-    printf '%s' "$body" | curl -fsS -m 2 -X POST "${BASE}/v1/session/end" \
+    printf '%s' "$body" | curl --noproxy '*' -fsS -m 2 -X POST "${BASE}/v1/session/end" \
       -H 'content-type: application/json' -H "@$auth" --data-binary @- >/dev/null 2>&1
   fi
   exit 0

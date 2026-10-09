@@ -82,6 +82,18 @@ test("an allow is no output, so Codex runs the call", async () => {
   assert.equal(out.stdout, "");
 });
 
+test("a proxy in the environment is not used: the check goes to the local daemon", async () => {
+  requests = [];
+  status = 200;
+  answer = {};
+  // A proxy that is not there: a request sent to it would fail.
+  const proxy = "http://127.0.0.1:9";
+  const out = await runHook({ SASY_WATCH_PORT: String(port), http_proxy: proxy, HTTP_PROXY: proxy, ALL_PROXY: proxy, all_proxy: proxy });
+  assert.equal(out.code, 0);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].token, TOKEN);
+});
+
 test("no usable answer blocks the call (Codex would otherwise run it)", async () => {
   // An answer that is not a decision.
   status = 200;

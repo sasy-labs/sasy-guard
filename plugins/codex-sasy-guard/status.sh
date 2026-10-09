@@ -5,7 +5,7 @@
 set -u
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
-out=$(curl -fsS -m 3 "http://127.0.0.1:${PORT}/healthz" 2>/dev/null) || {
+out=$(curl --noproxy '*' -fsS -m 3 "http://127.0.0.1:${PORT}/healthz" 2>/dev/null) || {
   echo "sasy-guard: daemon not answering on port ${PORT}; Codex tool calls are blocked until it starts"
   exit 1
 }
