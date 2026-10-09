@@ -311,6 +311,10 @@ A project's own `.codex/config.toml` and `.codex/hooks.json` are protected too.
 - **Sessions without a session file are blocked.** `codex exec --ephemeral`
   writes no session file. Without one, the daemon has no history to judge by,
   and it blocks every call in such a session.
+- **Sessions that continue another session's file are blocked.** Codex can
+  start a session whose earlier history stays in another session file (its
+  first record names a `history_base`). sasy-guard does not read that other
+  file, so it blocks every call in such a session.
 - **Sessions do not always end when you quit.** Codex's interactive UI can
   keep a session open in a background Codex server after you quit, and a
   crash skips the SessionEnd hook. The daemon follows at most 128 sessions at
