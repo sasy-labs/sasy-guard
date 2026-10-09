@@ -38,8 +38,9 @@ before(async () => {
 });
 
 after(() => {
-  server.close();
-  rmSync(home, { recursive: true, force: true });
+  // Setup may have stopped part-way; clean up only what it made.
+  server?.close();
+  if (home) rmSync(home, { recursive: true, force: true });
 });
 
 // Runs the hook as Codex does, asynchronously so the stand-in daemon in this
