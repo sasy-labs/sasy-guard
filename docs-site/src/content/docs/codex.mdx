@@ -60,7 +60,9 @@ the hook with every call.
 
 3. **Tell Codex to run it before every tool call.** Codex reads hooks from
    `hooks.json` in its home directory (`~/.codex`, or `$CODEX_HOME` if you set
-   it). Use the hook's absolute path:
+   it). Use the hook's absolute path. Codex runs the command through a shell,
+   so the path is wrapped in escaped quotes (`\"`) to keep a folder name with
+   spaces in one piece:
 
    <Tabs>
    <TabItem label="No hooks.json yet">
@@ -76,7 +78,7 @@ the hook with every call.
            "hooks": [
              {
                "type": "command",
-               "command": "/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh",
+               "command": "\"/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh\"",
                "timeout": 60
              }
            ]
@@ -87,7 +89,7 @@ the hook with every call.
            "hooks": [
              {
                "type": "command",
-               "command": "/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh",
+               "command": "\"/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh\"",
                "timeout": 3
              }
            ]
@@ -109,7 +111,7 @@ the hook with every call.
      "hooks": [
        {
          "type": "command",
-         "command": "/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh",
+         "command": "\"/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh\"",
          "timeout": 60
        }
      ]
@@ -123,7 +125,7 @@ the hook with every call.
      "hooks": [
        {
          "type": "command",
-         "command": "/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh",
+         "command": "\"/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh\"",
          "timeout": 3
        }
      ]
