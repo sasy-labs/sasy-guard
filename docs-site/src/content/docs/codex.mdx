@@ -310,10 +310,6 @@ A project's own `.codex/config.toml` and `.codex/hooks.json` are protected too.
 - **Sessions without a session file are blocked.** `codex exec --ephemeral`
   writes no session file. Without one, the daemon has no history to judge by,
   and it blocks every call in such a session.
-- **A forked session starts its history at the fork.** Codex writes a forked
-  session to a new file that refers back to the original instead of copying
-  it. Because the daemon reads only the new file, what happened before the
-  fork is not part of the forked session's history.
 - **Sessions do not always end when you quit.** Codex's interactive UI can
   keep a session open in a background Codex server after you quit, and a
   crash skips the SessionEnd hook. The daemon follows at most 128 sessions at
