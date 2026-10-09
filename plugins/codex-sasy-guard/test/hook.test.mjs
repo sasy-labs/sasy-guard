@@ -231,8 +231,9 @@ test("at the end of a Codex session the daemon is told, and nothing is blocked",
 test("the token is trusted with GNU stat (Linux) as well as BSD stat (macOS)", async () => {
   // A stand-in for GNU stat: `-c %a` works, `-f …` prints something and fails.
   const bin = mkdtempSync(join(tmpdir(), "gnu-stat-"));
-  const real = "/usr/bin/stat";
-  writeFileSync(join(bin, "stat"), `#!/bin/bash\nif [ "$1" = "-c" ]; then ${real} -f %Lp "$3"; else echo "  File: $2"; exit 1; fi\n`);
+  // The mode comes from Node, so the stand-in works on macOS and Linux alike.
+  const mode = `node -e 'process.stdout.write((require("fs").statSync(process.argv[1]).mode & 0o777).toString(8))'`;
+  writeFileSync(join(bin, "stat"), `#!/bin/bash\nif [ "$1" = "-c" ]; then ${mode} "$3"; else echo "  File: $2"; exit 1; fi\n`);
   chmodSync(join(bin, "stat"), 0o755);
   try {
     status = 200;
