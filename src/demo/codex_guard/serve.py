@@ -130,8 +130,9 @@ def write_codex_home(home: Path, base_url: str) -> None:
         "[features]\n"
         "daemon_auto_start = false\n"
     )
-    hook = {"type": "command", "command": str(_HOOK), "timeout": 60}
-    end = {"type": "command", "command": str(_HOOK), "timeout": 3}
+    command = shlex.quote(str(_HOOK))
+    hook = {"type": "command", "command": command, "timeout": 60}
+    end = {"type": "command", "command": command, "timeout": 3}
     hooks = {
         "hooks": {
             "PreToolUse": [{"matcher": "*", "hooks": [hook]}],

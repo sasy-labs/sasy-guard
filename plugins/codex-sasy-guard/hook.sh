@@ -71,7 +71,15 @@ ensure_daemon() {
   if ! curl -fsS -m 1 "${BASE}/healthz" >/dev/null 2>&1; then
     bin="${SASY_WATCH_BIN:-$SASY_HOME/bin/sasy-watch}"
     [ -x "$bin" ] || return 1
-    "$bin" ensure --wait-ms 6000 >/dev/null 2>&1
+    # Bounded here, not only by its own --wait-ms: a start that hangs is
+    # stopped after 8 seconds, so the hook still answers in time.
+    "$bin" ensure --wait-ms 6000 >/dev/null 2>&1 &
+    starter=$!
+    for _ in 1 2 3 4 5 6 7 8; do
+      kill -0 "$starter" 2>/dev/null || break
+      sleep 1
+    done
+    kill "$starter" 2>/dev/null
   fi
   # Bounded by the clock, not by a count of tries.
   deadline=$((SECONDS + 15))

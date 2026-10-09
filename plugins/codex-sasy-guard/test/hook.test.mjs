@@ -257,3 +257,14 @@ test("a hook that fails for any reason still blocks the call", async () => {
   assert.equal(out.code, 2);
   assert.match(out.stderr, /\[SASY\] security check unavailable/);
 });
+
+test("a daemon start that hangs does not hold the hook past its budget", async () => {
+  // A stand-in sasy-watch whose `ensure` never returns.
+  const bin = join(home, "hang-watch");
+  writeFileSync(bin, "#!/bin/bash\nsleep 600\n");
+  chmodSync(bin, 0o755);
+  const started = Date.now();
+  const out = await runHook({ SASY_WATCH_PORT: "9", SASY_WATCH_BIN: bin });
+  assert.equal(out.code, 2);
+  assert.ok(Date.now() - started < 30000, "the hung start is cut off");
+});
