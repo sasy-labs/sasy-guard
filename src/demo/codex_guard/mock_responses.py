@@ -16,8 +16,6 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from demo.cc_guard.util import free_port
-
 # Paced like a real model, so the daemon has read the previous result before
 # the next call's check.
 _REPLY_DELAY_S = int(os.environ.get("SASY_DEMO_MOCK_DELAY_MS", "800")) / 1000.0
@@ -160,9 +158,9 @@ class MockResponses:
             turns: Per prompt, the calls to make, in order.
         """
         self.turns = turns
-        self.port = free_port()
         self.requests = 0
-        self._server = ThreadingHTTPServer(("127.0.0.1", self.port), _Handler)
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self.port = self._server.server_address[1]
         self._server.mock = self  # type: ignore[attr-defined]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 

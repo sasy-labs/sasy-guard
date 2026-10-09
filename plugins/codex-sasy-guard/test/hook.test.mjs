@@ -261,7 +261,7 @@ test("a hook that fails for any reason still blocks the call", async () => {
 test("a daemon start that hangs does not hold the hook past its budget", async () => {
   // A stand-in sasy-watch whose `ensure` never returns.
   const bin = join(home, "hang-watch");
-  writeFileSync(bin, "#!/bin/bash\nsleep 600\n");
+  writeFileSync(bin, "#!/bin/bash\nexec sleep 600\n");
   chmodSync(bin, 0o755);
   const started = Date.now();
   const out = await runHook({ SASY_WATCH_PORT: "9", SASY_WATCH_BIN: bin });
