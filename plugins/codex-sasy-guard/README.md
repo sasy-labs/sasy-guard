@@ -61,5 +61,6 @@ the session):
 Start `codex` and, when it says **Hooks need review**, trust the hook.
 `status.sh` reports whether the daemon is up.
 
-Tests: `node --test test/hook.test.mjs`. Full documentation: the "Enforce Policy
-on Codex CLI" page of the sasy-guard docs.
+Tests, from the repository's root: `node --test
+plugins/codex-sasy-guard/test/hook.test.mjs`. Full documentation: the "Enforce
+Policy on Codex CLI" page of the sasy-guard docs.
