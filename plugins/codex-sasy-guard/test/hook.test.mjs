@@ -94,6 +94,22 @@ test("a proxy in the environment is not used: the check goes to the local daemon
   assert.equal(requests[0].token, TOKEN);
 });
 
+test("a curl config file cannot send the check elsewhere", async () => {
+  requests = [];
+  status = 200;
+  answer = {};
+  // A .curlrc that would redirect the daemon's port to one nothing listens on.
+  const curlHome = mkdtempSync(join(tmpdir(), "codex-curlrc-"));
+  writeFileSync(join(curlHome, ".curlrc"), `connect-to = "127.0.0.1:${port}:127.0.0.1:9"\n`);
+  try {
+    const out = await runHook({ SASY_WATCH_PORT: String(port), CURL_HOME: curlHome });
+    assert.equal(out.code, 0);
+    assert.equal(requests.length, 1);
+  } finally {
+    rmSync(curlHome, { recursive: true, force: true });
+  }
+});
+
 test("a SECONDS value inherited from the environment does not use up the budget", async () => {
   status = 200;
   answer = {};
