@@ -37,7 +37,7 @@ the session):
         "hooks": [
           {
             "type": "command",
-            "command": "\"/path/to/sasy-guard/plugins/codex-sasy-guard/hook.sh\"",
+            "command": "'/path/to/sasy-guard/plugins/codex-sasy-guard/hook.sh'",
             "timeout": 60
           }
         ]
@@ -48,7 +48,7 @@ the session):
         "hooks": [
           {
             "type": "command",
-            "command": "\"/path/to/sasy-guard/plugins/codex-sasy-guard/hook.sh\"",
+            "command": "'/path/to/sasy-guard/plugins/codex-sasy-guard/hook.sh'",
             "timeout": 3
           }
         ]
