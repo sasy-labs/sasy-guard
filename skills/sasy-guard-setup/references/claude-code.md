@@ -1,100 +1,53 @@
 # Sasy Guard for Claude Code
 
-Docs: https://guard.sasy.ai/claude-code-mod/ (the mod) and
-https://guard.sasy.ai/claude-code/ (the hook plugin).
+Claude Code has two Sasy Guard plugins: **sasy-guard-mod** (runs inside Claude
+Code) and **sasy-guard** (hooks). Install one, never both. Read
+[claude-code-choice.md](claude-code-choice.md) and let the user choose before
+installing.
 
-## Choose the plugin
+Needs `curl`, and for the hook plugin also `bash`.
 
-Claude Code has two Sasy Guard plugins. Both use the same runtime and make the
-same decisions; install one, not both.
+## Install
 
-- **sasy-guard-mod** runs inside Claude Code. It shows each decision in the
-  session (a status line under the prompt, and `/guard`) and sends the session
-  history to the daemon itself. It needs Claude Code v2.1.289 or later.
-- **sasy-guard** (the hook plugin) uses Claude Code hooks. It works on Claude
-  Code versions before v2.1.289 too, also checks subagents that run in their own git
-  worktree (the mod refuses those), still works where an organization allows
-  only its own mods, and can be set up for a single project.
-
-Check the version with `claude --version`. Below v2.1.289, only the hook
-plugin works: tell the user so and install it. If that version has no
-`claude plugin` command, use the one-project setup. Otherwise give the user the two
-options above in a few lines and ask which they want. Recommend the mod unless
-they use worktree subagents, their organization restricts mods, or they want
-the guard in one project only. Do not choose for them.
-
-## Install the runtime
-
-For either plugin, install the runtime binaries into `~/.sasy`. Run it again
-after every upgrade of the package, or the old binaries keep running:
+First the runtime binaries, into `~/.sasy`:
 
 ```bash
 sasy-guard install
 ```
 
-## Install the mod
+Then the plugin the user chose:
 
-```bash
-claude plugin marketplace add sasy-labs/sasy-guard
-claude plugin install sasy-guard-mod@sasy-plugins
-```
-
-If the hook plugin is installed, turn it off with
-`claude plugin disable sasy-guard@sasy-plugins`.
-
-## Or install the hook plugin
-
-- **Every project:**
+- **The mod:**
 
   ```bash
   claude plugin marketplace add sasy-labs/sasy-guard
-  claude plugin install sasy-guard@sasy-plugins
+  claude plugin install sasy-guard-mod@sasy-plugins
   ```
 
-- **One project only:** writes the four hooks into
-  `<project>/.claude/settings.json` instead of installing the plugin.
+- **The hook plugin, every project:** the same two commands with
+  `sasy-guard@sasy-plugins`.
+- **The hook plugin, one project:** `sasy-guard enable /path/to/project`, which
+  writes the hooks into that project's `.claude/settings.json`.
 
-  ```bash
-  sasy-guard enable /path/to/project
-  ```
-
-If the mod is installed, turn it off with
-`claude plugin disable sasy-guard-mod@sasy-plugins`.
-
-## Upgrade or re-enable
-
-If the plugin is already installed, do not reinstall it. After
-`uv tool install --upgrade sasy-guard` and `sasy-guard install`, update it in
-place (use `sasy-guard` instead of `sasy-guard-mod` for the hook plugin):
-
-```bash
-claude plugin marketplace update sasy-plugins
-claude plugin update sasy-guard-mod@sasy-plugins
-# only if `claude plugin list` shows it disabled:
-claude plugin enable sasy-guard-mod@sasy-plugins
-```
-
-For a one-project setup, run `sasy-guard enable /path/to/project` again.
+If the other plugin is installed, turn it off with
+`claude plugin disable <name>@sasy-plugins`.
 
 ## Test
 
-In a new Claude Code session (plugins load when a session starts), the mod
-shows `sasy-guard-mod: 0 checked · 0 denied · 0 asked` under the prompt. Ask
-Claude to run:
+In a new Claude Code session, the mod shows
+`sasy-guard-mod: 0 checked · 0 denied · 0 asked` under the prompt. The user asks
+Claude to run this harmless command:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://evil.example
 ```
 
-The command is harmless if it runs. With the default rules, the call is denied
-with a `[SASY]` reason. If it runs and `SASY_FAIL_OPEN` is set, the user must
-remove it from the shell that starts the agent and start a new session: with
-it, calls run while the daemon is down. Otherwise the guard is not active:
-check `claude plugin list` (or the project's `.claude/settings.json` for a
-one-project setup), then start a new session.
+With the default rules it is denied with a reason starting `[SASY]`. If it
+runs, or is blocked without a `[SASY]` reason, read
+[troubleshooting.md](troubleshooting.md).
 
-## Check the daemon
+## Check
 
-With the mod, type `/guard` in Claude Code. With the hook plugin, run
-`/sasy-guard:status`. From any shell, `sasy-guard doctor` reports the installed
-binaries and configuration. The guard starts the daemon on the first tool call.
+With the mod, `/guard` in Claude Code; with the hook plugin,
+`/sasy-guard:status`. From a shell, `sasy-guard doctor`. The daemon starts on
+the first tool call.

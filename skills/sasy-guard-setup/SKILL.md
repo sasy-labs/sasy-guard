@@ -9,81 +9,51 @@ description: >-
 
 # Set up Sasy Guard
 
-Sasy Guard puts a check in front of every tool call a coding agent makes. A
-plugin (Claude Code), a hook (Codex CLI) or an extension (pi) sends each call
-to a local daemon, `sasy-watch`, which evaluates the SASY security policy and allows or
-blocks the call. The runtime (policy engine and daemon) comes from the
-`sasy-guard` Python package.
+Sasy Guard sends each tool call a coding agent makes to a local daemon,
+`sasy-watch`, which checks it against the SASY security policy and allows or
+blocks it. The runtime comes from the `sasy-guard` Python package; each agent
+gets a small plugin, hook or extension. Docs: https://guard.sasy.ai
 
-Full documentation: https://guard.sasy.ai
+## What to read
 
-## 1. Pick the agent
+Set up the agent the user names, or else the agent you are running in. Read
+only the files the task needs:
 
-If the user only asks to test or check Sasy Guard, do not install or change
-anything: go straight to the reference's **Test** and **Check the daemon**
-sections, report what you find, and suggest any fix without applying it. In
-that case the session you are in is already guarded, and its test result
-counts.
-
-Set up the agent the user names. If they name none, set up the agent you are
-running in. Then read only that agent's reference file:
-
-| Agent | Reference |
+| Task | Read |
 |---|---|
-| Claude Code | [references/claude-code.md](references/claude-code.md) |
-| Codex CLI | [references/codex.md](references/codex.md) |
-| pi | [references/pi.md](references/pi.md) |
+| Install for Claude Code | [references/claude-code.md](references/claude-code.md) |
+| Install for Codex CLI | [references/codex.md](references/codex.md) |
+| Install for pi | [references/pi.md](references/pi.md) |
+| Upgrade or re-enable an existing install | [references/upgrade.md](references/upgrade.md) |
+| The test call ran, or the guard seems inactive | [references/troubleshooting.md](references/troubleshooting.md) |
 
-For several agents, do step 2 once, then each agent's steps.
+If the user only asks to test or check, change nothing: run the agent file's
+**Test** and **Check** steps in the current session, report the result, and
+suggest any fix without applying it.
 
-## 2. Check the requirements
+## Before installing
 
-Run these checks and stop with a clear explanation if one fails:
+Check, and stop with a clear explanation if one fails:
 
-- **Platform:** macOS 13 or newer, or Linux with glibc 2.35 or newer, on arm64
-  or x86-64. On x86-64 the CPU must support AVX2. Check with `uname -sm`, plus
-  `sw_vers -productVersion` on macOS or `ldd --version` on Linux. On x86-64,
-  look for `avx2` in `/proc/cpuinfo` (Linux) or in
-  `sysctl -n machdep.cpu.leaf7_features` (macOS).
-- **uv:** `uv --version`. If uv is missing, do not install it yourself. Tell
-  the user to install it from https://docs.astral.sh/uv/getting-started/installation/
-  and continue once they have.
-- **curl** on `PATH` for Codex CLI and both Claude Code plugins, and **bash**
-  for Codex CLI and the Claude Code hook plugin. pi needs neither.
+- macOS 13 or newer, or Linux with glibc 2.35 or newer, on arm64 or x86-64;
+  on x86-64 the CPU must support AVX2 (`uname -sm`, `sw_vers -productVersion`
+  or `ldd --version`, `avx2` in `/proc/cpuinfo` or
+  `sysctl -n machdep.cpu.leaf7_features`).
+- `uv --version`. If uv is missing, ask the user to install it from
+  https://docs.astral.sh/uv/getting-started/installation/; do not install it
+  yourself.
 
-Then install or upgrade the package:
-
-```bash
-uv tool install --upgrade sasy-guard
-sasy-guard doctor        # the first line is the installed version
-```
-
-## 3. Follow the agent's reference
-
-The reference gives the exact commands, what they change, and how to test.
-
-Before you run a command that changes the agent's global configuration, tell
-the user in one sentence what it changes. A request to set up Sasy Guard is
-permission to run the commands in the reference; do not run anything else that
-changes the user's configuration.
-
-## 4. Hand over
-
-A new plugin, hook or extension takes effect only in a session that starts
-after it was installed, so you cannot test it from the session you are in. Finish by
-telling the user:
-
-1. to start a new session of the agent (and, for Codex, to trust the hook);
-2. the test from the reference, and the result to expect;
-3. how to check the daemon later.
+Then install or upgrade the package: `uv tool install --upgrade sasy-guard`.
 
 ## Rules
 
-- If Sasy Guard is already active and blocks one of your commands, do not try
-  to get around it. Give the user the exact command to run in their own
-  terminal instead. The guard protects its own files and the agent's hook
-  configuration on purpose.
-- Use `SASY_HOME` only if the user asks for a location other than `~/.sasy`.
-  It must then stay set in every shell that starts the agent.
-- Report what you ran and what you changed. Do not claim the guard is working
-  until the user's test in the new session shows a block.
+- Before a command that changes the agent's global configuration, say in one
+  sentence what it changes. Run only the commands in these files.
+- If Sasy Guard blocks one of your commands, do not work around it. Give the
+  user the command to run in their own terminal.
+- Use `SASY_HOME` only if the user wants a location other than `~/.sasy`; it
+  must stay set in every shell that starts the agent.
+- A new install takes effect only in a new session, so you cannot test it
+  from the session that installed it. End by telling the user to start a new
+  session and run the agent file's test. Do not claim the guard works until
+  that test is blocked with a `[SASY]` reason.
