@@ -5,7 +5,7 @@ description: >-
   before it runs.
 ---
 
-import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside, Steps } from '@astrojs/starlight/components';
 
 [Codex CLI](https://github.com/openai/codex) is OpenAI's coding agent for the
 terminal. Codex can run **hooks**: commands it starts at fixed points in a
@@ -38,118 +38,30 @@ the hook with every call.
 
 <Steps>
 
-1. **Install the runtime**: the policy engine and the `sasy-watch` daemon.
-   Codex support needs runtime 0.5.0 or newer (see "Runtime version"
-   below).
+1. **Install sasy-guard and add the hook to Codex.** This needs sasy-guard
+   0.5.1 or newer.
 
    ```bash
-   uv tool install sasy-guard
-   sasy-guard install
+   uv tool install sasy-guard        # or: uv tool upgrade sasy-guard
+   sasy-guard enable --codex
    ```
 
-   This is the same runtime Claude Code uses; see
-   [Install](/claude-code/#install) on the Claude Code page for upgrades.
+   `enable --codex` installs the policy engine and the `sasy-watch` daemon into
+   `~/.sasy`, copies the hook to `~/.sasy/hooks/codex/`, and adds it to Codex's
+   `hooks.json` (in `~/.codex`, or in `$CODEX_HOME` if you set it). It keeps
+   any hooks you already have there, and running it again changes nothing.
+   The hook then runs for every Codex project.
 
-2. **Get the hook.** It is the script `plugins/codex-sasy-guard/hook.sh` in
-   this repository, with the helper `lib.sh` next to it, which it needs. Clone
-   the repository somewhere it can stay:
-
-   ```bash
-   git clone https://github.com/sasy-labs/sasy-guard.git ~/sasy-guard
-   ```
-
-3. **Tell Codex to run it before every tool call.** Codex reads hooks from
-   `hooks.json` in its home directory (`~/.codex`, or `$CODEX_HOME` if you set
-   it). Use the hook's absolute path. Codex runs the command through a shell,
-   so the path is wrapped in single quotes. They keep a folder name with spaces
-   in one piece, and the shell expands nothing inside them:
-
-   <Tabs>
-   <TabItem label="No hooks.json yet">
-
-   Create `~/.codex/hooks.json` with:
-
-   ```json
-   {
-     "hooks": {
-       "PreToolUse": [
-         {
-           "matcher": "*",
-           "hooks": [
-             {
-               "type": "command",
-               "command": "'/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh'",
-               "timeout": 60
-             }
-           ]
-         }
-       ],
-       "SessionEnd": [
-         {
-           "hooks": [
-             {
-               "type": "command",
-               "command": "'/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh'",
-               "timeout": 3
-             }
-           ]
-         }
-       ]
-     }
-   }
-   ```
-
-   </TabItem>
-   <TabItem label="hooks.json already exists">
-
-   Add this entry to the `"PreToolUse"` list in your `~/.codex/hooks.json`
-   (create the list if the file has none):
-
-   ```json
-   {
-     "matcher": "*",
-     "hooks": [
-       {
-         "type": "command",
-         "command": "'/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh'",
-         "timeout": 60
-       }
-     ]
-   }
-   ```
-
-   And this entry to the `"SessionEnd"` list (create the list if needed):
-
-   ```json
-   {
-     "hooks": [
-       {
-         "type": "command",
-         "command": "'/Users/you/sasy-guard/plugins/codex-sasy-guard/hook.sh'",
-         "timeout": 3
-       }
-     ]
-   }
-   ```
-
-   </TabItem>
-   </Tabs>
-
-   `"matcher": "*"` means every tool. Keep the timeout at 60 seconds: the hook
-   answers well within it, and a hook that Codex stops at its timeout lets the
-   call run. The same script, run at **SessionEnd**, tells the daemon that the
-   session is over, so the daemon stops following it.
-
-4. **Start Codex and trust the hook.** Run `codex` in your project. The first
+2. **Start Codex and trust the hook.** Run `codex` in your project. The first
    time, Codex says **Hooks need review**. Choose **Review hooks** to see the
    command, or **Trust all and continue**. Codex remembers the choice. If you
    choose to continue without trusting, the hook does not run and nothing is
    checked.
 
-5. **Check that the guard is up.** In another terminal:
+3. **Check that the guard is up.** In another terminal:
 
    ```bash
-   ~/sasy-guard/plugins/codex-sasy-guard/status.sh
+   ~/.sasy/hooks/codex/status.sh
    ```
 
    It prints whether the daemon answers, whether its policy engine is ready,
@@ -157,13 +69,19 @@ the hook with every call.
 
 </Steps>
 
+<Aside type="note" title="What enable --codex adds to hooks.json">
+Two entries, both running `~/.sasy/hooks/codex/hook.sh`: one under
+`PreToolUse` with `"matcher": "*"` (every tool) and a 60-second timeout, and
+one under `SessionEnd`, which tells the daemon that the session is over. A hook
+that Codex stops at its timeout lets the call run, so keep that timeout at 60
+seconds; the hook answers well within it.
+</Aside>
+
 <Aside type="caution" title="Runtime version">
-The Codex hook needs a `sasy-watch` daemon that knows Codex (its tools and its
-session file), which runtime 0.5.0 and newer include. With an older
-runtime every tool call is blocked with `[SASY] security check unavailable`;
-with 0.4.0, for example, the reason ends in `(unknown agent "codex")`.
-`uv tool upgrade sasy-guard` then `sasy-guard install` moves an existing
-install to the latest release.
+With a runtime older than 0.5.0 every Codex tool call is blocked with
+`[SASY] security check unavailable`; with 0.4.0, for example, the reason ends
+in `(unknown agent "codex")`. `uv tool upgrade sasy-guard` then
+`sasy-guard enable --codex` moves an existing install to the latest release.
 </Aside>
 
 <Aside type="note" title="Codex version">
@@ -177,7 +95,7 @@ The hook uses Codex's PreToolUse hooks and its session files, as Codex CLI
   policy's reason and suggested fix. Codex's model gets the same reason as the
   tool's result, as `Command blocked by PreToolUse hook: [SASY] …`.
 - **An allowed call** runs with no sign of the check.
-- **`status.sh`**, the script from step 5, reports on the daemon. The status
+- **`status.sh`**, the script from step 3, reports on the daemon. The status
   check runs outside Codex because Codex hooks cannot add a command to Codex
   itself.
 
