@@ -1,35 +1,27 @@
 # sasy-guard for Codex CLI
 
-A Codex CLI PreToolUse hook that checks Codex's tool calls against the SASY
-security policy, through the local `sasy-watch` daemon, before each call runs.
-(Codex runs no hook for hosted tools such as web search, or for `write_stdin`.)
-
-- **allow**: the call runs.
-- **deny**: the call is blocked; Codex's model reads the policy's reason and
-  fix.
-- **needs approval**: blocked as well, because a Codex hook cannot ask you.
-- **no answer** from the daemon: the call is blocked (`SASY_FAIL_OPEN=true` to
-  let calls through instead, only while the daemon's access token is in place).
+This is the Codex CLI PreToolUse hook that sasy-guard installs. Before Codex runs
+a tool call, the hook asks the local `sasy-watch` daemon to check it against the
+SASY security policy, and it blocks any call the policy denies. A few Codex tools
+run no hooks; the page linked below lists them.
 
 ## Install
-
-Needs `sasy-guard` 0.5.1 or newer and Codex CLI 0.161.0 or newer.
 
 ```sh
 uv tool install sasy-guard        # or: uv tool upgrade sasy-guard
 sasy-guard enable --codex
 ```
 
-`enable --codex` installs the policy engine and daemon into `~/.sasy`, copies
-this hook to `~/.sasy/hooks/codex/`, and adds it to `$CODEX_HOME/hooks.json`
-(default `~/.codex`) for every tool call and at session end, keeping any other
-hooks there. Running it again changes nothing. (With `SASY_HOME` set, that
-folder takes the place of `~/.sasy`.)
+This adds the hook to `$CODEX_HOME/hooks.json` (normally `~/.codex/hooks.json`),
+so it runs in every Codex project. Then start `codex` and trust the hook when
+Codex asks. The [Enforce Policy on Codex CLI](https://guard.sasy.ai/codex/) page
+covers the requirements, how to test the hook, how to check the daemon, and the
+tools that have no hooks.
 
-Start `codex` and, when it says **Hooks need review**, trust the hook.
-`"${SASY_HOME:-$HOME/.sasy}/hooks/codex/status.sh"` reports whether the daemon
-is up.
+## Development
 
-Tests, from the repository's root: `node --test
-plugins/codex-sasy-guard/test/hook.test.mjs`. Full documentation: the "Enforce
-Policy on Codex CLI" page of the sasy-guard docs.
+The hook's tests, from the repository's root:
+
+```sh
+node --test plugins/codex-sasy-guard/test/hook.test.mjs
+```

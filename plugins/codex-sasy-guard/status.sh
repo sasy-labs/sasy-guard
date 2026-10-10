@@ -6,7 +6,13 @@ set -u
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 out=$(curl -q --noproxy '*' -fsS -m 3 "http://127.0.0.1:${PORT}/healthz" 2>/dev/null) || {
-  echo "sasy-guard: daemon not answering on port ${PORT}; Codex tool calls are blocked until it starts"
+  # Not running is normal before Codex's first tool call: the hook starts it.
+  bin="${SASY_WATCH_BIN:-$SASY_HOME/bin/sasy-watch}"
+  if [ -x "$bin" ]; then
+    echo "sasy-guard: daemon not running on port ${PORT}; the hook starts it on Codex's next tool call (if this persists after a call, the daemon failed to start)"
+  else
+    echo "sasy-guard: daemon not running on port ${PORT}, and $bin is missing, so the hook cannot start it (run sasy-guard enable --codex)"
+  fi
   exit 1
 }
 field() { printf '%s' "$out" | sed -n "s/.*\"$1\":\"*\([^,\"}]*\)\"*.*/\1/p"; }
