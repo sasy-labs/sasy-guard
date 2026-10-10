@@ -11,13 +11,14 @@ same decisions; install one, not both.
 - **sasy-guard-mod** runs inside Claude Code. It shows each decision in the
   session (a status line under the prompt, and `/guard`) and sends the session
   history to the daemon itself. It needs Claude Code v2.1.289 or later.
-- **sasy-guard** (the hook plugin) uses Claude Code hooks. It works on any
-  Claude Code version, also checks subagents that run in their own git
+- **sasy-guard** (the hook plugin) uses Claude Code hooks. It works on Claude
+  Code versions before v2.1.289 too, also checks subagents that run in their own git
   worktree (the mod refuses those), still works where an organization allows
   only its own mods, and can be set up for a single project.
 
 Check the version with `claude --version`. Below v2.1.289, only the hook
-plugin works: tell the user so and install it. Otherwise give the user the two
+plugin works: tell the user so and install it. If that version has no
+`claude plugin` command, use the one-project setup. Otherwise give the user the two
 options above in a few lines and ask which they want. Recommend the mod unless
 they use worktree subagents, their organization restricts mods, or they want
 the guard in one project only. Do not choose for them.
@@ -69,7 +70,8 @@ place (use `sasy-guard` instead of `sasy-guard-mod` for the hook plugin):
 ```bash
 claude plugin marketplace update sasy-plugins
 claude plugin update sasy-guard-mod@sasy-plugins
-claude plugin enable sasy-guard-mod@sasy-plugins   # if `claude plugin list` shows it disabled
+# only if `claude plugin list` shows it disabled:
+claude plugin enable sasy-guard-mod@sasy-plugins
 ```
 
 For a one-project setup, run `sasy-guard enable /path/to/project` again.
