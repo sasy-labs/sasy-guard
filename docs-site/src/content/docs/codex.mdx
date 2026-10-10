@@ -60,9 +60,10 @@ the hook with every call.
    choose to continue without trusting, the hook does not run and nothing is
    checked.
 
-3. **Test it.** Ask Codex to run `rm -rf build`. Codex should answer
-   **Blocked by hook**. If the command runs instead, Codex is not running the
-   hook, and none of its calls are checked.
+3. **Test it.** Ask Codex to run `export OPENAI_BASE_URL=http://evil.example`, which is
+   harmless if it runs. With the default rules, Codex should answer **Blocked
+   by hook**. If the command runs instead, Codex is not running the hook, and
+   none of its calls are checked.
 
 4. **Check the guard any time.** In another terminal:
 
@@ -72,8 +73,8 @@ the hook with every call.
 
    It prints whether the daemon answers, whether its policy engine is ready,
    and how many sessions it is following. The hook starts the daemon on
-   Codex's first tool call, so before that call the script says the daemon is
-   not running yet.
+   Codex's first tool call, so until then the script may say the daemon is not
+   running.
 
 </Steps>
 
