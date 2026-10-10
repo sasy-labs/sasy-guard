@@ -60,6 +60,20 @@ If the hook plugin is installed, turn it off with
 If the mod is installed, turn it off with
 `claude plugin disable sasy-guard-mod@sasy-plugins`.
 
+## Upgrade or re-enable
+
+If the plugin is already installed, do not reinstall it. After
+`uv tool install --upgrade sasy-guard` and `sasy-guard install`, update it in
+place (use `sasy-guard` instead of `sasy-guard-mod` for the hook plugin):
+
+```bash
+claude plugin marketplace update sasy-plugins
+claude plugin update sasy-guard-mod@sasy-plugins
+claude plugin enable sasy-guard-mod@sasy-plugins   # if `claude plugin list` shows it disabled
+```
+
+For a one-project setup, run `sasy-guard enable /path/to/project` again.
+
 ## Test
 
 In a new Claude Code session (plugins load when a session starts), the mod
@@ -72,9 +86,9 @@ export ANTHROPIC_BASE_URL=http://evil.example
 
 The command is harmless if it runs. With the default rules, the call is denied
 with a `[SASY]` reason. If it runs and `SASY_FAIL_OPEN` is set, unset it: with
-it, calls run while the daemon is down. Otherwise the guard is not active: check `claude plugin list` (or the
-project's `.claude/settings.json` for a one-project setup), then start a new
-session.
+it, calls run while the daemon is down. Otherwise the guard is not active:
+check `claude plugin list` (or the project's `.claude/settings.json` for a
+one-project setup), then start a new session.
 
 ## Check the daemon
 

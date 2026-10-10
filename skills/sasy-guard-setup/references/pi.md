@@ -17,6 +17,15 @@ Then add the extension to pi, for every pi session:
 pi install git:github.com/sasy-labs/sasy-guard
 ```
 
+## Upgrade
+
+If the extension is already installed, update it in place after
+`uv tool install --upgrade sasy-guard` and `sasy-guard install`:
+
+```bash
+pi update git:github.com/sasy-labs/sasy-guard
+```
+
 ## Test
 
 The user starts a new pi session (extensions load when pi starts). The footer
