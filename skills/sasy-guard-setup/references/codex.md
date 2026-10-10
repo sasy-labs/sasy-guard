@@ -39,11 +39,11 @@ The command is harmless if it runs. With the default rules, Codex answers
 proves nothing; ask again, or use the demo on the docs page. If the command
 runs:
 
-1. Run the status check below, and make sure `SASY_FAIL_OPEN` is not set: with
-   it, calls run while the daemon is down.
-2. If the daemon is up, the hook is not active: the user did not trust it, or
-   `hooks.json` lost the entry. Run `sasy-guard enable --codex` again and start
-   a new session.
+1. If `SASY_FAIL_OPEN` is set, unset it: with it, calls run while the daemon
+   is down.
+2. Otherwise the hook did not run: the user did not trust it, or `hooks.json`
+   lost the entry. Run `sasy-guard enable --codex` again and start a new
+   session.
 
 ## Check the daemon
 
