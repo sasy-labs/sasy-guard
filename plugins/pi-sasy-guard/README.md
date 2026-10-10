@@ -15,6 +15,10 @@ Decisions show in pi's footer status, in a widget above the editor, and in
 
 Full documentation: [guard.sasy.ai/pi](https://guard.sasy.ai/pi/).
 
+**Quickest setup:** run `npx skills add -g sasy-labs/sasy-guard`, then start
+pi and ask it to set up Sasy Guard. The skill installs the runtime and the
+extension and tells you how to test it; the steps below do the same by hand.
+
 ## Install
 
 pi support needs `sasy-guard` runtime 0.4.0 or newer (an older runtime does not
