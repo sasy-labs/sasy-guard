@@ -31,7 +31,8 @@ conversation. The daemon learns the history from Codex's own session file.
 
 ## Requirements
 
-- macOS 13 or newer, or Linux with glibc 2.35 or newer.
+- macOS 13 or newer, or Linux with glibc 2.35 or newer, on arm64 or x86-64.
+  On x86-64 the CPU must support AVX2.
 - Codex CLI 0.161.0 or newer.
 - `bash` and `curl`, which the hook runs on every check.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/), to install
