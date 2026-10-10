@@ -65,8 +65,10 @@ looks for the daemon in `~/.sasy`.
 
 3. **Test it.** Ask Codex to run `export OPENAI_BASE_URL=http://evil.example`.
    The command is harmless if it runs. With the default rules, Codex answers
-   **Blocked by hook**. If the command runs instead, Codex is not running the
-   hook: check that you trusted it, and run `sasy-guard enable --codex` again.
+   **Blocked by hook**. If the command runs instead, first run the status check
+   below and make sure `SASY_FAIL_OPEN` is not set: with it, calls run while the
+   daemon is down. If the daemon is up, Codex is not running the hook: check that
+   you trusted it, and run `sasy-guard enable --codex` again.
    If the model refuses without running anything, the test proves nothing;
    [the demo](#run-the-demo) runs the same call without a model.
 
