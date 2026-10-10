@@ -17,7 +17,20 @@ hero:
     session, not from the model's own judgment.
 ---
 
-import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+<Aside type="tip" title="The quickest way: let your agent set it up">
+Install the setup skill, then start your coding agent and ask it to **set up
+Sasy Guard**:
+
+```bash
+npx skills add -g sasy-labs/sasy-guard
+```
+
+The agent checks the requirements, installs the runtime, adds the guard to
+itself, and tells you how to test it. Each agent's page below has the
+steps by hand.
+</Aside>
 
 ## Supported Agents
 

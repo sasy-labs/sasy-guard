@@ -6,6 +6,19 @@ description: >-
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
+<Aside type="tip" title="The quickest way: let your agent set it up">
+Install the setup skill, then start your coding agent and ask it to **set up
+Sasy Guard**:
+
+```bash
+npx skills add -g sasy-labs/sasy-guard
+```
+
+The agent checks the requirements, installs the runtime, adds the guard to
+itself, and tells you how to test it. The steps below do the same by
+hand.
+</Aside>
+
 [Codex CLI](https://github.com/openai/codex) is OpenAI's coding agent for the
 terminal. It can run **hooks**: commands it starts at fixed points in a session.
 A **PreToolUse hook** runs before a tool call, such as a shell command or a file

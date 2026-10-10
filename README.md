@@ -13,4 +13,7 @@ the session, not from the model's own judgment.
 > One policy engine guards all three. Each agent connects to it through a small
 > adapter, which keeps adding another agent simple.
 
+**Quickest setup:** run `npx skills add -g sasy-labs/sasy-guard`, then start your
+coding agent and ask it to set up Sasy Guard.
+
 **Full documentation → [guard.sasy.ai](https://guard.sasy.ai)**

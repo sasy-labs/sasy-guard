@@ -7,6 +7,19 @@ description: >-
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
+<Aside type="tip" title="The quickest way: let your agent set it up">
+Install the setup skill, then start your coding agent and ask it to **set up
+Sasy Guard**:
+
+```bash
+npx skills add -g sasy-labs/sasy-guard
+```
+
+The agent checks the requirements and installs the runtime. It asks whether
+you want the mod or the [hook plugin](/claude-code/), installs your
+choice, and tells you how to test it. The steps below do the same by hand.
+</Aside>
+
 **sasy-guard-mod** enforces the same SASY security policy as the
 [sasy-guard plugin](/claude-code/), in a different way. The sasy-guard plugin
 uses **hooks**: separate programs that Claude Code starts for each event. This
