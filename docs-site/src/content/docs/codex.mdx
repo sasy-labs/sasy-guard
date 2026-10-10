@@ -50,7 +50,8 @@ the hook with every call.
    `~/.sasy`, copies the hook to `~/.sasy/hooks/codex/`, and adds it to Codex's
    `hooks.json` (in `~/.codex`, or in `$CODEX_HOME` if you set it). It keeps
    any hooks you already have there, and running it again changes nothing.
-   The hook then runs for every Codex project.
+   The hook then runs for every Codex project. (If you set `SASY_HOME`, read
+   that folder wherever these steps say `~/.sasy`.)
 
 2. **Start Codex and trust the hook.** Run `codex` in your project. The first
    time, Codex says **Hooks need review**. Choose **Review hooks** to see the
