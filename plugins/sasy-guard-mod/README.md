@@ -10,6 +10,11 @@ twice.
 Both talk to the same local `sasy-watch` daemon and policy engine, installed by
 `sasy-guard install` (the `sasy-guard` PyPI package).
 
+**Quickest setup:** run `npx skills add -g sasy-labs/sasy-guard`, then start
+Claude Code and ask it to set up Sasy Guard. The skill installs the runtime and
+the plugin and tells you how to test it. To do it by hand, follow
+[Install](https://guard.sasy.ai/claude-code-mod/#install).
+
 ## What it does
 
 - **Session start**: starts the daemon if it is down (found as the hook

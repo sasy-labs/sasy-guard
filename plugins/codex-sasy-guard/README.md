@@ -5,6 +5,10 @@ a tool call, the hook asks the local `sasy-watch` daemon to check it against the
 SASY security policy, and it blocks any call the policy denies. A few Codex tools
 run no hooks; the page linked below lists them.
 
+**Quickest setup:** run `npx skills add -g sasy-labs/sasy-guard`, then start
+Codex and ask it to set up Sasy Guard. The skill installs the runtime and the
+hook and tells you how to test it; the steps below do the same by hand.
+
 ## Install
 
 ```sh
