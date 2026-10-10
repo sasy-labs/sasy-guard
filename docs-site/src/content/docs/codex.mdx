@@ -49,7 +49,8 @@ the hook with every call.
    `enable --codex` installs the policy engine and the `sasy-watch` daemon into
    `~/.sasy`, copies the hook to `~/.sasy/hooks/codex/`, and adds it to Codex's
    `hooks.json` (in `~/.codex`, or in `$CODEX_HOME` if you set it). It keeps
-   any hooks you already have there, and running it again changes nothing.
+   any hooks you already have there, and running it again changes nothing:
+   the hook keeps its place among them.
    The hook then runs for every Codex project. (If you set `SASY_HOME`, read
    that folder wherever these steps say `~/.sasy`.)
 
@@ -59,14 +60,20 @@ the hook with every call.
    choose to continue without trusting, the hook does not run and nothing is
    checked.
 
-3. **Check that the guard is up.** In another terminal:
+3. **Test it.** Ask Codex to run `rm -rf build`. Codex should answer
+   **Blocked by hook**. If the command runs instead, Codex is not running the
+   hook, and none of its calls are checked.
+
+4. **Check the guard any time.** In another terminal:
 
    ```bash
    "${SASY_HOME:-$HOME/.sasy}/hooks/codex/status.sh"
    ```
 
    It prints whether the daemon answers, whether its policy engine is ready,
-   and how many sessions it is following.
+   and how many sessions it is following. The hook starts the daemon on
+   Codex's first tool call, so before that call the script says the daemon is
+   not running yet.
 
 </Steps>
 
@@ -75,7 +82,9 @@ Two entries, both running `~/.sasy/hooks/codex/hook.sh`: one under
 `PreToolUse` with `"matcher": "*"` (every tool) and a 60-second timeout, and
 one under `SessionEnd`, which tells the daemon that the session is over. A hook
 that Codex stops at its timeout lets the call run, so keep that timeout at 60
-seconds; the hook answers well within it.
+seconds; the hook answers well within it. A hook that Codex cannot start at
+all, because the entry is gone or names a missing script, also lets every call
+run. The test in step 3 shows whether the hook is in place.
 </Aside>
 
 <Aside type="caution" title="Runtime version">
@@ -93,10 +102,12 @@ The hook uses Codex's PreToolUse hooks and its session files, as Codex CLI
 ## What you see
 
 - **A blocked call** shows in Codex as **Blocked by hook**, followed by the
-  policy's reason and suggested fix. Codex's model gets the same reason as the
-  tool's result, as `Command blocked by PreToolUse hook: [SASY] …`.
+  policy's reason and suggested fix. Codex does not show the blocked command
+  itself, not even in its transcript view (Ctrl+T); the reason names what the
+  policy stopped. Codex's model gets the same reason as the tool's result, as
+  `Command blocked by PreToolUse hook: [SASY] …`.
 - **An allowed call** runs with no sign of the check.
-- **`status.sh`**, the script from step 3, reports on the daemon. The status
+- **`status.sh`**, the script from step 4, reports on the daemon. The status
   check runs outside Codex because Codex hooks cannot add a command to Codex
   itself.
 
@@ -125,7 +136,10 @@ project under `output/codex-demo/` (with a fake `.env`, and a git repository
 of its own, so Codex asks you to trust only that folder) and, next to it, a
 Codex home of its own. That Codex home names the stand-in as Codex's model and
 installs the hook from this clone. Your own Codex settings in `~/.codex` are
-not used or changed. The demo prints the two commands to run in a second terminal.
+not used or changed. The demo prints the two commands to run in a second
+terminal. They set `CODEX_HOME`, so `codex` must be the Codex CLI itself; if
+your shell defines `codex` as an alias or function that sets `CODEX_HOME`, run
+`command codex` instead.
 
 ```bash
 make codex-guard-demo                        # toxic_flow: read .env, then curl it out

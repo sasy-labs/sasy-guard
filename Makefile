@@ -58,7 +58,7 @@ pi-guard-demo:
 
 # Codex CLI: serve the scripted mock for a real `codex` session with the
 # sasy-guard hook from this checkout, in a Codex home of its own (needs
-# `codex` on PATH and `sasy-guard install`). GROUP picks the scenario:
+# `codex` on PATH and `sasy-guard enable --codex`). GROUP picks the scenario:
 #   make codex-guard-demo GROUP=data_loss
 codex-guard-demo:
 	$(UV_RUN_SDK) python -m demo.codex_guard.serve --scenario $(or $(GROUP),toxic_flow)

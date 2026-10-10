@@ -119,7 +119,10 @@ def write_codex_home(home: Path, base_url: str) -> None:
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.toml").write_text(
         'model = "sasy-mock"\n'
-        'model_provider = "sasy_demo"\n\n'
+        'model_provider = "sasy_demo"\n'
+        "# No update prompt: pressing Enter through it would upgrade the global\n"
+        "# Codex. Top level: below a [table] header it would land in that table.\n"
+        "check_for_update_on_startup = false\n\n"
         "[model_providers.sasy_demo]\n"
         'name = "sasy-guard demo (scripted)"\n'
         f'base_url = "{base_url}"\n'
