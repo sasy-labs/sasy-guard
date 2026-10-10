@@ -44,13 +44,13 @@ other**: with both, every tool call is checked twice.
    sasy-guard install
    ```
 
-   Its closing message suggests installing the sasy-guard plugin; for the mod,
-   continue with the next step instead.
+   Its closing message suggests `sasy-guard enable <project>`, which adds the
+   hooks to one project; for the mod, skip it and go on to the next step.
 
 2. **Add the mod plugin** from the plugin marketplace:
 
    ```bash
-   claude plugin marketplace add sasy-labs/sasy-demo
+   claude plugin marketplace add sasy-labs/sasy-guard
    claude plugin install sasy-guard-mod
    ```
 
