@@ -52,8 +52,10 @@ Then install or upgrade the package: `uv tool install --upgrade sasy-guard`.
   sentence what it changes. Run only the commands in these files.
 - If Sasy Guard blocks one of your commands, do not work around it. Give the
   user the command to run in their own terminal.
-- Use `SASY_HOME` only if the user wants a location other than `~/.sasy`; it
-  must stay set in every shell that starts the agent.
+- If `SASY_HOME` is already set, keep it: never unset or override it, and do
+  not move an existing install. Set it yourself only if the user asks for a
+  location other than `~/.sasy`; it must then stay set in every shell that
+  starts the agent.
 - A new install takes effect only in a new session, so you cannot test it
   from the session that installed it. End by telling the user to start a new
   session and run the agent file's test. Do not claim the guard works until

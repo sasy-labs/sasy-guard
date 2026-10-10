@@ -5,9 +5,9 @@ Work through these in order and report what you find.
 1. **Blocked, but without a `[SASY]` reason.** Another hook or rule blocked it,
    so this proves nothing about Sasy Guard. Check that Sasy Guard is installed
    (below).
-2. **`SASY_FAIL_OPEN` is set** in the shell that started the agent
-   (`echo "${SASY_FAIL_OPEN:-unset}"` in a tool call shows it). Calls then
-   run while the daemon is down. The user removes it from that shell's
+2. **`SASY_FAIL_OPEN` is `true`** in the shell that started the agent
+   (`echo "${SASY_FAIL_OPEN:-unset}"` in a tool call shows it; any other value
+   is off). Calls then run while the daemon is down. The user removes it from that shell's
    environment (an `unset` inside the agent does not reach the agent itself)
    and starts a new session.
 3. **The daemon is down.** Run the agent file's **Check** step. If the daemon
