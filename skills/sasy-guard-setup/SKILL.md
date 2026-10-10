@@ -28,8 +28,9 @@ only the files the task needs:
 | The test call ran, or the guard seems inactive | [references/troubleshooting.md](references/troubleshooting.md) |
 
 If the user only asks to test or check, change nothing: run the agent file's
-**Test** and **Check** steps in the current session, report the result, and
-suggest any fix without applying it.
+**Test** and **Check** steps, report the result, and suggest any fix without
+applying it. Run the test yourself only if you are that agent; otherwise ask
+the user to run it in that agent.
 
 ## Before installing
 
