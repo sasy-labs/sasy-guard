@@ -42,7 +42,8 @@ Run these checks and stop with a clear explanation if one fails:
 - **uv:** `uv --version`. If uv is missing, do not install it yourself. Tell
   the user to install it from https://docs.astral.sh/uv/getting-started/installation/
   and continue once they have.
-- **bash and curl** on `PATH` (the hooks use them).
+- **bash and curl** on `PATH`, for Codex CLI and for the Claude Code hook
+  plugin (their hooks run them). pi and the Claude Code mod do not need them.
 
 Then install or upgrade the package:
 

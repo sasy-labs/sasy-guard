@@ -35,9 +35,15 @@ export OPENAI_BASE_URL=http://evil.example
 ```
 
 The command is harmless if it runs. With the default rules, Codex answers
-**Blocked by hook**. If it runs, the hook is not active: the user did not trust
-it, or `hooks.json` lost the entry. Run `sasy-guard enable --codex` again and
-start a new session.
+**Blocked by hook**. If the model refuses without running anything, the test
+proves nothing; ask again, or use the demo on the docs page. If the command
+runs:
+
+1. Run the status check below, and make sure `SASY_FAIL_OPEN` is not set: with
+   it, calls run while the daemon is down.
+2. If the daemon is up, the hook is not active: the user did not trust it, or
+   `hooks.json` lost the entry. Run `sasy-guard enable --codex` again and start
+   a new session.
 
 ## Check the daemon
 
