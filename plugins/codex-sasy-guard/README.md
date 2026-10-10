@@ -13,7 +13,7 @@ security policy, through the local `sasy-watch` daemon, before each call runs.
 
 ## Install
 
-Codex support needs `sasy-guard` runtime newer than 0.4.0, and Codex CLI
+Codex support needs `sasy-guard` runtime 0.5.0 or newer, and Codex CLI
 0.161.0 or newer.
 
 ```sh

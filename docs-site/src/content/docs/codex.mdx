@@ -39,8 +39,8 @@ the hook with every call.
 <Steps>
 
 1. **Install the runtime**: the policy engine and the `sasy-watch` daemon.
-   Codex support needs a runtime release newer than 0.4.0 (see "Runtime
-   version" below).
+   Codex support needs runtime 0.5.0 or newer (see "Runtime version"
+   below).
 
    ```bash
    uv tool install sasy-guard
@@ -159,7 +159,7 @@ the hook with every call.
 
 <Aside type="caution" title="Runtime version">
 The Codex hook needs a `sasy-watch` daemon that knows Codex (its tools and its
-session file), which runtime releases newer than 0.4.0 include. With an older
+session file), which runtime 0.5.0 and newer include. With an older
 runtime every tool call is blocked with `[SASY] security check unavailable`;
 with 0.4.0, for example, the reason ends in `(unknown agent "codex")`.
 `uv tool upgrade sasy-guard` then `sasy-guard install` moves an existing
