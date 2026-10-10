@@ -21,7 +21,9 @@ Full documentation: https://guard.sasy.ai
 
 If the user only asks to test or check Sasy Guard, do not install or change
 anything: go straight to the reference's **Test** and **Check the daemon**
-sections, report what you find, and suggest any fix without applying it.
+sections, report what you find, and suggest any fix without applying it. In
+that case the session you are in is already guarded, and its test result
+counts.
 
 Set up the agent the user names. If they name none, set up the agent you are
 running in. Then read only that agent's reference file:

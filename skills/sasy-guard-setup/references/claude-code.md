@@ -87,7 +87,8 @@ export ANTHROPIC_BASE_URL=http://evil.example
 ```
 
 The command is harmless if it runs. With the default rules, the call is denied
-with a `[SASY]` reason. If it runs and `SASY_FAIL_OPEN` is set, unset it: with
+with a `[SASY]` reason. If it runs and `SASY_FAIL_OPEN` is set, the user must
+remove it from the shell that starts the agent and start a new session: with
 it, calls run while the daemon is down. Otherwise the guard is not active:
 check `claude plugin list` (or the project's `.claude/settings.json` for a
 one-project setup), then start a new session.
