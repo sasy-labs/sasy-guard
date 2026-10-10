@@ -19,6 +19,10 @@ Full documentation: https://guard.sasy.ai
 
 ## 1. Pick the agent
 
+If the user only asks to test or check Sasy Guard, do not install or change
+anything: go straight to the reference's **Test** and **Check the daemon**
+sections.
+
 Set up the agent the user names. If they name none, set up the agent you are
 running in. Then read only that agent's reference file:
 
@@ -42,8 +46,8 @@ Run these checks and stop with a clear explanation if one fails:
 - **uv:** `uv --version`. If uv is missing, do not install it yourself. Tell
   the user to install it from https://docs.astral.sh/uv/getting-started/installation/
   and continue once they have.
-- **bash and curl** on `PATH`, for Codex CLI and for the Claude Code hook
-  plugin (their hooks run them). pi and the Claude Code mod do not need them.
+- **curl** on `PATH` for Codex CLI and both Claude Code plugins, and **bash**
+  for Codex CLI and the Claude Code hook plugin. pi needs neither.
 
 Then install or upgrade the package:
 
