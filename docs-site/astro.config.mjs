@@ -26,6 +26,10 @@ export default defineConfig({
           label: 'pi',
           items: [{ label: 'Enforce Policy on pi', slug: 'pi' }],
         },
+        {
+          label: 'Codex CLI',
+          items: [{ label: 'Enforce Policy on Codex CLI', slug: 'codex' }],
+        },
       ],
     }),
   ],

@@ -8,8 +8,9 @@ rules become deterministic policies, enforced outside the agent, that decide
 from what the agent actually did and where each action's data came from across
 the session, not from the model's own judgment.
 
-> 🛡️ **[Sasy Guard for Claude Code](https://guard.sasy.ai/claude-code/):** the
-> first tool in the suite — a Claude Code security plugin you can set up in
-> minutes.
+> 🛡️ **Works with [Claude Code](https://guard.sasy.ai/claude-code/),
+> [pi](https://guard.sasy.ai/pi/) and [Codex CLI](https://guard.sasy.ai/codex/).**
+> One policy engine guards all three. Each agent connects to it through a small
+> adapter, which keeps adding another agent simple.
 
 **Full documentation → [guard.sasy.ai](https://guard.sasy.ai)**
