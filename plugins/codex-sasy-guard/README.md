@@ -27,7 +27,8 @@ hooks there. Running it again changes nothing. (With `SASY_HOME` set, that
 folder takes the place of `~/.sasy`.)
 
 Start `codex` and, when it says **Hooks need review**, trust the hook.
-`~/.sasy/hooks/codex/status.sh` reports whether the daemon is up.
+`"${SASY_HOME:-$HOME/.sasy}/hooks/codex/status.sh"` reports whether the daemon
+is up.
 
 Tests, from the repository's root: `node --test
 plugins/codex-sasy-guard/test/hook.test.mjs`. Full documentation: the "Enforce

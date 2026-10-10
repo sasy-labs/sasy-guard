@@ -62,7 +62,7 @@ the hook with every call.
 3. **Check that the guard is up.** In another terminal:
 
    ```bash
-   ~/.sasy/hooks/codex/status.sh
+   "${SASY_HOME:-$HOME/.sasy}/hooks/codex/status.sh"
    ```
 
    It prints whether the daemon answers, whether its policy engine is ready,
