@@ -45,6 +45,9 @@ Check, and stop with a clear explanation if one fails:
   yourself.
 
 Then install or upgrade the package: `uv tool install --upgrade sasy-guard`.
+If `sasy-guard` is then not found, uv's tool folder is not on `PATH`: run it
+as `"$(uv tool dir --bin)/sasy-guard"`, and suggest `uv tool update-shell` to
+the user.
 
 ## Rules
 

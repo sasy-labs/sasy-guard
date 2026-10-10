@@ -24,4 +24,5 @@ Then, per agent:
 - **Codex CLI:** `sasy-guard enable --codex` above already refreshed the hook.
 - **pi:** `pi update git:github.com/sasy-labs/sasy-guard`
 
-Then the user starts a new session and runs the agent file's test.
+Then the user starts a new session and runs the test in the agent's file:
+[claude-code.md](claude-code.md), [codex.md](codex.md) or [pi.md](pi.md).
