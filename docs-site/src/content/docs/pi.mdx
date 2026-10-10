@@ -7,6 +7,18 @@ description: >-
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
+<Aside type="tip" title="The quickest way: let your agent set it up">
+Install the setup skill, then ask your coding agent to **set up Sasy Guard**:
+
+```bash
+npx skills add sasy-labs/sasy-guard
+```
+
+The agent checks the requirements, installs the runtime, adds the guard to
+itself, and tells you how to test it. The steps below do the same by
+hand.
+</Aside>
+
 [pi](https://github.com/earendil-works/pi) is an open-source coding agent for
 the terminal. pi can be extended with **extensions**: TypeScript modules that
 run inside pi and can react to what it does. The **sasy-guard pi extension**

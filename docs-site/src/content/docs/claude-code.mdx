@@ -5,6 +5,18 @@ description: Run Claude Code with a SASY security policy checked on every tool c
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
+<Aside type="tip" title="The quickest way: let your agent set it up">
+Install the setup skill, then ask your coding agent to **set up Sasy Guard**:
+
+```bash
+npx skills add sasy-labs/sasy-guard
+```
+
+The agent checks the requirements and installs the runtime. It asks whether
+you want this plugin or the [mod](/claude-code-mod/), installs your
+choice, and tells you how to test it. The steps below do the same by hand.
+</Aside>
+
 The **sasy-guard** plugin enforces a Soufflé Datalog security policy on Claude
 Code's tool calls. A `PreToolUse` hook checks each call and returns **allow /
 ask / deny** — so a prompt-injected agent that tries to delete your repo,
